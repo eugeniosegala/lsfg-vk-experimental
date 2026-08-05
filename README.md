@@ -1,17 +1,34 @@
-# lsfg-vk
+# lsfg-vk Experimental
+
+<p align="center">
+  <img src="assets/lsfg-vk-experimental-logo.png" alt="Experimental frame-generation mark for SteamOS and Linux" width="256" />
+</p>
+
+> **Experimental fork:** This repository is an experimental fork of the lsfg-vk development line. It tracks work
+> intended for testing before it is treated as a stable release. Builds can change rapidly, regress for particular
+> games or drivers, and should be tested per game rather than assumed to replace a known-good installation.
+
 **Lossless Scaling** is a Windows-exclusive program featuring various algorithms for scaling and interpolating programs.
 
-**lsfg-vk** is a Vulkan layer that hooks into Vulkan applications and generates additional frames using Lossless Scaling's frame generation algorithm.
+**lsfg-vk Experimental** is a Vulkan layer that hooks into Vulkan applications and generates additional frames using
+Lossless Scaling's frame generation algorithm.
 
->[!CAUTION]
-> You are reading the README for the upcoming version 2.0 of lsfg-vk. For the stable version 1.x, [please read here](https://github.com/PancakeTAS/lsfg-vk/tree/ff1a0f72a7d6d08b84d58b7b4dc5f05c9f904f98)
+For the established 1.x release line, use the [stable lsfg-vk documentation](https://github.com/PancakeTAS/lsfg-vk/tree/ff1a0f72a7d6d08b84d58b7b4dc5f05c9f904f98). Keep a working configuration handy when testing this experimental fork.
+
+## What is this?
+
+This repository packages the evolving 2.x lsfg-vk implementation for people who specifically want to test new Vulkan
+frame-generation work. It remains the same Linux compatibility layer and still uses the `Lossless.dll` installed by
+the Lossless Scaling Steam application; it is not a separate frame-generation algorithm.
+
+The experimental status matters: compatibility depends on the game, compositor, GPU driver, and selected options.
+Please test changes one game at a time and include the build version, GPU/driver, and game details in any report.
 
 ## Installation
->[!TIP]
-> If you are on a Steam Deck or similar handheld, consider using the [Decky plugin for lsfg-vk](https://github.com/xXJSONDeruloXx/decky-lsfg-vk). This is an easy way to install and configure lsfg-vk on the Steam Deck.
-> Please keep in mind that it is not officially supported and support questions should be directed to the plugin's repository & discord.
 
-1. Before proceeding, please make sure you have [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) downloaded on Steam.
+If you are on a Steam Deck or similar handheld, consider the [Decky LSFG-VK Experimental plugin](https://github.com/eugeniosegala/decky-lsfg-vk-experimental). It installs its own private experimental layer and per-game launcher, so it can coexist with the public Decky LSFG-VK plugin. The Decky plugin is independently maintained; direct plugin questions to its repository and community support channels.
+
+1. Before proceeding, please make sure you have [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) downloaded on Steam. For an experimental build, keep a rollback path to a previously working release.
 2. Head to the [GitHub Releases](https://github.com/PancakeTAS/lsfg-vk/releases) and download the file named "lsfg-vk-2.0.0-x86_64.tar.xz".
 3. Open a terminal in the folder where you downloaded the file and run the following:
 ```bash
