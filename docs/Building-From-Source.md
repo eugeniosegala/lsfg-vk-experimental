@@ -47,10 +47,10 @@ sudo pacman -S --needed \
 
 1. **Clone the Repository**
 
-Clone the lsfg-vk repository from GitHub:
+Clone the experimental lsfg-vk repository from GitHub:
 ```bash
-git clone https://github.com/PancakeTAS/lsfg-vk.git
-cd lsfg-vk
+git clone https://github.com/eugeniosegala/lsfg-vk-experimental.git
+cd lsfg-vk-experimental
 ```
 
 Optionally, you can checkout a specific release tag:

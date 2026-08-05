@@ -16,31 +16,13 @@ flatpak install --user org.freedesktop.Platform.VulkanLayer.lsfgvk//25.08
 
 If you require an older runtime (23.08), you must install it manually as shown in the next section. Similarly, if you want to install the graphical configuration editor **lsfg-vk-ui**, you must also install it manually.
 
-### Through GitHub Releases
-
-Head over to the [GitHub Releases](https://github.com/PancakeTAS/lsfg-vk/releases) page and download the Flatpak files for the Vulkan layer and/or the graphical configuration editor.
-
-It can be installed with the following commands (you can omit the `--user` in a system installation):
-```bash
-tar -xf lsfg-vk-2.0.0-flatpaks-x86_64.tar.xz
-flatpak --user install ./org.freedesktop.Platform.VulkanLayer.lsfg-vk-23.08.flatpak
-flatpak --user install ./org.freedesktop.Platform.VulkanLayer.lsfg-vk-24.08.flatpak
-flatpak --user install ./org.freedesktop.Platform.VulkanLayer.lsfg-vk-25.08.flatpak
-flatpak --user install ./gay.pancake.lsfg-vk-ui.flatpak
-```
-
-You can then run the graphical configuration editor with:
-```bash
-flatpak run gay.pancake.lsfg_vk_ui
-```
-
 ### Through Custom Build
 
 If you want to build lsfg-vk yourself, install `flatpak-builder` and run the following commands:
 ```bash
-git clone --depth=1 https://github.com/PancakeTAS/lsfg-vk.git
+git clone --depth=1 https://github.com/eugeniosegala/lsfg-vk-experimental.git
 # optional: git checkout <desired-version>
-cd lsfg-vk
+cd lsfg-vk-experimental
 flatpak-builder --force-clean --user --install-deps-from=flathub --install flatpak-build \
     dist/flatpak/lsfg-vk-ui/gay.pancake.lsfg-vk-ui.yml
 flatpak-builder --force-clean --user --install-deps-from=flathub --install flatpak-build \

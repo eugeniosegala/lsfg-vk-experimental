@@ -29,10 +29,10 @@ Please test changes one game at a time and include the build version, GPU/driver
 If you are on a Steam Deck or similar handheld, consider the [Decky LSFG-VK Experimental plugin](https://github.com/eugeniosegala/decky-lsfg-vk-experimental). It installs its own private experimental layer and per-game launcher, so it can coexist with the public Decky LSFG-VK plugin. The Decky plugin is independently maintained; direct plugin questions to its repository and community support channels.
 
 1. Before proceeding, please make sure you have [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) downloaded on Steam. For an experimental build, keep a rollback path to a previously working release.
-2. Head to the [GitHub Releases](https://github.com/PancakeTAS/lsfg-vk/releases) and download the file named "lsfg-vk-2.0.0-x86_64.tar.xz".
+2. Download the Linux archive from this fork's [GitHub Releases](https://github.com/eugeniosegala/lsfg-vk-experimental/releases). The archive name includes its exact experimental version, for example `lsfg-vk-2.0.0-dev28-experimental.1-linux.tar.xz`.
 3. Open a terminal in the folder where you downloaded the file and run the following:
 ```bash
-tar -xvf lsfg-vk-2.0.0-linux.tar.xz -C ~/.local
+tar -xJf lsfg-vk-2.0.0-dev28-experimental.1-linux.tar.xz -C ~/.local
 ```
 This will extract lsfg-vk to `~/.local`. Please **keep track of the files that were extracted**, in case you want to uninstall lsfg-vk later.
 
@@ -44,6 +44,27 @@ sudo dnf install qt6-qtdeclarative qt6-qtbase # On Fedora
 ```
 
 5. (Optional) If you wish to use lsfg-vk within Flatpak applications, see the [Flatpak Guide](docs/Flatpak-Guide.md).
+
+## Package and publish a release
+
+Releases are made locally with scripts; this repository does not use GitHub Actions or CI to build or publish them.
+Both scripts must run on 64-bit Linux (or a local Linux development container), because the archive contains a Linux Vulkan layer.
+
+Install the build dependencies described in [Building from Source](docs/Building-From-Source.md), then create an archive for local testing:
+
+```bash
+scripts/package-local.sh
+```
+
+This creates `out/lsfg-vk-experimental-linux.tar.xz`. It builds and verifies the Vulkan layer, CLI, UI, manifest, and XDG files, but does not create a tag, upload anything, or change GitHub.
+
+To publish the version in [`VERSION`](VERSION), first commit a clean `develop` branch, authenticate the GitHub CLI with `gh auth login -h github.com`, then run:
+
+```bash
+scripts/publish-package.sh
+```
+
+The publish script builds `out/lsfg-vk-<VERSION>-linux.tar.xz`, records its SHA-256 in generated release notes, creates an annotated `v<VERSION>` tag, pushes `develop` and the tag, and publishes a GitHub prerelease with the archive attached. Bump `VERSION` before every subsequent release.
 
 ## Usage
 In order to start using lsfg-vk, you will need to configure it. This can either be done using the GUI application, or manually.
