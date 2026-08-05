@@ -7,6 +7,7 @@
 > **Experimental fork:** This repository is an experimental fork of the lsfg-vk development line. It tracks work
 > intended for testing before it is treated as a stable release. Builds can change rapidly, regress for particular
 > games or drivers, and should be tested per game rather than assumed to replace a known-good installation.
+> See [UPSTREAM.md](UPSTREAM.md) for the reviewed upstream baseline and every carried change.
 
 **Lossless Scaling** is a Windows-exclusive program featuring various algorithms for scaling and interpolating programs.
 
