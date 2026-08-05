@@ -25,12 +25,21 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     exit 1
 fi
 
-for command in gh git sha256sum; do
+for command in gh git; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command not found: $command" >&2
         exit 1
     fi
 done
+
+if command -v sha256sum >/dev/null 2>&1; then
+    checksum_command=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+    checksum_command=(shasum -a 256)
+else
+    echo "Required command not found: sha256sum or shasum" >&2
+    exit 1
+fi
 
 if ! gh auth status >/dev/null 2>&1; then
     echo "GitHub CLI is not authenticated. Run: gh auth login -h github.com" >&2
@@ -38,7 +47,7 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 
 scripts/package-local.sh "$archive"
-checksum="$(sha256sum "$archive" | awk '{print $1}')"
+checksum="$("${checksum_command[@]}" "$archive" | awk '{print $1}')"
 notes_file="$(mktemp "${TMPDIR:-/tmp}/lsfg-vk-release-notes.XXXXXX")"
 cleanup() {
     rm -f "$notes_file"

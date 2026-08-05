@@ -48,7 +48,7 @@ sudo dnf install qt6-qtdeclarative qt6-qtbase # On Fedora
 ## Package and publish a release
 
 Releases are made locally with scripts; this repository does not use GitHub Actions or CI to build or publish them.
-Both scripts must run on 64-bit Linux (or a local Linux development container), because the archive contains a Linux Vulkan layer.
+On Linux, the scripts build directly. On macOS, `package-local.sh` uses a local `linux/amd64` Docker container automatically; install Docker Desktop and start it first. The archive always targets 64-bit Linux.
 
 Install the build dependencies described in [Building from Source](docs/Building-From-Source.md), then create an archive for local testing:
 

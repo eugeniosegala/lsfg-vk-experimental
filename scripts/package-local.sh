@@ -6,15 +6,52 @@ version="$(tr -d '[:space:]' < "$repo_root/VERSION")"
 default_output="$repo_root/out/lsfg-vk-experimental-linux.tar.xz"
 output_path="${1:-$default_output}"
 
+if [[ "$output_path" != /* ]]; then
+    output_path="$PWD/$output_path"
+fi
+
 if [[ -z "$version" ]]; then
     echo "VERSION must contain a release version." >&2
     exit 1
 fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
-    echo "Packaging must run on Linux (or in a Linux development container)." >&2
-    echo "The archive contains a Linux Vulkan layer and cannot be built on $(uname -s)." >&2
-    exit 1
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "Packaging needs Linux. Install Docker Desktop or run this script on Linux." >&2
+        exit 1
+    fi
+
+    case "$output_path" in
+        "$repo_root"/*)
+            output_relative="${output_path#"$repo_root"/}"
+            ;;
+        *)
+            echo "On non-Linux hosts, the output path must be inside this repository." >&2
+            exit 1
+            ;;
+    esac
+
+    echo "Using local linux/amd64 Docker packaging environment..."
+    exec docker run --rm --platform linux/amd64 \
+        -v "$repo_root:/workspace" \
+        -w /workspace \
+        ubuntu:22.04 \
+        bash -lc '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq \
+                git curl llvm clang cmake ninja-build pkg-config \
+                libvulkan-dev mesa-common-dev \
+                qt6-base-dev qt6-base-dev-tools \
+                qt6-tools-dev qt6-tools-dev-tools \
+                qt6-declarative-dev qt6-declarative-dev-tools
+            git clone --depth=1 -b vulkan-sdk-1.4.328 \
+                https://github.com/KhronosGroup/Vulkan-Headers /tmp/vkh
+            rm -rf /usr/include/vulkan /usr/include/vk_video
+            cp -a /tmp/vkh/include/vulkan /tmp/vkh/include/vk_video /usr/include/
+            scripts/package-local.sh "/workspace/'"$output_relative"'"
+        '
 fi
 
 for command in cmake ninja clang++ tar; do
