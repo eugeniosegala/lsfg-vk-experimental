@@ -59,6 +59,13 @@ cat > "$notes_file" <<EOF
 
 This is an experimental build of the lsfg-vk 2.x development line. Test it game by game and retain a known-good rollback path.
 
+### Important limitations
+
+- This build uses fixed 2x, 3x, or 4x frame-generation multipliers. It does not provide adaptive frame generation or an automatic multiplier.
+- The 0x multiplier previously available in the 1.x line is not present in upstream lsfg-vk v2 and cannot be restored by this packaging layer.
+- Lossless Scaling and its \`Lossless.dll\` must already be installed through Steam; this archive does not include or modify it.
+- No Flatpak bundles are attached to this release.
+
 ### Included
 
 - Vulkan implicit layer: \`liblsfg-vk-layer.so\`
