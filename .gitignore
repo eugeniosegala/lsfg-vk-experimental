@@ -3,6 +3,7 @@
 /out
 
 # ide
+/.idea
 /.zed
 /.vscode
 
