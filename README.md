@@ -32,7 +32,9 @@ test changes one game at a time and include the build version, GPU/driver, and g
 If you are on a Steam Deck or similar handheld, consider
 the [Decky LSFG-VK Experimental plugin](https://github.com/eugeniosegala/decky-lsfg-vk-experimental). It installs its
 own private experimental layer and per-game launcher, so it can coexist with the public Decky LSFG-VK plugin. The Decky
-plugin is independently maintained; direct plugin questions to its repository and community support channels.
+plugin is independently maintained; direct plugin questions to its repository and community support channels. If you use
+the plugin for a game, follow its installation guide and launcher instructions instead of manually installing this archive
+for that game.
 
 1. Before proceeding, please make sure you
    have [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) downloaded on Steam. For an
