@@ -6,15 +6,19 @@ If you want to use **lsfg-vk** with Flatpak applications, you must install the V
 
 You can install lsfg-vk for Flatpak through three different methods.
 
-### Through Flathub
+### From an experimental release
 
-The main lsfg-vk layer is available on Flathub and can be installed with the following commands (you can omit the `--user` in a system installation):
+Experimental releases include a `flatpaks.tar.xz` archive containing one runtime extension for each supported
+Freedesktop runtime (23.08, 24.08, and 25.08). Extract the archive and install the extension matching the
+application's runtime:
+
 ```bash
-flatpak install --user org.freedesktop.Platform.VulkanLayer.lsfgvk//24.08
-flatpak install --user org.freedesktop.Platform.VulkanLayer.lsfgvk//25.08
+tar -xJf lsfg-vk-<version>-flatpaks.tar.xz
+flatpak install --user org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental-24.08.flatpak
 ```
 
-If you require an older runtime (23.08), you must install it manually as shown in the next section. Similarly, if you want to install the graphical configuration editor **lsfg-vk-ui**, you must also install it manually.
+This fork intentionally uses the separate `org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental` extension ID.
+It can therefore remain installed beside the public Flathub `lsfgvk` extension without overwriting it.
 
 ### Through Custom Build
 
@@ -26,11 +30,11 @@ cd lsfg-vk-experimental
 flatpak-builder --force-clean --user --install-deps-from=flathub --install flatpak-build \
     dist/flatpak/lsfg-vk-ui/gay.pancake.lsfg-vk-ui.yml
 flatpak-builder --force-clean --user --install-deps-from=flathub --install flatpak-build \
-    dist/flatpak/lsfg-vk-layer/org.freedesktop.Platform.VulkanLayer.lsfgvk_23.08.yml
+    dist/flatpak/lsfg-vk-layer/org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental_23.08.yml
 flatpak-builder --force-clean --user --install-deps-from=flathub --install flatpak-build \
-    dist/flatpak/lsfg-vk-layer/org.freedesktop.Platform.VulkanLayer.lsfgvk_24.08.yml
+    dist/flatpak/lsfg-vk-layer/org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental_24.08.yml
 flatpak-builder --force-clean --user --install-deps-from=flathub --install flatpak-build \
-    dist/flatpak/lsfg-vk-layer/org.freedesktop.Platform.VulkanLayer.lsfgvk_25.08.yml
+    dist/flatpak/lsfg-vk-layer/org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental_25.08.yml
 ```
 
 ## Configuration

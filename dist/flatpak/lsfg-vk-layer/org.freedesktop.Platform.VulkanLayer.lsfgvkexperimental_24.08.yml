@@ -1,4 +1,4 @@
-id: org.freedesktop.Platform.VulkanLayer.lsfgvk
+id: org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental
 default-branch: develop
 
 runtime: org.freedesktop.Platform
@@ -11,7 +11,7 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.llvm20
 
 build-options:
-  prefix: /usr/lib/extensions/vulkan/lsfgvk
+  prefix: /usr/lib/extensions/vulkan/lsfgvkexperimental
   append-path: /usr/lib/sdk/llvm20/bin
   prepend-ld-library-path: /usr/lib/sdk/llvm20/lib
 
@@ -25,7 +25,7 @@ modules:
       - -DLSFGVK_BUILD_VK_LAYER=ON
       - -DLSFGVK_BUILD_UI=OFF
       - -DLSFGVK_BUILD_CLI=OFF
-      - -DLSFGVK_LAYER_LIBRARY_PATH=/usr/lib/extensions/vulkan/lsfgvk/lib/liblsfg-vk-layer.so
+      - -DLSFGVK_LAYER_LIBRARY_PATH=/usr/lib/extensions/vulkan/lsfgvkexperimental/lib/liblsfg-vk-layer.so
     sources:
       - type: dir
         path: ../../..

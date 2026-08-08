@@ -31,6 +31,24 @@ identical. The commit IDs differ because the changes were carried into this repo
 upstream branch. The PR was open when checked; when it lands upstream, compare the merged patch before deciding whether
 these two carried commits can be retired.
 
+## Experimental packaging release: `v2.0.0-dev28-experimental.2`
+
+This release does not change the lsfg-vk rendering code. It packages the existing reviewed dev28 engine for the
+experimental Decky integration, including support for sandboxed Flatpak applications such as Heroic.
+
+| Item                        | Value                                                                                         |
+|-----------------------------|-----------------------------------------------------------------------------------------------|
+| Host engine lineage         | `2.0.0-dev28-experimental.1` host payload, rebuilt as part of this release                    |
+| New artifact                | `lsfg-vk-2.0.0-dev28-experimental.2-flatpaks.tar.xz`                                          |
+| Supported Flatpak runtimes  | Freedesktop `23.08`, `24.08`, and `25.08`                                                     |
+| Experimental extension ID   | `org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental`                                     |
+| Experimental install prefix | `/usr/lib/extensions/vulkan/lsfgvkexperimental`                                               |
+| Coexistence rationale       | The unique ID and prefix keep this layer distinct from the public `lsfgvk` Flathub extension. |
+
+The separate extension ID is intentional. It allows a user to keep the public and experimental layers installed, while
+the Decky plugin selects the experimental one only for Flatpak applications the user explicitly enables. It does not
+modify or replace the public Flathub extension.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

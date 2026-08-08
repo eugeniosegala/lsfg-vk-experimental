@@ -1,6 +1,7 @@
 # cmake files
 /build
 /out
+/.flatpak-builder
 
 # ide
 /.idea

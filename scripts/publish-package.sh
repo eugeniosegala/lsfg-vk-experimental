@@ -7,8 +7,10 @@ cd "$repo_root"
 version="$(tr -d '[:space:]' < VERSION)"
 tag="v$version"
 archive="out/lsfg-vk-$version-linux.tar.xz"
+flatpak_archive="out/lsfg-vk-$version-flatpaks.tar.xz"
 release_branch="$(git branch --show-current)"
 source_commit="$(git rev-parse HEAD)"
+release_remote="${LSFGVK_RELEASE_REMOTE:-experimental}"
 
 if [[ "$release_branch" != "develop" ]]; then
     echo "Publish from develop; current branch is $release_branch." >&2
@@ -32,6 +34,20 @@ for command in gh git; do
     fi
 done
 
+if ! git remote get-url "$release_remote" >/dev/null 2>&1; then
+    echo "Release remote '$release_remote' is not configured." >&2
+    exit 1
+fi
+
+release_repository="$(git remote get-url "$release_remote")"
+release_repository="${release_repository#git@github.com:}"
+release_repository="${release_repository#https://github.com/}"
+release_repository="${release_repository%.git}"
+if [[ "$release_repository" != */* ]]; then
+    echo "Could not determine a GitHub owner/repository from remote '$release_remote'." >&2
+    exit 1
+fi
+
 if command -v sha256sum >/dev/null 2>&1; then
     checksum_command=(sha256sum)
 elif command -v shasum >/dev/null 2>&1; then
@@ -48,6 +64,8 @@ fi
 
 scripts/package-local.sh "$archive"
 checksum="$("${checksum_command[@]}" "$archive" | awk '{print $1}')"
+scripts/package-flatpaks.sh "$flatpak_archive"
+flatpak_checksum="$("${checksum_command[@]}" "$flatpak_archive" | awk '{print $1}')"
 notes_file="$(mktemp "${TMPDIR:-/tmp}/lsfg-vk-release-notes.XXXXXX")"
 cleanup() {
     rm -f "$notes_file"
@@ -64,7 +82,7 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - This build uses fixed 2x, 3x, or 4x frame-generation multipliers. It does not provide adaptive frame generation or an automatic multiplier.
 - The 0x multiplier previously available in the 1.x line is not present in upstream lsfg-vk v2 and cannot be restored by this packaging layer.
 - Lossless Scaling and its \`Lossless.dll\` must already be installed through Steam; this archive does not include or modify it.
-- No Flatpak bundles are attached to this release.
+- Flatpak runtime extensions for 23.08, 24.08, and 25.08 are included in `$(basename "$flatpak_archive")`. They use a dedicated experimental extension ID and can coexist with the public Flathub layer.
 
 ### Included
 
@@ -80,7 +98,17 @@ Download \`$(basename "$archive")\` and extract it to your local prefix:
 tar -xJf $(basename "$archive") -C ~/.local
 \`\`\`
 
-The archive is for 64-bit Linux. It does not include Flatpak bundles.
+The host archive is for 64-bit Linux. Flatpak extensions are provided separately below.
+
+### Flatpak extensions
+
+Download and extract `$(basename "$flatpak_archive")`. It contains one self-contained experimental extension for each supported Flatpak runtime. Install the extension matching the application runtime, for example:
+
+```bash
+flatpak install --user org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental-24.08.flatpak
+```
+
+- SHA-256: `$flatpak_checksum`
 
 ### Build details
 
@@ -90,10 +118,12 @@ The archive is for 64-bit Linux. It does not include Flatpak bundles.
 EOF
 
 git tag -a "$tag" -m "lsfg-vk experimental $version"
-git push origin "$release_branch"
-git push origin "$tag"
+git push "$release_remote" "$release_branch"
+git push "$release_remote" "$tag"
 
 gh release create "$tag" "$archive" \
+    "$flatpak_archive" \
+    --repo "$release_repository" \
     --title "lsfg-vk Experimental $version" \
     --prerelease \
     --notes-file "$notes_file"
