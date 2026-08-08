@@ -82,7 +82,7 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - This build uses fixed 2x, 3x, or 4x frame-generation multipliers. It does not provide adaptive frame generation or an automatic multiplier.
 - The 0x multiplier previously available in the 1.x line is not present in upstream lsfg-vk v2 and cannot be restored by this packaging layer.
 - Lossless Scaling and its \`Lossless.dll\` must already be installed through Steam; this archive does not include or modify it.
-- Flatpak runtime extensions for 23.08, 24.08, and 25.08 are included in `$(basename "$flatpak_archive")`. They use a dedicated experimental extension ID and can coexist with the public Flathub layer.
+- Flatpak runtime extensions for 23.08, 24.08, and 25.08 are included in \`$(basename "$flatpak_archive")\`. They use a dedicated experimental extension ID and can coexist with the public Flathub layer.
 
 ### Included
 
@@ -102,13 +102,13 @@ The host archive is for 64-bit Linux. Flatpak extensions are provided separately
 
 ### Flatpak extensions
 
-Download and extract `$(basename "$flatpak_archive")`. It contains one self-contained experimental extension for each supported Flatpak runtime. Install the extension matching the application runtime, for example:
+Download and extract \`$(basename "$flatpak_archive")\`. It contains one self-contained experimental extension for each supported Flatpak runtime. Install the extension matching the application runtime, for example:
 
-```bash
+\`\`\`bash
 flatpak install --user org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental-24.08.flatpak
-```
+\`\`\`
 
-- SHA-256: `$flatpak_checksum`
+- SHA-256: \`$flatpak_checksum\`
 
 ### Build details
 
