@@ -49,6 +49,22 @@ The separate extension ID is intentional. It allows a user to keep the public an
 the Decky plugin selects the experimental one only for Flatpak applications the user explicitly enables. It does not
 modify or replace the public Flathub extension.
 
+## Flatpak packaging hotfix: `v2.0.0-dev28-experimental.3`
+
+This release fixes the experimental Flatpak extensions only; it does not change the host rendering code or the
+reviewed dev28 lineage. The previous extensions installed `liblsfg-vk-layer.so` in `lib64`, while their Vulkan
+manifests incorrectly referenced `lib`. Vulkan could therefore discover the manifest but could not load the layer in a
+sandboxed application such as Heroic.
+
+All supported Flatpak manifests now reference:
+
+```text
+/usr/lib/extensions/vulkan/lsfgvkexperimental/lib64/liblsfg-vk-layer.so
+```
+
+The Flatpak packaging script now validates both the installed library and the manifest path before creating a bundle,
+so this mismatch fails the release build instead of reaching users.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

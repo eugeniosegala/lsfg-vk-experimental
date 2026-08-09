@@ -97,10 +97,50 @@ for runtime_version in 23.08 24.08 25.08; do
     flatpak-builder --force-clean --user --install-deps-from=flathub \
         --state-dir="$build_root/state-$runtime_version" \
         --repo="$repo_dir" "$build_dir" "$manifest"
+
+    # Verify the extension payload before it is bundled. The manifest contains
+    # an absolute library path, so checking both files prevents publishing a
+    # layer that Vulkan can discover but cannot load.
+    # The manifests advertise the runtime's `lib64` location. Build directly
+    # into that location, then verify the staging and deployed bundles agree.
+    for required_path in \
+        "files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json" \
+        "files/lib64/liblsfg-vk-layer.so"; do
+        if [[ ! -f "$build_dir/$required_path" ]]; then
+            echo "Flatpak packaging failed: missing $required_path for $runtime_version" >&2
+            exit 1
+        fi
+    done
+
+    if ! grep -Fq "/usr/lib/extensions/vulkan/lsfgvkexperimental/lib64/liblsfg-vk-layer.so" \
+        "$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"; then
+        echo "Flatpak packaging failed: manifest library path is incorrect for $runtime_version" >&2
+        exit 1
+    fi
+
     flatpak build-bundle "$repo_dir" "$bundle" "$extension_id" "$runtime_version" --runtime
 
     if [[ ! -s "$bundle" ]]; then
         echo "Flatpak packaging failed: missing $bundle" >&2
+        exit 1
+    fi
+
+    # A runtime extension is normalized from `lib` to `lib64` when Flatpak
+    # deploys it. Verify the *installed bundle*, not only the build staging
+    # directory, so the manifest cannot point at a path that is absent at run
+    # time.
+    flatpak install --user --noninteractive "$bundle" >/dev/null
+    deployed_dir="$(flatpak info --user --show-location "$extension_id//$runtime_version")"
+    deployed_manifest="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"
+
+    if [[ ! -f "$deployed_dir/files/lib64/liblsfg-vk-layer.so" ]]; then
+        echo "Flatpak packaging failed: deployed library is missing for $runtime_version" >&2
+        exit 1
+    fi
+
+    if ! grep -Fq "/usr/lib/extensions/vulkan/lsfgvkexperimental/lib64/liblsfg-vk-layer.so" \
+        "$deployed_manifest"; then
+        echo "Flatpak packaging failed: deployed manifest library path is incorrect for $runtime_version" >&2
         exit 1
     fi
 done

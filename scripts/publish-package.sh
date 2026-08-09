@@ -90,6 +90,11 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - CLI and Qt configuration UI
 - Vulkan manifest and XDG desktop files
 
+### Fixed
+
+- Corrects the Flatpak manifest library path for the 23.08, 24.08, and 25.08 runtime extensions. This restores
+  frame-generation loading for sandboxed applications such as Heroic.
+
 ### Install
 
 Download \`$(basename "$archive")\` and extract it to your local prefix:
