@@ -12,8 +12,8 @@ baseline so a future update can distinguish upstream work from experimental-fork
 | Upstream branch             | `develop`                                                                                                           |
 | Baseline commit             | [`8b0da266`](https://github.com/PancakeTAS/lsfg-vk/commit/8b0da2661c6f3473a7fccc8ba643880050e71642)                 |
 | Experimental branch         | `develop` → `experimental/develop`                                                                                  |
-| Current experimental commit | [`82e0d499`](https://github.com/eugeniosegala/lsfg-vk-experimental/commit/82e0d49976db8bce5e472fa154526e971529e091) |
-| Reviewed on                 | 2026-08-05                                                                                                          |
+| Current experimental branch | [`develop`](https://github.com/eugeniosegala/lsfg-vk-experimental/commits/develop)                                   |
+| Reviewed on                 | 2026-08-09                                                                                                          |
 
 ## Changes carried on top of upstream
 
@@ -64,6 +64,17 @@ All supported Flatpak manifests now reference:
 
 The Flatpak packaging script now validates both the installed library and the manifest path before creating a bundle,
 so this mismatch fails the release build instead of reaching users.
+
+## Presentation diagnostic release: `v2.0.0-dev28-experimental.4`
+
+This release fixes an undefined access in the Vulkan submission helper when no timeline semaphore is present. It also
+adds opt-in timing diagnostics around frame scheduling, render-fence waits, generated-image acquisition, GPU copy
+submission, and generated/original presentation calls.
+
+The diagnostics are intended to locate the SteamOS/Game Mode overlay transition stall before changing synchronization
+behaviour. They are disabled by default, and this release does not yet claim to resolve that presentation issue. See
+[`docs/Troubleshooting.md`](docs/Troubleshooting.md#diagnosing-presentation-stalls) for the diagnostic launch option and
+log extraction command.
 
 ## Update procedure
 

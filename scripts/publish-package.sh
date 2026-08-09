@@ -92,8 +92,28 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 
 ### Fixed
 
-- Corrects the Flatpak manifest library path for the 23.08, 24.08, and 25.08 runtime extensions. This restores
-  frame-generation loading for sandboxed applications such as Heroic.
+- Prevents undefined behaviour in Vulkan command submission when a submission has no timeline semaphore. Previously,
+  lsfg-vk could access the end of an empty semaphore-value array.
+
+### Presentation diagnostics
+
+- Adds opt-in timing diagnostics for frame scheduling, render-fence waits, swapchain image acquisition, GPU copy
+  submissions, and generated/original image presentation.
+- This instrumentation is intended to identify the exact operation that stalls during SteamOS/Game Mode overlay
+  transitions. It does not yet claim to fix the Steam-menu presentation issue.
+- Diagnostics are disabled by default and do not perform timing or logging during normal runs.
+
+With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
+
+\`\`\`bash
+LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local/bin/lsfg-vk-experimental %command%
+\`\`\`
+
+After reproducing the problem, extract the latest diagnostic entries with:
+
+\`\`\`bash
+grep "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 200
+\`\`\`
 
 ### Install
 

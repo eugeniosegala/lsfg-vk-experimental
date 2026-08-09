@@ -46,3 +46,29 @@ When opening a bug report, please include the following information to help us d
 Ideally, also include a log file with the environment variables `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` and `VK_LOADER_DEBUG=all` set. You might need to install the Vulkan validation layers package for your distribution to do this.
 
 If you're running the game through Steam, the log file is located at `~/.steam/steam/logs/console-linux.txt`. Please clear it before launching the game to ensure it only contains relevant information.
+
+### Diagnosing presentation stalls
+
+Experimental builds can log Vulkan presentation operations that take longer than expected. This is intended for
+targeted debugging and is disabled by default, so it has no effect on normal runs.
+
+Add `LSFGVK_PRESENT_DIAGNOSTICS=1` before the normal launch command. Operations taking at least 20 ms are written to
+Steam's `~/.steam/steam/logs/console-linux.txt` log. Override the threshold in milliseconds with
+`LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS`.
+
+When using the isolated Decky LSFG-VK Experimental plugin, keep its wrapper in the launch option:
+
+```bash
+LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local/bin/lsfg-vk-experimental %command%
+```
+
+For a normal non-isolated installation, place the same environment variables before its usual launch command.
+
+Clear the Steam log before reproducing the problem. After reproducing it, extract the most recent diagnostic entries
+with:
+
+```bash
+grep "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 200
+```
+
+Disable the environment variable after collecting the trace.

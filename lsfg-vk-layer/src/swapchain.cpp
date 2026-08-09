@@ -11,11 +11,16 @@
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <functional>
+#include <iostream>
 #include <optional>
+#include <sstream>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -25,6 +30,73 @@ using namespace lsfgvk;
 using namespace lsfgvk::layer;
 
 namespace {
+    using DiagnosticsClock = std::chrono::steady_clock;
+
+    bool presentDiagnosticsEnabled() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("LSFGVK_PRESENT_DIAGNOSTICS");
+            return value && std::string_view(value) != "0";
+        }();
+        return enabled;
+    }
+
+    double presentDiagnosticsThresholdMs() {
+        static const double threshold = [] {
+            constexpr double defaultThresholdMs = 20.0;
+            const char* value = std::getenv("LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS");
+            if (!value)
+                return defaultThresholdMs;
+
+            char* end{};
+            const double parsed = std::strtod(value, &end);
+            if (end == value || *end != '\0' || parsed < 0.0)
+                return defaultThresholdMs;
+            return parsed;
+        }();
+        return threshold;
+    }
+
+    double elapsedMilliseconds(const DiagnosticsClock::time_point start) {
+        return std::chrono::duration<double, std::milli>(
+            DiagnosticsClock::now() - start
+        ).count();
+    }
+
+    DiagnosticsClock::time_point startPresentDiagnostic() {
+        if (!presentDiagnosticsEnabled())
+            return {};
+        return DiagnosticsClock::now();
+    }
+
+    void logSlowPresentOperation(std::string_view operation,
+            size_t frameIndex, size_t sequenceIndex,
+            const DiagnosticsClock::time_point start,
+            std::optional<VkResult> result = std::nullopt,
+            std::optional<size_t> passIndex = std::nullopt,
+            std::optional<uint32_t> imageIndex = std::nullopt) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        const double durationMs = elapsedMilliseconds(start);
+        const bool resultFailed = result &&
+            *result != VK_SUCCESS && *result != VK_SUBOPTIMAL_KHR;
+        if (durationMs < presentDiagnosticsThresholdMs() && !resultFailed)
+            return;
+
+        std::ostringstream message;
+        message << "lsfg-vk: present diagnostics: operation=" << operation
+                << " duration_ms=" << durationMs
+                << " frame=" << frameIndex
+                << " sequence=" << sequenceIndex;
+        if (result)
+            message << " result=" << static_cast<int>(*result);
+        if (passIndex)
+            message << " pass=" << *passIndex;
+        if (imageIndex)
+            message << " image=" << *imageIndex;
+        std::cerr << message.str() << '\n';
+    }
+
     VkImageMemoryBarrier barrierHelper(VkImage handle,
             VkAccessFlags srcAccessMask,
             VkAccessFlags dstAccessMask,
@@ -126,21 +198,29 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             vk::Semaphore(vk)
         );
     }
+
+    if (presentDiagnosticsEnabled()) {
+        std::cerr << "lsfg-vk: present diagnostics enabled; slow operation threshold is "
+                  << presentDiagnosticsThresholdMs() << " ms\n";
+    }
 }
 
 VkResult Swapchain::present(const vk::Vulkan& vk,
         VkQueue queue, VkSwapchainKHR swapchain,
         void* next_chain, uint32_t imageIdx,
         const std::vector<VkSemaphore>& semaphores) {
+    const auto presentStarted = startPresentDiagnostic();
     const auto& swapchainImage = this->info.images.at(imageIdx);
     const auto& sourceImage = this->sourceImages.at(this->fidx % 2);
 
     // schedule frame generation
+    const auto scheduleStarted = startPresentDiagnostic();
     try {
         this->instance.get().scheduleFrames(this->ctx.get());
     } catch (const std::exception& e) {
         throw ls::error("failed to schedule frames", e);
     }
+    logSlowPresentOperation("schedule-frames", this->fidx, this->idx, scheduleStarted);
 
     // update present mode when not using pacing
     if (this->profile.pacing == ls::Pacing::None) {
@@ -161,8 +241,16 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
 
     // wait for completion of previous frame
-    if (this->fidx && !this->renderFence->wait(vk, 150ULL * 1000 * 1000))
-        throw ls::vulkan_error(VK_TIMEOUT, "vkWaitForFences() failed");
+    if (this->fidx) {
+        const auto fenceWaitStarted = startPresentDiagnostic();
+        const bool fenceSignaled = this->renderFence->wait(vk, 150ULL * 1000 * 1000);
+        logSlowPresentOperation(
+            "wait-render-fence", this->fidx, this->idx, fenceWaitStarted,
+            fenceSignaled ? VK_SUCCESS : VK_TIMEOUT
+        );
+        if (!fenceSignaled)
+            throw ls::vulkan_error(VK_TIMEOUT, "vkWaitForFences() failed");
+    }
     this->renderFence->reset(vk);
 
     // copy swapchain image into backend source image
@@ -197,10 +285,12 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     );
 
     cmdbuf.end(vk);
+    const auto sourceSubmitStarted = startPresentDiagnostic();
     cmdbuf.submit(vk,
         semaphores, VK_NULL_HANDLE, 0,
         {}, this->syncSemaphore->handle(), this->idx++
     );
+    logSlowPresentOperation("submit-source-copy", this->fidx, this->idx, sourceSubmitStarted);
 
     for (size_t i = 0; i < this->destinationImages.size(); i++) {
         auto& pcs = this->postCopySemaphores.at(this->idx % this->postCopySemaphores.size());
@@ -209,10 +299,15 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
         // acquire swapchain image
         uint32_t aqImageIdx{};
+        const auto acquireStarted = startPresentDiagnostic();
         auto res = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
             UINT64_MAX, pass.acquireSemaphore.handle(),
             VK_NULL_HANDLE,
             &aqImageIdx
+        );
+        logSlowPresentOperation(
+            "acquire-generated-image", this->fidx, this->idx, acquireStarted, res,
+            i, aqImageIdx
         );
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkAcquireNextImageKHR() failed");
@@ -262,10 +357,15 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         };
 
         cmdbuf.end(vk);
+        const auto generatedSubmitStarted = startPresentDiagnostic();
         cmdbuf.submit(vk,
             waitSemaphores, this->syncSemaphore->handle(), this->idx,
             signalSemaphores, VK_NULL_HANDLE, 0,
             i == this->destinationImages.size() - 1 ? this->renderFence->handle() : VK_NULL_HANDLE
+        );
+        logSlowPresentOperation(
+            "submit-generated-copy", this->fidx, this->idx, generatedSubmitStarted,
+            std::nullopt, i
         );
 
         // present swapchain image
@@ -278,8 +378,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             .pSwapchains = &swapchain,
             .pImageIndices = &aqImageIdx,
         };
+        const auto generatedPresentStarted = startPresentDiagnostic();
         res = vk.df().QueuePresentKHR(queue,
             &presentInfo);
+        logSlowPresentOperation(
+            "present-generated-image", this->fidx, this->idx, generatedPresentStarted, res,
+            i, aqImageIdx
+        );
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
@@ -296,10 +401,16 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         .pSwapchains = &swapchain,
         .pImageIndices = &imageIdx,
     };
+    const auto originalPresentStarted = startPresentDiagnostic();
     auto res = vk.df().QueuePresentKHR(queue, &presentInfo);
+    logSlowPresentOperation(
+        "present-original-image", this->fidx, this->idx, originalPresentStarted, res,
+        std::nullopt, imageIdx
+    );
     if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
         throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
+    logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);
     this->fidx++;
     return res;
 }
