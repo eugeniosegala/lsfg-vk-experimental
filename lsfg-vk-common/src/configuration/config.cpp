@@ -130,8 +130,8 @@ namespace {
             .pacing = parcingFromString(tbl["pacing"].value_or<std::string>("none"))
         };
 
-        if (conf.multiplier <= 1)
-            throw ls::error("multiplier must be greater than 1");
+        if (conf.multiplier < 1)
+            throw ls::error("multiplier must be 1 or greater");
         if (conf.flow_scale < 0.25F || conf.flow_scale > 1.0F)
             throw ls::error("flow_scale must be between 0.25 and 1.0");
 
@@ -180,8 +180,8 @@ namespace {
         const char* pacing = std::getenv("LSFGVK_PACING");
         if (pacing) conf.pacing = parcingFromString(std::string(pacing));
 
-        if (conf.multiplier <= 1)
-            throw ls::error("multiplier must be greater than 1");
+        if (conf.multiplier < 1)
+            throw ls::error("multiplier must be 1 or greater");
         if (conf.flow_scale < 0.25F || conf.flow_scale > 1.0F)
             throw ls::error("flow_scale must be between 0.25 and 1.0");
 

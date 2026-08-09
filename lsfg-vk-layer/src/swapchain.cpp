@@ -174,6 +174,33 @@ namespace {
     }
 }
 
+namespace {
+
+    /// force every present mode in the chain to FIFO
+    ///
+    /// The swapchain is always created as FIFO when pacing is off, so a game asking for a
+    /// different mode at present time has to be brought back in line.
+    ///
+    /// @param next_chain next chain pointer from the present info (WARN: shared!)
+    void forceFifoPresentModes(void* next_chain) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunknown-warning-option"
+#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+        auto* info = reinterpret_cast<VkSwapchainPresentModeInfoEXT*>(next_chain);
+        while (info) {
+            if (info->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT) {
+                for (size_t i = 0; i < info->swapchainCount; i++)
+                    const_cast<VkPresentModeKHR*>(info->pPresentModes)[i] =
+                        VK_PRESENT_MODE_FIFO_KHR;
+            }
+
+            info = reinterpret_cast<VkSwapchainPresentModeInfoEXT*>(const_cast<void*>(info->pNext));
+        }
+#pragma clang diagnostic pop
+    }
+
+}
+
 void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo) {
     createInfo.imageUsage |=
@@ -181,7 +208,11 @@ void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint3
 
     switch (profile.pacing) {
         case ls::Pacing::None:
-            createInfo.minImageCount += profile.multiplier;
+            // Reserve for at least 2x even when frame generation is off, so raising the
+            // multiplier through a configuration reload has an image to present into.
+            // The swapchain itself is only created once, before any reload can happen.
+            createInfo.minImageCount += std::max<uint32_t>(
+                static_cast<uint32_t>(profile.multiplier), 2);
             if (maxImages && createInfo.minImageCount > maxImages)
                 createInfo.minImageCount = maxImages;
 
@@ -196,6 +227,15 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
         profile(std::move(profile)), info(std::move(info)) {
     const VkExtent2D extent = this->info.extent;
     const bool hdr = this->info.format > 57;
+
+    // A multiplier of 1 means frame generation is off. Present the game's own images
+    // untouched: no backend context, no interpolation images and no per-frame copies.
+    // The backend instance itself stays loaded so a configuration reload can turn frame
+    // generation back on without reloading Lossless.dll.
+    if (this->profile.multiplier <= 1) {
+        std::cerr << "lsfg-vk: multiplier is 1, frame generation is off for this swapchain\n";
+        return;
+    }
 
     std::vector<int> sourceFds(2);
     std::vector<int> destinationFds(this->profile.multiplier - 1);
@@ -267,6 +307,30 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         void* next_chain, uint32_t imageIdx,
         const std::vector<VkSemaphore>& semaphores) {
     const auto presentStarted = startPresentDiagnostic();
+
+    // frame generation is off; hand the game's own image straight to the driver
+    if (this->profile.multiplier <= 1) {
+        if (this->profile.pacing == ls::Pacing::None)
+            forceFifoPresentModes(next_chain);
+
+        const VkPresentInfoKHR presentInfo{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = next_chain,
+            .waitSemaphoreCount = static_cast<uint32_t>(semaphores.size()),
+            .pWaitSemaphores = semaphores.data(),
+            .swapchainCount = 1,
+            .pSwapchains = &swapchain,
+            .pImageIndices = &imageIdx,
+        };
+        const auto res = vk.df().QueuePresentKHR(queue, &presentInfo);
+        if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
+            throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
+
+        logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);
+        this->fidx++;
+        return res;
+    }
+
     const auto& swapchainImage = this->info.images.at(imageIdx);
     const auto& sourceImage = this->sourceImages.at(this->fidx % 2);
 
@@ -280,22 +344,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     logSlowPresentOperation("schedule-frames", this->fidx, this->idx, scheduleStarted);
 
     // update present mode when not using pacing
-    if (this->profile.pacing == ls::Pacing::None) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunknown-warning-option"
-#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
-        auto* info = reinterpret_cast<VkSwapchainPresentModeInfoEXT*>(next_chain);
-        while (info) {
-            if (info->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT) {
-                for (size_t i = 0; i < info->swapchainCount; i++)
-                    const_cast<VkPresentModeKHR*>(info->pPresentModes)[i] =
-                        VK_PRESENT_MODE_FIFO_KHR;
-            }
-
-            info = reinterpret_cast<VkSwapchainPresentModeInfoEXT*>(const_cast<void*>(info->pNext));
-        }
-#pragma clang diagnostic pop
-    }
+    if (this->profile.pacing == ls::Pacing::None)
+        forceFifoPresentModes(next_chain);
 
     // wait for completion of previous frame
     if (this->fidx) {
