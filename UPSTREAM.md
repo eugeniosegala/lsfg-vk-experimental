@@ -93,6 +93,18 @@ frame multipliers, pacing modes, and games before it can safely become the defau
 [`docs/Troubleshooting.md`](docs/Troubleshooting.md#diagnosing-presentation-stalls) for the test launch option and log
 extraction command.
 
+## Gamescope non-blocking recovery test release: `v2.0.0-dev28-experimental.6`
+
+Testing `.5` confirmed that its synchronization fallback completed successfully, but also revealed that repeated
+acquisition attempts each waited for the full configured timeout. During one captured slowdown, every frame spent
+approximately 25–27 ms acquiring an image before falling back, producing total presentation times of roughly 27–35
+ms.
+
+After the first timeout, `.6` therefore changes subsequent acquisition attempts to non-blocking probes. The layer
+continues presenting original game frames while Gamescope has no spare image and resumes generated frames immediately
+when an image becomes available. Diagnostic fallback entries identify `initial-timeout` and `nonblocking-retry` modes,
+and a `resume-generated-frames` entry identifies successful recovery.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

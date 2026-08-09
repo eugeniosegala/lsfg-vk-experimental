@@ -122,7 +122,8 @@ namespace {
     }
 
     void logPresentFallback(size_t frameIndex, size_t sequenceIndex,
-            size_t passIndex, size_t skippedFrames, uint64_t timelineValue) {
+            size_t passIndex, size_t skippedFrames, uint64_t timelineValue,
+            bool nonBlockingRetry) {
         if (!presentDiagnosticsEnabled())
             return;
 
@@ -131,7 +132,21 @@ namespace {
                   << " sequence=" << sequenceIndex
                   << " pass=" << passIndex
                   << " skipped=" << skippedFrames
-                  << " wait_timeline=" << timelineValue << '\n';
+                  << " wait_timeline=" << timelineValue
+                  << " acquire_mode=" << (nonBlockingRetry ? "nonblocking-retry" : "initial-timeout")
+                  << '\n';
+    }
+
+    void logPresentRecovery(size_t frameIndex, size_t sequenceIndex,
+            size_t passIndex, uint32_t imageIndex) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation=resume-generated-frames"
+                  << " frame=" << frameIndex
+                  << " sequence=" << sequenceIndex
+                  << " pass=" << passIndex
+                  << " image=" << imageIndex << '\n';
     }
 
     VkImageMemoryBarrier barrierHelper(VkImage handle,
@@ -361,9 +376,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // acquire swapchain image
         uint32_t aqImageIdx{};
         const auto acquireStarted = startPresentDiagnostic();
-        const auto acquireTimeout = generatedImageAcquireTimeoutNs();
+        const auto configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
+        const bool nonBlockingRetry = configuredAcquireTimeout && this->generatedImageAcquireBackoff;
+        const uint64_t acquireTimeout = configuredAcquireTimeout
+            ? (nonBlockingRetry ? 0 : *configuredAcquireTimeout)
+            : UINT64_MAX;
         auto res = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
-            acquireTimeout.value_or(UINT64_MAX), pass.acquireSemaphore.handle(),
+            acquireTimeout, pass.acquireSemaphore.handle(),
             VK_NULL_HANDLE,
             &aqImageIdx
         );
@@ -371,7 +390,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             "acquire-generated-image", this->fidx, this->idx, acquireStarted, res,
             i, aqImageIdx
         );
-        if (acquireTimeout && (res == VK_TIMEOUT || res == VK_NOT_READY)) {
+        if (configuredAcquireTimeout && (res == VK_TIMEOUT || res == VK_NOT_READY)) {
             // Gamescope can temporarily stop releasing the extra swapchain images used for generated frames while
             // an overlay is visible. Do not block the game indefinitely. The backend has already scheduled every
             // generated frame for this sequence, so wait for its final timeline value before presenting the original
@@ -379,6 +398,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             const size_t skippedFrames = this->destinationImages.size() - i;
             const uint64_t finalGeneratedTimelineValue = this->idx + skippedFrames - 1;
             auto& fallbackSemaphore = pcs.second;
+            this->generatedImageAcquireBackoff = true;
 
             auto& fallbackCommandBuffer = pass.commandBuffer;
             fallbackCommandBuffer.begin(vk);
@@ -390,7 +410,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
 
             logPresentFallback(
-                this->fidx, this->idx, i, skippedFrames, finalGeneratedTimelineValue
+                this->fidx, this->idx, i, skippedFrames, finalGeneratedTimelineValue,
+                nonBlockingRetry
             );
             this->idx += skippedFrames;
 
@@ -406,6 +427,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         }
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkAcquireNextImageKHR() failed");
+        if (nonBlockingRetry)
+            logPresentRecovery(this->fidx, this->idx, i, aqImageIdx);
+        this->generatedImageAcquireBackoff = false;
 
         const auto& aquiredSwapchainImage = this->info.images.at(aqImageIdx);
 

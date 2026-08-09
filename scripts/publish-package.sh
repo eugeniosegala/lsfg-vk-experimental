@@ -104,8 +104,9 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Diagnostics are disabled by default and do not perform timing or logging during normal runs.
 - Adds an opt-in \`LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS\` recovery path. When Gamescope cannot provide an extra image before the
   configured timeout, lsfg-vk skips the remaining generated frames for that presentation, presents the original game
-  frame, and retries generation on the next frame. The timeout remains disabled by default while it is validated across
-  refresh rates, multipliers, pacing modes, and games.
+  frame, and switches subsequent attempts to non-blocking probes. This prevents the full timeout from recurring every
+  frame and resumes generation automatically when an image becomes available. The timeout remains disabled by default
+  while it is validated across refresh rates, multipliers, pacing modes, and games.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
 

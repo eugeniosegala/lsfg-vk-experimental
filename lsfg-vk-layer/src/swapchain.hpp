@@ -76,6 +76,7 @@ namespace lsfgvk::layer {
         ls::owned_ptr<ls::R<backend::Context>> ctx;
         size_t idx{1};
         size_t fidx{0}; // real frame index
+        bool generatedImageAcquireBackoff{false};
 
         ls::GameConf profile;
         SwapchainInfo info;

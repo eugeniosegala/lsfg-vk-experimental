@@ -63,14 +63,17 @@ LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local
 ```
 
 To test recovery from a stalled generated-image acquisition, add an opt-in timeout in milliseconds. If the timeout is
-reached, lsfg-vk skips the remaining generated frames for that presentation, safely presents the original game frame,
-and tries frame generation again on the next frame. For example:
+reached, lsfg-vk skips the remaining generated frames for that presentation and safely presents the original game
+frame. Following attempts probe image availability without waiting, so a Gamescope overlay cannot impose the full
+timeout on every frame. Generation resumes automatically as soon as the probe succeeds. For example:
 
 ```bash
 LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=25 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local/bin/lsfg-vk-experimental %command%
 ```
 
 This recovery is experimental and disabled when `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS` is absent or set to `0`.
+With diagnostics enabled, `skip-generated-frames` reports whether the fallback followed the initial timeout or a
+non-blocking retry; `resume-generated-frames` reports automatic recovery.
 
 For a normal non-isolated installation, place the same environment variables before its usual launch command.
 
