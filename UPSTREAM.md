@@ -76,6 +76,23 @@ behaviour. They are disabled by default, and this release does not yet claim to 
 [`docs/Troubleshooting.md`](docs/Troubleshooting.md#diagnosing-presentation-stalls) for the diagnostic launch option and
 log extraction command.
 
+## Gamescope presentation-recovery test release: `v2.0.0-dev28-experimental.5`
+
+Diagnostics collected on SteamOS showed that the Steam-menu slowdown is dominated by
+`vkAcquireNextImageKHR` waiting for an extra swapchain image used for a generated frame. Individual waits reached
+approximately 74 ms, while the total presentation duration closely tracked the acquisition duration.
+
+This release adds an opt-in recovery path controlled by `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS`. When acquisition exceeds
+the configured timeout, the layer waits for the backend's already-scheduled work, skips the remaining generated frames
+for that presentation, presents the original game frame, and resumes normal generation on the next source frame. The
+frontend and backend timeline values remain aligned, and the normal render fence is signalled before command-buffer
+reuse.
+
+The recovery remains opt-in for this test release because a fixed timeout must be validated across refresh rates,
+frame multipliers, pacing modes, and games before it can safely become the default. See
+[`docs/Troubleshooting.md`](docs/Troubleshooting.md#diagnosing-presentation-stalls) for the test launch option and log
+extraction command.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

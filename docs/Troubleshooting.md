@@ -62,13 +62,23 @@ When using the isolated Decky LSFG-VK Experimental plugin, keep its wrapper in t
 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local/bin/lsfg-vk-experimental %command%
 ```
 
+To test recovery from a stalled generated-image acquisition, add an opt-in timeout in milliseconds. If the timeout is
+reached, lsfg-vk skips the remaining generated frames for that presentation, safely presents the original game frame,
+and tries frame generation again on the next frame. For example:
+
+```bash
+LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=25 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local/bin/lsfg-vk-experimental %command%
+```
+
+This recovery is experimental and disabled when `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS` is absent or set to `0`.
+
 For a normal non-isolated installation, place the same environment variables before its usual launch command.
 
 Clear the Steam log before reproducing the problem. After reproducing it, extract the most recent diagnostic entries
 with:
 
 ```bash
-grep "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 200
+grep -aF "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 200
 ```
 
-Disable the environment variable after collecting the trace.
+Disable the diagnostic and acquire-timeout environment variables after collecting the trace.

@@ -99,20 +99,24 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 
 - Adds opt-in timing diagnostics for frame scheduling, render-fence waits, swapchain image acquisition, GPU copy
   submissions, and generated/original image presentation.
-- This instrumentation is intended to identify the exact operation that stalls during SteamOS/Game Mode overlay
-  transitions. It does not yet claim to fix the Steam-menu presentation issue.
+- SteamOS traces identified generated-image acquisition as the operation dominating the observed Game Mode overlay
+  stalls, with the total presentation duration closely tracking that wait.
 - Diagnostics are disabled by default and do not perform timing or logging during normal runs.
+- Adds an opt-in \`LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS\` recovery path. When Gamescope cannot provide an extra image before the
+  configured timeout, lsfg-vk skips the remaining generated frames for that presentation, presents the original game
+  frame, and retries generation on the next frame. The timeout remains disabled by default while it is validated across
+  refresh rates, multipliers, pacing modes, and games.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
 
 \`\`\`bash
-LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local/bin/lsfg-vk-experimental %command%
+LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=25 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local/bin/lsfg-vk-experimental %command%
 \`\`\`
 
 After reproducing the problem, extract the latest diagnostic entries with:
 
 \`\`\`bash
-grep "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 200
+grep -aF "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 200
 \`\`\`
 
 ### Install

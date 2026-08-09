@@ -18,6 +18,7 @@
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -54,6 +55,29 @@ namespace {
             return parsed;
         }();
         return threshold;
+    }
+
+    std::optional<uint64_t> generatedImageAcquireTimeoutNs() {
+        static const std::optional<uint64_t> timeout = []() -> std::optional<uint64_t> {
+            const char* value = std::getenv("LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS");
+            if (!value)
+                return std::nullopt;
+
+            char* end{};
+            const double parsed = std::strtod(value, &end);
+            if (end == value || *end != '\0' || parsed <= 0.0)
+                return std::nullopt;
+
+            constexpr uint64_t nanosecondsPerMillisecond = 1'000'000;
+            const double maximumMilliseconds = static_cast<double>(
+                (std::numeric_limits<uint64_t>::max() - 1) / nanosecondsPerMillisecond
+            );
+            const double clampedMilliseconds = std::min(parsed, maximumMilliseconds);
+            return static_cast<uint64_t>(
+                clampedMilliseconds * static_cast<double>(nanosecondsPerMillisecond)
+            );
+        }();
+        return timeout;
     }
 
     double elapsedMilliseconds(const DiagnosticsClock::time_point start) {
@@ -95,6 +119,19 @@ namespace {
         if (imageIndex)
             message << " image=" << *imageIndex;
         std::cerr << message.str() << '\n';
+    }
+
+    void logPresentFallback(size_t frameIndex, size_t sequenceIndex,
+            size_t passIndex, size_t skippedFrames, uint64_t timelineValue) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation=skip-generated-frames"
+                  << " frame=" << frameIndex
+                  << " sequence=" << sequenceIndex
+                  << " pass=" << passIndex
+                  << " skipped=" << skippedFrames
+                  << " wait_timeline=" << timelineValue << '\n';
     }
 
     VkImageMemoryBarrier barrierHelper(VkImage handle,
@@ -203,6 +240,11 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
         std::cerr << "lsfg-vk: present diagnostics enabled; slow operation threshold is "
                   << presentDiagnosticsThresholdMs() << " ms\n";
     }
+    if (const auto timeout = generatedImageAcquireTimeoutNs()) {
+        std::cerr << "lsfg-vk: generated-image acquire timeout enabled at "
+                  << static_cast<double>(*timeout) / 1'000'000.0
+                  << " ms; stalled generated frames will be skipped\n";
+    }
 }
 
 VkResult Swapchain::present(const vk::Vulkan& vk,
@@ -292,6 +334,25 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     );
     logSlowPresentOperation("submit-source-copy", this->fidx, this->idx, sourceSubmitStarted);
 
+    const auto presentOriginalImage = [&](VkSemaphore waitSemaphore, void* presentNextChain) {
+        const VkPresentInfoKHR presentInfo{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = presentNextChain,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &waitSemaphore,
+            .swapchainCount = 1,
+            .pSwapchains = &swapchain,
+            .pImageIndices = &imageIdx,
+        };
+        const auto originalPresentStarted = startPresentDiagnostic();
+        const auto result = vk.df().QueuePresentKHR(queue, &presentInfo);
+        logSlowPresentOperation(
+            "present-original-image", this->fidx, this->idx, originalPresentStarted, result,
+            std::nullopt, imageIdx
+        );
+        return result;
+    };
+
     for (size_t i = 0; i < this->destinationImages.size(); i++) {
         auto& pcs = this->postCopySemaphores.at(this->idx % this->postCopySemaphores.size());
         auto& destinationImage = this->destinationImages.at(i);
@@ -300,8 +361,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // acquire swapchain image
         uint32_t aqImageIdx{};
         const auto acquireStarted = startPresentDiagnostic();
+        const auto acquireTimeout = generatedImageAcquireTimeoutNs();
         auto res = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
-            UINT64_MAX, pass.acquireSemaphore.handle(),
+            acquireTimeout.value_or(UINT64_MAX), pass.acquireSemaphore.handle(),
             VK_NULL_HANDLE,
             &aqImageIdx
         );
@@ -309,6 +371,39 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             "acquire-generated-image", this->fidx, this->idx, acquireStarted, res,
             i, aqImageIdx
         );
+        if (acquireTimeout && (res == VK_TIMEOUT || res == VK_NOT_READY)) {
+            // Gamescope can temporarily stop releasing the extra swapchain images used for generated frames while
+            // an overlay is visible. Do not block the game indefinitely. The backend has already scheduled every
+            // generated frame for this sequence, so wait for its final timeline value before presenting the original
+            // image and advancing both sides to the next sequence.
+            const size_t skippedFrames = this->destinationImages.size() - i;
+            const uint64_t finalGeneratedTimelineValue = this->idx + skippedFrames - 1;
+            auto& fallbackSemaphore = pcs.second;
+
+            auto& fallbackCommandBuffer = pass.commandBuffer;
+            fallbackCommandBuffer.begin(vk);
+            fallbackCommandBuffer.end(vk);
+            fallbackCommandBuffer.submit(vk,
+                {}, this->syncSemaphore->handle(), finalGeneratedTimelineValue,
+                { fallbackSemaphore.handle() }, VK_NULL_HANDLE, 0,
+                this->renderFence->handle()
+            );
+
+            logPresentFallback(
+                this->fidx, this->idx, i, skippedFrames, finalGeneratedTimelineValue
+            );
+            this->idx += skippedFrames;
+
+            res = presentOriginalImage(
+                fallbackSemaphore.handle(), i == 0 ? next_chain : nullptr
+            );
+            if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
+                throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
+
+            logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);
+            this->fidx++;
+            return res;
+        }
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkAcquireNextImageKHR() failed");
 
@@ -393,20 +488,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
     // present original swapchain image
     auto& lastPCS = this->postCopySemaphores.at((this->idx - 1) % this->postCopySemaphores.size());
-    const VkPresentInfoKHR presentInfo{
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &lastPCS.second.handle(),
-        .swapchainCount = 1,
-        .pSwapchains = &swapchain,
-        .pImageIndices = &imageIdx,
-    };
-    const auto originalPresentStarted = startPresentDiagnostic();
-    auto res = vk.df().QueuePresentKHR(queue, &presentInfo);
-    logSlowPresentOperation(
-        "present-original-image", this->fidx, this->idx, originalPresentStarted, res,
-        std::nullopt, imageIdx
-    );
+    auto res = presentOriginalImage(lastPCS.second.handle(), nullptr);
     if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
         throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
