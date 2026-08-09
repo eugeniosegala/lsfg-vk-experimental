@@ -59,21 +59,24 @@ Steam's `~/.steam/steam/logs/console-linux.txt` log. Override the threshold in m
 When using the isolated Decky LSFG-VK Experimental plugin, keep its wrapper in the launch option:
 
 ```bash
-LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local/bin/lsfg-vk-experimental %command%
+LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/lsfg-vk-experimental %command%
 ```
 
 To test recovery from a stalled generated-image acquisition, add an opt-in timeout in milliseconds. If the timeout is
 reached, lsfg-vk skips the remaining generated frames for that presentation and safely presents the original game
-frame. Following attempts probe image availability without waiting, so a Gamescope overlay cannot impose the full
-timeout on every frame. Generation resumes automatically as soon as the probe succeeds. For example:
+frame. Following attempts probe image availability before scheduling the model, so a Gamescope overlay cannot impose
+the full timeout or waste GPU work on generated frames that cannot be presented. The real game frames continue updating
+the two source images, and generation resumes automatically as soon as the probe succeeds. For example:
 
 ```bash
-LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=25 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=10 ~/.local/bin/lsfg-vk-experimental %command%
+LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=25 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/lsfg-vk-experimental %command%
 ```
 
 This recovery is experimental and disabled when `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS` is absent or set to `0`.
 With diagnostics enabled, `skip-generated-frames` reports whether the fallback followed the initial timeout or a
-non-blocking retry; `resume-generated-frames` reports automatic recovery.
+non-blocking retry. Its `backend_work` field records whether inference was already scheduled or safely bypassed.
+Expected repeated non-blocking failures are aggregated; `resume-generated-frames` reports automatic recovery and the
+total number of frames whose inference work was bypassed.
 
 For a normal non-isolated installation, place the same environment variables before its usual launch command.
 
@@ -81,7 +84,7 @@ Clear the Steam log before reproducing the problem. After reproducing it, extrac
 with:
 
 ```bash
-grep -aF "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 200
+grep -aF "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 400
 ```
 
 Disable the diagnostic and acquire-timeout environment variables after collecting the trace.

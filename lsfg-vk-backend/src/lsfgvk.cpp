@@ -105,6 +105,10 @@ namespace lsfgvk::backend {
         /// schedule frames
         /// (see lsfg-vk documentation)
         void scheduleFrames();
+
+        /// advance frame state without scheduling GPU work
+        /// (see lsfg-vk documentation)
+        void advanceFrameWithoutGeneration();
     private:
         std::pair<vk::Image, vk::Image> sourceImages;
         std::vector<vk::Image> destImages;
@@ -572,6 +576,10 @@ void Instance::scheduleFrames(Context& context) { // NOLINT (static)
 #endif
 }
 
+void Instance::advanceFrameWithoutGeneration(Context& context) { // NOLINT (static)
+    context.advanceFrameWithoutGeneration();
+}
+
 void Context::scheduleFrames() {
     // wait for previous pre-pass to complete
     if (this->fidx && !this->cmdbufFence.wait(this->ctx.vk))
@@ -623,6 +631,14 @@ void Context::scheduleFrames() {
     }
 
     this->idx += this->destImages.size();
+    this->fidx++;
+}
+
+void Context::advanceFrameWithoutGeneration() {
+    // Keep the backend indices aligned with the application side. The caller
+    // advances the imported timeline semaphore through the corresponding
+    // source and generated-output values without dispatching the model.
+    this->idx += this->destImages.size() + 1;
     this->fidx++;
 }
 

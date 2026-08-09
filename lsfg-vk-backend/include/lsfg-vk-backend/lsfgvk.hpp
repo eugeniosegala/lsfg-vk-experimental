@@ -115,6 +115,18 @@ namespace lsfgvk::backend {
         void scheduleFrames(Context& context);
 
         ///
+        /// Advance a frame without scheduling frame-generation GPU work.
+        ///
+        /// The caller must still submit the source frame and advance the shared
+        /// timeline semaphore through every value that generated outputs would
+        /// normally signal. This keeps source-image parity and synchronization
+        /// aligned when generated frames cannot be presented.
+        ///
+        /// @param context Context to advance.
+        ///
+        void advanceFrameWithoutGeneration(Context& context);
+
+        ///
         /// Close a frame generation context
         ///
         /// @param context Context to close.

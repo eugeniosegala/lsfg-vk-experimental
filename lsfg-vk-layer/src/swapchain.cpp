@@ -123,7 +123,7 @@ namespace {
 
     void logPresentFallback(size_t frameIndex, size_t sequenceIndex,
             size_t passIndex, size_t skippedFrames, uint64_t timelineValue,
-            bool nonBlockingRetry) {
+            bool nonBlockingRetry, bool generationScheduled) {
         if (!presentDiagnosticsEnabled())
             return;
 
@@ -134,11 +134,12 @@ namespace {
                   << " skipped=" << skippedFrames
                   << " wait_timeline=" << timelineValue
                   << " acquire_mode=" << (nonBlockingRetry ? "nonblocking-retry" : "initial-timeout")
+                  << " backend_work=" << (generationScheduled ? "scheduled" : "bypassed")
                   << '\n';
     }
 
     void logPresentRecovery(size_t frameIndex, size_t sequenceIndex,
-            size_t passIndex, uint32_t imageIndex) {
+            size_t passIndex, uint32_t imageIndex, size_t bypassedFrames) {
         if (!presentDiagnosticsEnabled())
             return;
 
@@ -146,7 +147,8 @@ namespace {
                   << " frame=" << frameIndex
                   << " sequence=" << sequenceIndex
                   << " pass=" << passIndex
-                  << " image=" << imageIndex << '\n';
+                  << " image=" << imageIndex
+                  << " bypassed_frames=" << bypassedFrames << '\n';
     }
 
     VkImageMemoryBarrier barrierHelper(VkImage handle,
@@ -270,14 +272,83 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const auto& swapchainImage = this->info.images.at(imageIdx);
     const auto& sourceImage = this->sourceImages.at(this->fidx % 2);
 
-    // schedule frame generation
-    const auto scheduleStarted = startPresentDiagnostic();
-    try {
-        this->instance.get().scheduleFrames(this->ctx.get());
-    } catch (const std::exception& e) {
-        throw ls::error("failed to schedule frames", e);
+    const auto configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
+    bool renderFencePrepared = false;
+    bool bypassGeneratedFrames = false;
+    std::optional<uint32_t> preacquiredGeneratedImage;
+
+    const auto prepareRenderFence = [&]() {
+        if (renderFencePrepared)
+            return;
+
+        if (this->fidx) {
+            const auto fenceWaitStarted = startPresentDiagnostic();
+            const bool fenceSignaled = this->renderFence->wait(vk, 150ULL * 1000 * 1000);
+            logSlowPresentOperation(
+                "wait-render-fence", this->fidx, this->idx, fenceWaitStarted,
+                fenceSignaled ? VK_SUCCESS : VK_TIMEOUT
+            );
+            if (!fenceSignaled)
+                throw ls::vulkan_error(VK_TIMEOUT, "vkWaitForFences() failed");
+        }
+        this->renderFence->reset(vk);
+        renderFencePrepared = true;
+    };
+
+    // Once generated-image acquisition has timed out, probe availability
+    // before scheduling more model work. If Gamescope still has no image, the
+    // real frame is copied and presented below while backend/timeline indices
+    // advance without producing output that would immediately be discarded.
+    if (configuredAcquireTimeout && this->generatedImageAcquireBackoff) {
+        prepareRenderFence();
+
+        auto& recoveryPass = this->passes.front();
+        uint32_t recoveryImageIndex{};
+        const auto acquireStarted = startPresentDiagnostic();
+        const auto acquireResult = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
+            0, recoveryPass.acquireSemaphore.handle(), VK_NULL_HANDLE,
+            &recoveryImageIndex
+        );
+
+        if (acquireResult == VK_TIMEOUT || acquireResult == VK_NOT_READY) {
+            if (!this->generatedImageAcquireBypassCount) {
+                logSlowPresentOperation(
+                    "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
+                    0, recoveryImageIndex
+                );
+            }
+            bypassGeneratedFrames = true;
+        } else if (acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR) {
+            logSlowPresentOperation(
+                "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
+                0, recoveryImageIndex
+            );
+            preacquiredGeneratedImage = recoveryImageIndex;
+            this->generatedImageAcquireBackoff = false;
+            logPresentRecovery(
+                this->fidx, this->idx, 0, recoveryImageIndex,
+                this->generatedImageAcquireBypassCount
+            );
+            this->generatedImageAcquireBypassCount = 0;
+        } else {
+            logSlowPresentOperation(
+                "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
+                0, recoveryImageIndex
+            );
+            throw ls::vulkan_error(acquireResult, "vkAcquireNextImageKHR() failed");
+        }
     }
-    logSlowPresentOperation("schedule-frames", this->fidx, this->idx, scheduleStarted);
+
+    // schedule frame generation
+    if (!bypassGeneratedFrames) {
+        const auto scheduleStarted = startPresentDiagnostic();
+        try {
+            this->instance.get().scheduleFrames(this->ctx.get());
+        } catch (const std::exception& e) {
+            throw ls::error("failed to schedule frames", e);
+        }
+        logSlowPresentOperation("schedule-frames", this->fidx, this->idx, scheduleStarted);
+    }
 
     // update present mode when not using pacing
     if (this->profile.pacing == ls::Pacing::None) {
@@ -298,17 +369,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
 
     // wait for completion of previous frame
-    if (this->fidx) {
-        const auto fenceWaitStarted = startPresentDiagnostic();
-        const bool fenceSignaled = this->renderFence->wait(vk, 150ULL * 1000 * 1000);
-        logSlowPresentOperation(
-            "wait-render-fence", this->fidx, this->idx, fenceWaitStarted,
-            fenceSignaled ? VK_SUCCESS : VK_TIMEOUT
-        );
-        if (!fenceSignaled)
-            throw ls::vulkan_error(VK_TIMEOUT, "vkWaitForFences() failed");
-    }
-    this->renderFence->reset(vk);
+    prepareRenderFence();
 
     // copy swapchain image into backend source image
     const auto& cmdbuf = *this->renderCommandBuffer;
@@ -368,6 +429,44 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         return result;
     };
 
+    if (bypassGeneratedFrames) {
+        const size_t skippedFrames = this->destinationImages.size();
+        const uint64_t sourceTimelineValue = this->idx - 1;
+        const uint64_t finalTimelineValue = sourceTimelineValue + skippedFrames;
+        auto& fallbackPass = this->passes.front();
+        auto& fallbackSemaphores = this->postCopySemaphores.at(
+            this->idx % this->postCopySemaphores.size()
+        );
+        auto& fallbackSemaphore = fallbackSemaphores.second;
+
+        auto& fallbackCommandBuffer = fallbackPass.commandBuffer;
+        fallbackCommandBuffer.begin(vk);
+        fallbackCommandBuffer.end(vk);
+        fallbackCommandBuffer.submit(vk,
+            {}, this->syncSemaphore->handle(), sourceTimelineValue,
+            { fallbackSemaphore.handle() }, this->syncSemaphore->handle(), finalTimelineValue,
+            this->renderFence->handle()
+        );
+
+        this->instance.get().advanceFrameWithoutGeneration(this->ctx.get());
+        if (!this->generatedImageAcquireBypassCount) {
+            logPresentFallback(
+                this->fidx, this->idx, 0, skippedFrames, finalTimelineValue,
+                true, false
+            );
+        }
+        this->generatedImageAcquireBypassCount++;
+        this->idx += skippedFrames;
+
+        const auto res = presentOriginalImage(fallbackSemaphore.handle(), next_chain);
+        if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
+            throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
+
+        logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);
+        this->fidx++;
+        return res;
+    }
+
     for (size_t i = 0; i < this->destinationImages.size(); i++) {
         auto& pcs = this->postCopySemaphores.at(this->idx % this->postCopySemaphores.size());
         auto& destinationImage = this->destinationImages.at(i);
@@ -375,21 +474,26 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
         // acquire swapchain image
         uint32_t aqImageIdx{};
-        const auto acquireStarted = startPresentDiagnostic();
-        const auto configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
-        const bool nonBlockingRetry = configuredAcquireTimeout && this->generatedImageAcquireBackoff;
-        const uint64_t acquireTimeout = configuredAcquireTimeout
-            ? (nonBlockingRetry ? 0 : *configuredAcquireTimeout)
-            : UINT64_MAX;
-        auto res = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
-            acquireTimeout, pass.acquireSemaphore.handle(),
-            VK_NULL_HANDLE,
-            &aqImageIdx
-        );
-        logSlowPresentOperation(
-            "acquire-generated-image", this->fidx, this->idx, acquireStarted, res,
-            i, aqImageIdx
-        );
+        VkResult res{};
+        const bool usePreacquiredImage = i == 0 && preacquiredGeneratedImage.has_value();
+        if (usePreacquiredImage) {
+            aqImageIdx = *preacquiredGeneratedImage;
+            res = VK_SUCCESS;
+        } else {
+            const auto acquireStarted = startPresentDiagnostic();
+            const uint64_t acquireTimeout = configuredAcquireTimeout
+                ? *configuredAcquireTimeout
+                : UINT64_MAX;
+            res = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
+                acquireTimeout, pass.acquireSemaphore.handle(),
+                VK_NULL_HANDLE,
+                &aqImageIdx
+            );
+            logSlowPresentOperation(
+                "acquire-generated-image", this->fidx, this->idx, acquireStarted, res,
+                i, aqImageIdx
+            );
+        }
         if (configuredAcquireTimeout && (res == VK_TIMEOUT || res == VK_NOT_READY)) {
             // Gamescope can temporarily stop releasing the extra swapchain images used for generated frames while
             // an overlay is visible. Do not block the game indefinitely. The backend has already scheduled every
@@ -399,6 +503,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             const uint64_t finalGeneratedTimelineValue = this->idx + skippedFrames - 1;
             auto& fallbackSemaphore = pcs.second;
             this->generatedImageAcquireBackoff = true;
+            this->generatedImageAcquireBypassCount = 0;
 
             auto& fallbackCommandBuffer = pass.commandBuffer;
             fallbackCommandBuffer.begin(vk);
@@ -411,7 +516,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
             logPresentFallback(
                 this->fidx, this->idx, i, skippedFrames, finalGeneratedTimelineValue,
-                nonBlockingRetry
+                false, true
             );
             this->idx += skippedFrames;
 
@@ -427,8 +532,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         }
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkAcquireNextImageKHR() failed");
-        if (nonBlockingRetry)
-            logPresentRecovery(this->fidx, this->idx, i, aqImageIdx);
         this->generatedImageAcquireBackoff = false;
 
         const auto& aquiredSwapchainImage = this->info.images.at(aqImageIdx);

@@ -77,6 +77,7 @@ namespace lsfgvk::layer {
         size_t idx{1};
         size_t fidx{0}; // real frame index
         bool generatedImageAcquireBackoff{false};
+        size_t generatedImageAcquireBypassCount{0};
 
         ls::GameConf profile;
         SwapchainInfo info;

@@ -105,6 +105,22 @@ continues presenting original game frames while Gamescope has no spare image and
 when an image becomes available. Diagnostic fallback entries identify `initial-timeout` and `nonblocking-retry` modes,
 and a `resume-generated-frames` entry identifies successful recovery.
 
+## Gamescope inference-bypass recovery test release: `v2.0.0-dev28-experimental.7`
+
+SteamOS testing of `.6` showed that the non-blocking recovery reliably avoided persistent stalls, but the engine still
+scheduled frame-generation work on every retry before discovering that Gamescope had no image available. The generated
+output was then discarded, consuming GPU time while the Steam menu and compositor were already under pressure.
+
+During backoff, `.7` probes the first generated-image slot before scheduling the model. If it remains unavailable, the
+layer still copies and presents the current real frame so the game and compositor continue progressing, but it advances
+the shared timeline and backend frame indices without dispatching unused inference work. Source-image parity remains
+aligned, so recovery uses the two latest real frames as soon as Gamescope returns an image. The initial timeout path is
+unchanged and still waits for any work that was already scheduled.
+
+Diagnostics now distinguish `backend_work=scheduled` on the initial timeout from `backend_work=bypassed` during
+backoff. Repeated expected `VK_NOT_READY` results are aggregated instead of logged every frame; the recovery entry
+reports the total as `bypassed_frames`.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:
