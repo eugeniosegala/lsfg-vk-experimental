@@ -66,11 +66,12 @@ To test recovery from a stalled generated-image acquisition, add an opt-in timeo
 reached, lsfg-vk skips the remaining generated frames for that presentation and safely presents the original game
 frame. Following attempts probe image availability before scheduling output passes, so a Gamescope overlay cannot impose
 the full timeout or waste GPU work on generated frames that cannot be presented. A shared history-only pre-pass still
-updates the model's temporal features for every real frame, preventing stale motion history when generation resumes.
+updates the model's temporal features for every real frame instead of leaving older slots untouched.
 If zero-timeout probes keep missing
 the release window, the layer makes one bounded reacquisition attempt per second after the first second of fallback.
-The real game frames continue updating the two source images, and generation resumes automatically as soon as a probe
-succeeds. For example:
+The real game frames continue updating the two source images. Fixed mode resumes automatically as soon as a probe
+succeeds. Adaptive mode first presents three real frames while repopulating its deepest temporal-history ring, then
+attempts generated output again. The same three-frame warm-up runs when an Adaptive context first starts. For example:
 
 ```bash
 LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=25 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/lsfg-vk-experimental %command%
@@ -80,7 +81,9 @@ This recovery is experimental and disabled when `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_
 With diagnostics enabled, `skip-generated-frames` reports whether the fallback followed the initial timeout, a
 non-blocking retry, or a periodic `bounded-retry`. Its `backend_work` field records whether full output work was already
 `scheduled` or only the temporal `history-only` pre-pass ran. Expected repeated non-blocking failures are aggregated;
-`resume-generated-frames` reports automatic recovery and the total number of frames whose output work was bypassed.
+Fixed-mode recovery uses `resume-generated-frames`. Adaptive recovery reports `generated-image-recovered`, followed by
+three `history-warmup` entries with `reason=recovery`. Adaptive startup uses the same entries with `reason=startup`.
+The recovery record includes the total number of frames whose output work was bypassed.
 
 For a normal non-isolated installation, place the same environment variables before its usual launch command.
 

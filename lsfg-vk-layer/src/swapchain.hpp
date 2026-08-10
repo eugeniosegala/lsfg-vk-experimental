@@ -90,6 +90,8 @@ namespace lsfgvk::layer {
         bool generatedImageAcquireBackoff{false};
         size_t generatedImageAcquireBypassCount{0};
         std::optional<std::chrono::steady_clock::time_point> generatedImageAcquireLastBoundedProbe;
+        size_t adaptiveHistoryWarmupRemaining{0};
+        bool adaptiveHistoryWarmupIsRecovery{false};
 
         std::optional<std::chrono::steady_clock::time_point> adaptiveLastRealFrame;
         std::optional<std::chrono::steady_clock::time_point> adaptiveLastDiagnostic;

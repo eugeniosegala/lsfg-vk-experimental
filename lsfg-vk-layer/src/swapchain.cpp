@@ -35,6 +35,7 @@ namespace {
     using DiagnosticsClock = std::chrono::steady_clock;
 
     constexpr size_t adaptiveMaximumMultiplier = 4;
+    constexpr size_t adaptiveHistoryWarmupFrames = 3;
     constexpr double adaptiveMinimumBaseFps = 10.0;
     constexpr double adaptiveIntervalSmoothing = 0.25;
 
@@ -154,17 +155,37 @@ namespace {
 
     void logPresentRecovery(size_t frameIndex, size_t sequenceIndex,
             size_t passIndex, uint32_t imageIndex, size_t bypassedFrames,
-            std::string_view acquireMode) {
+            std::string_view acquireMode, size_t warmupFrames) {
         if (!presentDiagnosticsEnabled())
             return;
 
-        std::cerr << "lsfg-vk: present diagnostics: operation=resume-generated-frames"
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << (warmupFrames ? "generated-image-recovered" : "resume-generated-frames")
                   << " frame=" << frameIndex
                   << " sequence=" << sequenceIndex
                   << " pass=" << passIndex
                   << " image=" << imageIndex
                   << " acquire_mode=" << acquireMode
-                  << " bypassed_frames=" << bypassedFrames << '\n';
+                  << " bypassed_frames=" << bypassedFrames;
+        if (warmupFrames)
+            std::cerr << " recovery_warmup_frames=" << warmupFrames;
+        std::cerr << '\n';
+    }
+
+    void logHistoryWarmup(size_t frameIndex, size_t sequenceIndex,
+            size_t remainingFrames, bool recovery,
+            std::optional<uint32_t> acquiredImage) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation=history-warmup"
+                  << " frame=" << frameIndex
+                  << " sequence=" << sequenceIndex
+                  << " reason=" << (recovery ? "recovery" : "startup")
+                  << " remaining_frames=" << remainingFrames;
+        if (acquiredImage)
+            std::cerr << " released_image=" << *acquiredImage;
+        std::cerr << '\n';
     }
 
     VkImageMemoryBarrier barrierHelper(VkImage handle,
@@ -212,6 +233,9 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info) :
         instance(backend),
         profile(std::move(profile)), info(std::move(info)) {
+    if (this->profile.adaptive)
+        this->adaptiveHistoryWarmupRemaining = adaptiveHistoryWarmupFrames;
+
     const VkExtent2D extent = this->info.extent;
     const bool hdr = this->info.format > 57;
 
@@ -388,7 +412,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const auto presentStarted = startPresentDiagnostic();
     const auto& swapchainImage = this->info.images.at(imageIdx);
     const auto& sourceImage = this->sourceImages.at(this->fidx % 2);
-    const auto generatedTimestamps = this->profile.adaptive
+    const bool historyWarmupActive = this->adaptiveHistoryWarmupRemaining > 0;
+    const auto generatedTimestamps = this->profile.adaptive && !historyWarmupActive
         ? this->generatedFrameTimestamps(DiagnosticsClock::now())
         : std::vector<float>{};
     const size_t generatedFrameCount = this->profile.adaptive
@@ -397,10 +422,12 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
     const auto configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
     bool renderFencePrepared = false;
-    bool bypassGeneratedFrames = this->profile.adaptive && generatedTimestamps.empty();
+    bool bypassGeneratedFrames = historyWarmupActive ||
+        (this->profile.adaptive && generatedTimestamps.empty());
     bool generatedImageUnavailable = false;
     bool boundedRecoveryProbe = false;
     std::optional<uint32_t> preacquiredGeneratedImage;
+    std::optional<uint32_t> recoveryWarmupImage;
 
     const auto prepareRenderFence = [&]() {
         if (renderFencePrepared)
@@ -457,16 +484,31 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
                 0, recoveryImageIndex
             );
-            preacquiredGeneratedImage = recoveryImageIndex;
             this->generatedImageAcquireBackoff = false;
             this->generatedImageAcquireLastBoundedProbe.reset();
+            const size_t recoveryWarmupFrames = this->profile.adaptive
+                ? adaptiveHistoryWarmupFrames
+                : 0;
             logPresentRecovery(
                 this->fidx, this->idx, 0, recoveryImageIndex,
                 this->generatedImageAcquireBypassCount,
-                boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry"
+                boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry",
+                recoveryWarmupFrames
             );
             this->generatedImageAcquireBypassCount = 0;
             this->resetAdaptiveScheduler(DiagnosticsClock::now());
+            if (recoveryWarmupFrames) {
+                // The successful probe owns a swapchain image, so the first
+                // warm-up frame must present it even though generated output
+                // remains disabled. Copy the real image into it below, then
+                // refresh all temporal slots before trying generation again.
+                recoveryWarmupImage = recoveryImageIndex;
+                this->adaptiveHistoryWarmupRemaining = recoveryWarmupFrames;
+                this->adaptiveHistoryWarmupIsRecovery = true;
+                bypassGeneratedFrames = true;
+            } else {
+                preacquiredGeneratedImage = recoveryImageIndex;
+            }
         } else {
             logSlowPresentOperation(
                 "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
@@ -579,10 +621,53 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
         auto& fallbackCommandBuffer = fallbackPass.commandBuffer;
         fallbackCommandBuffer.begin(vk);
+        if (recoveryWarmupImage) {
+            const auto& recoveryImage = this->info.images.at(*recoveryWarmupImage);
+            fallbackCommandBuffer.blitImage(vk,
+                {
+                    barrierHelper(swapchainImage,
+                        VK_ACCESS_MEMORY_READ_BIT,
+                        VK_ACCESS_TRANSFER_READ_BIT,
+                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                    ),
+                    barrierHelper(recoveryImage,
+                        VK_ACCESS_NONE,
+                        VK_ACCESS_TRANSFER_WRITE_BIT,
+                        VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                    ),
+                },
+                { swapchainImage, recoveryImage },
+                this->info.extent,
+                {
+                    barrierHelper(swapchainImage,
+                        VK_ACCESS_TRANSFER_READ_BIT,
+                        VK_ACCESS_MEMORY_READ_BIT,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                    ),
+                    barrierHelper(recoveryImage,
+                        VK_ACCESS_TRANSFER_WRITE_BIT,
+                        VK_ACCESS_MEMORY_READ_BIT,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                    ),
+                }
+            );
+        }
         fallbackCommandBuffer.end(vk);
+        const std::vector<VkSemaphore> fallbackWaitSemaphores = recoveryWarmupImage
+            ? std::vector<VkSemaphore>{fallbackPass.acquireSemaphore.handle()}
+            : std::vector<VkSemaphore>{};
+        const std::vector<VkSemaphore> fallbackSignalSemaphores = recoveryWarmupImage
+            ? std::vector<VkSemaphore>{
+                fallbackSemaphores.first.handle(), fallbackSemaphore.handle()
+            }
+            : std::vector<VkSemaphore>{fallbackSemaphore.handle()};
         fallbackCommandBuffer.submit(vk,
-            {}, this->syncSemaphore->handle(), sourceTimelineValue,
-            { fallbackSemaphore.handle() }, VK_NULL_HANDLE, 0,
+            fallbackWaitSemaphores, this->syncSemaphore->handle(), sourceTimelineValue,
+            fallbackSignalSemaphores, VK_NULL_HANDLE, 0,
             this->renderFence->handle()
         );
 
@@ -601,7 +686,43 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         if (generatedImageUnavailable)
             this->generatedImageAcquireBypassCount++;
 
-        const auto res = presentOriginalImage(fallbackSemaphore.handle(), next_chain);
+        if (this->adaptiveHistoryWarmupRemaining) {
+            logHistoryWarmup(
+                this->fidx, this->idx,
+                this->adaptiveHistoryWarmupRemaining,
+                this->adaptiveHistoryWarmupIsRecovery,
+                recoveryWarmupImage
+            );
+            this->adaptiveHistoryWarmupRemaining--;
+            if (!this->adaptiveHistoryWarmupRemaining)
+                this->adaptiveHistoryWarmupIsRecovery = false;
+            this->resetAdaptiveScheduler(DiagnosticsClock::now());
+        }
+
+        void* originalNextChain = next_chain;
+        if (recoveryWarmupImage) {
+            const VkSemaphore recoveryWaitSemaphore = fallbackSemaphores.first.handle();
+            const VkPresentInfoKHR recoveryPresentInfo{
+                .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                .pNext = next_chain,
+                .waitSemaphoreCount = 1,
+                .pWaitSemaphores = &recoveryWaitSemaphore,
+                .swapchainCount = 1,
+                .pSwapchains = &swapchain,
+                .pImageIndices = &*recoveryWarmupImage,
+            };
+            const auto recoveryPresentStarted = startPresentDiagnostic();
+            const auto recoveryResult = vk.df().QueuePresentKHR(queue, &recoveryPresentInfo);
+            logSlowPresentOperation(
+                "present-recovery-warmup-image", this->fidx, this->idx,
+                recoveryPresentStarted, recoveryResult, 0, *recoveryWarmupImage
+            );
+            if (recoveryResult != VK_SUCCESS && recoveryResult != VK_SUBOPTIMAL_KHR)
+                throw ls::vulkan_error(recoveryResult, "vkQueuePresentKHR() failed");
+            originalNextChain = nullptr;
+        }
+
+        const auto res = presentOriginalImage(fallbackSemaphore.handle(), originalNextChain);
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
@@ -648,6 +769,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->generatedImageAcquireBackoff = true;
             this->generatedImageAcquireBypassCount = 0;
             this->generatedImageAcquireLastBoundedProbe = DiagnosticsClock::now();
+            this->adaptiveHistoryWarmupRemaining = 0;
+            this->adaptiveHistoryWarmupIsRecovery = false;
             this->resetAdaptiveScheduler(this->generatedImageAcquireLastBoundedProbe.value());
 
             auto& fallbackCommandBuffer = pass.commandBuffer;

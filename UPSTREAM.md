@@ -166,6 +166,24 @@ until Gamescope releases an image. Adaptive timing credit is also reset when acq
 compositor discontinuity is not carried into later scheduling decisions. Diagnostics report
 `backend_work=history-only` for this path.
 
+## Adaptive history warm-up test build: `v2.0.0-dev28-experimental.11`
+
+SteamOS testing of `.10` showed that continuous history maintenance improved recovery but did not make the temporal
+handoff reliable. One trace recorded repeated single-image recoveries followed by immediate new acquisition failures:
+15 bypassed frames, then 16, 31, and 9 before Gamescope remained stable. Adaptive restarted up to three generated
+outputs after each single successful probe. Testers also observed occasional high ghosting immediately after game
+startup that cleared after reinitializing Adaptive mode.
+
+The `.11` candidate adds a three-real-frame history warm-up both when an Adaptive context starts and after a Gamescope
+recovery. Three frames match the deepest shared temporal ring. During recovery, the image owned by the successful
+probe is filled with the real game frame and presented so no acquired swapchain image is leaked, while generated
+outputs remain disabled. The following history frames continue presenting real output; Adaptive timing remains reset
+throughout the warm-up. If acquisition fails again later, the next successful recovery starts a fresh warm-up.
+
+This deliberately trades approximately three base-frame intervals for a clean temporal handoff. At a 30 FPS base it
+is roughly 100 ms. Fixed mode retains its immediate recovery path. Diagnostics distinguish `generated-image-recovered`
+from `history-warmup` and identify whether warm-up was caused by `startup` or `recovery`.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

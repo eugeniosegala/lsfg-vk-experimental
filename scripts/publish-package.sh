@@ -105,6 +105,8 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   timestamps before each inference pass. This supports non-integer average ratios such as 30 -> 55 or 50 -> 120.
 - Skips interpolation below a 10 FPS base-rate safety floor and caps generation at three intermediate frames per real
   frame. Existing Fixed mode continues through its original scheduling path.
+- Warms all three shared temporal-history slots with real frames before Adaptive generates its first output, avoiding
+  startup inference from partially initialized history.
 - Exposes Adaptive mode and its target in the standalone Qt configuration UI. Switching modes should be followed by a
   game restart so the swapchain is created with the intended capacity.
 
@@ -113,10 +115,13 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Prevents undefined behaviour in Vulkan command submission when a submission has no timeline semaphore. Previously,
   lsfg-vk could access the end of an empty semaphore-value array.
 - Avoids scheduling per-output frame-generation GPU work while Gamescope has no generated-image slot available. A
-  shared history-only pre-pass still updates the model's temporal feature slots for every real frame, preventing stale
-  motion history and progressively worsening ghosting after repeated overlay transitions.
+  shared history-only pre-pass still updates the model's temporal feature slots for every real frame, so counter-only
+  bypass does not leave older temporal slots untouched.
 - Resets Adaptive timing smoothing and fractional output credit when generated-image acquisition enters or leaves
   Gamescope backoff, so a compositor discontinuity is not carried into later scheduling decisions.
+- After Gamescope first returns an image, keeps Adaptive output disabled for a three-real-frame history warm-up instead
+  of treating one successful probe as a stable recovery. The acquired probe image is filled with the real frame and
+  presented safely; renewed acquisition failure starts a fresh recovery cycle.
 - Avoids multi-second recovery delays caused by repeatedly missing the image-release window with zero-timeout probes.
   After one second of fallback, the layer makes one bounded reacquisition attempt per second using the configured
   acquire timeout. It does not force the game to recreate its swapchain.
@@ -136,8 +141,9 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   opt in per launched game.
 - Aggregates expected non-blocking retry diagnostics. The first fallback reports \`backend_work=scheduled\`; subsequent
   retries report \`backend_work=history-only\`. Periodic bounded attempts report
-  \`acquire_mode=bounded-retry\`, and the recovery entry reports the number of bypassed output frames without logging
-  every retry.
+  \`acquire_mode=bounded-retry\`. Adaptive recovery emits \`generated-image-recovered\` followed by three
+  \`history-warmup\` entries; startup and recovery warm-ups are identified separately. The recovery entry reports the
+  number of bypassed output frames without logging every retry.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
 
