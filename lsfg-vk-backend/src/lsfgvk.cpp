@@ -110,9 +110,9 @@ namespace lsfgvk::backend {
         /// schedule a variable number of frames at explicit timestamps
         void scheduleFrames(std::span<const float> timestamps);
 
-        /// advance frame state without scheduling GPU work
+        /// update temporal history without generating output frames
         /// (see lsfg-vk documentation)
-        void advanceFrameWithoutGeneration();
+        void scheduleFrameHistory();
     private:
         std::pair<vk::Image, vk::Image> sourceImages;
         std::vector<vk::Image> destImages;
@@ -122,10 +122,13 @@ namespace lsfgvk::backend {
         vk::TimelineSemaphore prepassSemaphore;
         size_t idx{1};
         size_t fidx{0}; // real frame index
-        bool generationScheduled{false};
+        bool workScheduled{false};
 
         std::vector<vk::CommandBuffer> cmdbufs;
         vk::Fence cmdbufFence;
+
+        void prepareWork();
+        void schedulePrepass(VkFence completionFence);
 
         Ctx ctx;
 
@@ -607,8 +610,36 @@ void Instance::scheduleFrames(Context& context, std::span<const float> timestamp
 #endif
 }
 
-void Instance::advanceFrameWithoutGeneration(Context& context) { // NOLINT (static)
-    context.advanceFrameWithoutGeneration();
+void Instance::scheduleFrameHistory(Context& context) { // NOLINT (static)
+    context.scheduleFrameHistory();
+}
+
+void Context::prepareWork() {
+    if (this->workScheduled && !this->cmdbufFence.wait(this->ctx.vk))
+        throw backend::error("Timeout waiting for previous frame to complete");
+    this->cmdbufFence.reset(this->ctx.vk);
+}
+
+void Context::schedulePrepass(const VkFence completionFence) {
+    const auto& cmdbuf = this->cmdbufs.at(0);
+    cmdbuf.begin(ctx.vk);
+
+    this->mipmaps.render(ctx.vk, cmdbuf, this->fidx);
+    for (size_t i = 0; i < 7; ++i) {
+        this->alpha0.at(6 - i).render(ctx.vk, cmdbuf);
+        this->alpha1.at(6 - i).render(ctx.vk, cmdbuf, this->fidx);
+    }
+    this->beta0.render(ctx.vk, cmdbuf, this->fidx);
+    this->beta1.render(ctx.vk, cmdbuf);
+
+    cmdbuf.end(ctx.vk);
+    cmdbuf.submit(this->ctx.vk,
+        {}, this->syncSemaphore.handle(), this->idx,
+        {}, this->prepassSemaphore.handle(), this->idx,
+        completionFence
+    );
+
+    this->idx++;
 }
 
 void Context::scheduleFrames() {
@@ -634,10 +665,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
         }
     }
 
-    // wait for previous pre-pass to complete
-    if (this->generationScheduled && !this->cmdbufFence.wait(this->ctx.vk))
-        throw backend::error("Timeout waiting for previous frame to complete");
-    this->cmdbufFence.reset(this->ctx.vk);
+    this->prepareWork();
 
     // Every generated pass has its own uniform buffer and descriptor sets.
     // Previous GPU work is complete at this point, so the timestamp can be
@@ -650,25 +678,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
         }
     }
 
-    // schedule pre-pass
-    const auto& cmdbuf = this->cmdbufs.at(0);
-    cmdbuf.begin(ctx.vk);
-
-    this->mipmaps.render(ctx.vk, cmdbuf, this->fidx);
-    for (size_t i = 0; i < 7; ++i) {
-        this->alpha0.at(6 - i).render(ctx.vk, cmdbuf);
-        this->alpha1.at(6 - i).render(ctx.vk, cmdbuf, this->fidx);
-    }
-    this->beta0.render(ctx.vk, cmdbuf, this->fidx);
-    this->beta1.render(ctx.vk, cmdbuf);
-
-    cmdbuf.end(ctx.vk);
-    cmdbuf.submit(this->ctx.vk,
-        {}, this->syncSemaphore.handle(), this->idx,
-        {}, this->prepassSemaphore.handle(), this->idx
-    );
-
-    this->idx++;
+    this->schedulePrepass(VK_NULL_HANDLE);
 
     // schedule main passes
     for (size_t i = 0; i < generatedFrameCount; i++) {
@@ -696,14 +706,14 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
 
     this->idx += generatedFrameCount;
     this->fidx++;
-    this->generationScheduled = true;
+    this->workScheduled = true;
 }
 
-void Context::advanceFrameWithoutGeneration() {
-    // Keep the backend source-frame index and imported timeline aligned with
-    // the application side without dispatching the model.
-    this->idx++;
+void Context::scheduleFrameHistory() {
+    this->prepareWork();
+    this->schedulePrepass(this->cmdbufFence.handle());
     this->fidx++;
+    this->workScheduled = true;
 }
 
 void Instance::closeContext(const Context& context) {

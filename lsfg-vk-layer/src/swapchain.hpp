@@ -65,6 +65,10 @@ namespace lsfgvk::layer {
         std::vector<float> generatedFrameTimestamps(
             std::chrono::steady_clock::time_point now
         );
+        /// reset timing state after a compositor presentation discontinuity
+        void resetAdaptiveScheduler(
+            std::chrono::steady_clock::time_point now
+        );
 
         std::vector<vk::Image> sourceImages;
         std::vector<vk::Image> destinationImages;

@@ -137,7 +137,7 @@ namespace {
 
     void logPresentFallback(size_t frameIndex, size_t sequenceIndex,
             size_t passIndex, size_t skippedFrames, uint64_t timelineValue,
-            std::string_view acquireMode, bool generationScheduled) {
+            std::string_view acquireMode, std::string_view backendWork) {
         if (!presentDiagnosticsEnabled())
             return;
 
@@ -148,7 +148,7 @@ namespace {
                   << " skipped=" << skippedFrames
                   << " wait_timeline=" << timelineValue
                   << " acquire_mode=" << acquireMode
-                  << " backend_work=" << (generationScheduled ? "scheduled" : "bypassed")
+                  << " backend_work=" << backendWork
                   << '\n';
     }
 
@@ -371,6 +371,16 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
     return timestamps;
 }
 
+void Swapchain::resetAdaptiveScheduler(
+        const std::chrono::steady_clock::time_point now) {
+    if (!this->profile.adaptive)
+        return;
+
+    this->adaptiveLastRealFrame = now;
+    this->adaptiveSmoothedIntervalSeconds = 0.0;
+    this->adaptiveOutputCredit = 0.0;
+}
+
 VkResult Swapchain::present(const vk::Vulkan& vk,
         VkQueue queue, VkSwapchainKHR swapchain,
         void* next_chain, uint32_t imageIdx,
@@ -411,9 +421,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     };
 
     // Once generated-image acquisition has timed out, probe availability
-    // before scheduling more model work. If Gamescope still has no image, the
-    // real frame is copied and presented below while backend/timeline indices
-    // advance without producing output that would immediately be discarded.
+    // before scheduling more output work. If Gamescope still has no image, the
+    // real frame is copied and presented below while a shared history pre-pass
+    // keeps temporal features and timeline indices current.
     if (configuredAcquireTimeout && this->generatedImageAcquireBackoff &&
             generatedFrameCount > 0) {
         prepareRenderFence();
@@ -456,6 +466,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry"
             );
             this->generatedImageAcquireBypassCount = 0;
+            this->resetAdaptiveScheduler(DiagnosticsClock::now());
         } else {
             logSlowPresentOperation(
                 "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
@@ -575,12 +586,16 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->renderFence->handle()
         );
 
-        this->instance.get().advanceFrameWithoutGeneration(this->ctx.get());
+        try {
+            this->instance.get().scheduleFrameHistory(this->ctx.get());
+        } catch (const std::exception& e) {
+            throw ls::error("failed to maintain frame history", e);
+        }
         if (generatedImageUnavailable &&
                 (!this->generatedImageAcquireBypassCount || boundedRecoveryProbe)) {
             logPresentFallback(
                 this->fidx, this->idx, 0, generatedFrameCount, sourceTimelineValue,
-                boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry", false
+                boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry", "history-only"
             );
         }
         if (generatedImageUnavailable)
@@ -633,6 +648,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->generatedImageAcquireBackoff = true;
             this->generatedImageAcquireBypassCount = 0;
             this->generatedImageAcquireLastBoundedProbe = DiagnosticsClock::now();
+            this->resetAdaptiveScheduler(this->generatedImageAcquireLastBoundedProbe.value());
 
             auto& fallbackCommandBuffer = pass.commandBuffer;
             fallbackCommandBuffer.begin(vk);
@@ -645,7 +661,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
             logPresentFallback(
                 this->fidx, this->idx, i, skippedFrames, finalGeneratedTimelineValue,
-                "initial-timeout", true
+                "initial-timeout", "scheduled"
             );
             this->idx += skippedFrames;
 

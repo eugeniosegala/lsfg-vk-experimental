@@ -149,6 +149,23 @@ frames than the application submits, so it cannot reduce a base framerate alread
 cannot reach targets above four times the current base rate. These limitations are exposed in both configuration UIs
 and must remain in release notes while the feature is experimental.
 
+## Temporal-history recovery test build: `v2.0.0-dev28-experimental.10`
+
+SteamOS Adaptive testing at a 30 FPS base and 120 FPS target confirmed that the scheduler remained at three generated
+frames before and after a Gamescope overlay transition. The increasing ghosting was therefore not caused by multiplier
+escalation. The trace instead showed a partial generated-image timeout followed by four real frames of backend bypass.
+
+The `.7` recovery kept source-image parity and timeline counters aligned, but it advanced the model's real-frame index
+without running the shared pre-pass. The model's multi-frame temporal feature slots consequently contained older data
+when generation resumed. This is especially visible at Adaptive 4x because every affected interval displays three
+generated outputs.
+
+This build replaces counter-only bypass with a history-only pre-pass. It updates mipmaps and the shared alpha/beta
+temporal features for every real frame while continuing to skip the expensive per-output gamma/delta/generation passes
+until Gamescope releases an image. Adaptive timing credit is also reset when acquisition enters or leaves backoff so a
+compositor discontinuity is not carried into later scheduling decisions. Diagnostics report
+`backend_work=history-only` for this path.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

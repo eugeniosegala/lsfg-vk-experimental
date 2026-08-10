@@ -129,15 +129,16 @@ namespace lsfgvk::backend {
         void scheduleFrames(Context& context, std::span<const float> timestamps);
 
         ///
-        /// Advance a frame without scheduling frame-generation GPU work.
+        /// Update temporal model history without generating output frames.
         ///
-        /// The caller must still submit the source frame and signal its shared
-        /// timeline value. This keeps source-image parity and synchronization
-        /// aligned when no generated outputs are scheduled.
+        /// The caller must submit the source frame and signal its shared timeline
+        /// value first. The shared pre-pass is then run so temporal feature maps,
+        /// source-image parity, and synchronization remain aligned while the
+        /// expensive per-output generation passes are skipped.
         ///
         /// @param context Context to advance.
         ///
-        void advanceFrameWithoutGeneration(Context& context);
+        void scheduleFrameHistory(Context& context);
 
         ///
         /// Close a frame generation context

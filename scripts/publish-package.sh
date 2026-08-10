@@ -112,9 +112,11 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 
 - Prevents undefined behaviour in Vulkan command submission when a submission has no timeline semaphore. Previously,
   lsfg-vk could access the end of an empty semaphore-value array.
-- Avoids scheduling frame-generation GPU work while Gamescope has no generated-image slot available. The layer keeps
-  real-frame history and timeline values aligned during this fallback, then resumes generation from the latest two real
-  frames as soon as image acquisition succeeds.
+- Avoids scheduling per-output frame-generation GPU work while Gamescope has no generated-image slot available. A
+  shared history-only pre-pass still updates the model's temporal feature slots for every real frame, preventing stale
+  motion history and progressively worsening ghosting after repeated overlay transitions.
+- Resets Adaptive timing smoothing and fractional output credit when generated-image acquisition enters or leaves
+  Gamescope backoff, so a compositor discontinuity is not carried into later scheduling decisions.
 - Avoids multi-second recovery delays caused by repeatedly missing the image-release window with zero-timeout probes.
   After one second of fallback, the layer makes one bounded reacquisition attempt per second using the configured
   acquire timeout. It does not force the game to recreate its swapchain.
@@ -132,9 +134,10 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   fallback, it makes one bounded reacquisition attempt per second so it cannot remain phase-locked to an unavailable
   point in the presentation cycle. The timeout remains disabled by default in the standalone engine; integrations can
   opt in per launched game.
-- Aggregates expected non-blocking retry diagnostics. The first fallback reports whether backend work was scheduled or
-  bypassed, periodic bounded attempts report \`acquire_mode=bounded-retry\`, and the recovery entry reports the number of
-  bypassed frames without logging every retry.
+- Aggregates expected non-blocking retry diagnostics. The first fallback reports \`backend_work=scheduled\`; subsequent
+  retries report \`backend_work=history-only\`. Periodic bounded attempts report
+  \`acquire_mode=bounded-retry\`, and the recovery entry reports the number of bypassed output frames without logging
+  every retry.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
 
