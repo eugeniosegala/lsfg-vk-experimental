@@ -22,9 +22,14 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
     exit 1
 fi
 
+tag_exists=false
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-    echo "Tag $tag already exists. Bump VERSION before publishing another release." >&2
-    exit 1
+    tag_commit="$(git rev-list -n 1 "$tag")"
+    if [[ "$tag_commit" != "$source_commit" ]]; then
+        echo "Tag $tag does not point at HEAD. Publish from its intended commit or bump VERSION." >&2
+        exit 1
+    fi
+    tag_exists=true
 fi
 
 for command in gh git; do
@@ -170,7 +175,9 @@ flatpak install --user org.freedesktop.Platform.VulkanLayer.lsfgvkexperimental-2
 - Upstream lineage: lsfg-vk \`2.0.0-dev28\`
 EOF
 
-git tag -a "$tag" -m "lsfg-vk experimental $version"
+if [[ "$tag_exists" == false ]]; then
+    git tag -a "$tag" -m "lsfg-vk experimental $version"
+fi
 git push "$release_remote" "$release_branch"
 git push "$release_remote" "$tag"
 
