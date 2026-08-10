@@ -114,7 +114,12 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Stabilizes on real frames for one second after startup, recovery, or a sustained cadence disruption, then ramps
   generated-frame load one step at a time instead of immediately requesting the configured maximum.
 - Evaluates each Adaptive ramp step against base and estimated output throughput. Counterproductive steps are rolled
-  back for five seconds, prioritizing stable real-frame cadence over reaching the target at any cost.
+  back, prioritizing stable real-frame cadence over reaching the target at any cost.
+- Adds one bounded bridge probe when Gamescope's cadence divisor makes the first generated-frame step look
+  counterproductive even though the target remains far away. The bridge is retained only when it demonstrates at
+  least a 15% estimated-output gain while staying within real-frame safety limits.
+- Delays failed or cadence-interrupted probes for at least 15 seconds and requires two seconds of stable cadence before
+  rearming, avoiding repeated 0-to-1 load oscillation that can look like a permanent detach.
 - Warms all three shared temporal-history slots with real frames before Adaptive generates its first output, avoiding
   startup inference from partially initialized history.
 - Exposes Adaptive mode, target, and maximum multiplier in the standalone Qt configuration UI. Switching modes should
@@ -157,8 +162,9 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   \`acquire_mode=bounded-retry\`. Adaptive recreation recovery emits \`generated-image-recovered
   recovery_action=swapchain-recreate\`, followed by \`request-swapchain-recreation\`; the newly created context then
   reports its normal startup history warm-up and stabilization. Ramp/load decisions emit \`adaptive-ramp\`,
-  \`adaptive-ramp-accepted\`, or \`adaptive-load-shed\`; cooldown suppression and context lifecycles are logged
-  separately. The recovery entry reports the number of bypassed output frames without logging every retry.
+  \`adaptive-ramp-accepted\`, or \`adaptive-load-shed\`. Bounded probing adds \`adaptive-bridge\`, bridge-result,
+  probe-abort, and rearm diagnostics; cooldown suppression and context lifecycles are logged separately. The recovery
+  entry reports the number of bypassed output frames without logging every retry.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
 
@@ -169,7 +175,7 @@ LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local
 After reproducing the problem, extract the latest diagnostic entries with:
 
 \`\`\`bash
-grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-ramp|adaptive-ramp-accepted|adaptive-load-shed|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
+grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-ramp|adaptive-ramp-accepted|adaptive-load-shed|adaptive-bridge|adaptive-bridge-accepted|adaptive-bridge-rejected|adaptive-probe-aborted|adaptive-rearm-scheduled|adaptive-rearm-ready|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
 \`\`\`
 
 ### Install

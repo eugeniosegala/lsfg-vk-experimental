@@ -84,6 +84,11 @@ namespace lsfgvk::layer {
             std::chrono::steady_clock::time_point now,
             std::string_view reason
         );
+        /// delay a failed probe until the compositor cadence is stable again
+        void scheduleAdaptiveRearm(
+            std::chrono::steady_clock::time_point now,
+            std::string_view reason
+        );
         /// ramp generated-frame load and reject counterproductive steps
         void updateAdaptiveGenerationLimit(
             std::chrono::steady_clock::time_point now,
@@ -125,6 +130,13 @@ namespace lsfgvk::layer {
         size_t adaptiveRampPreviousLimit{0};
         size_t adaptiveCadenceDropFrames{0};
         double adaptiveRampBaselineBaseFps{0.0};
+        bool adaptiveBridgeActive{false};
+        size_t adaptiveBridgeBaselineLimit{0};
+        double adaptiveBridgeBaselineBaseFps{0.0};
+        bool adaptiveRearmRequired{false};
+        std::optional<std::chrono::steady_clock::time_point> adaptiveRearmNotBefore;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveStableRearmSince;
+        size_t adaptiveConsecutiveProbeFailures{0};
         AdaptiveRecoveryState* adaptiveRecoveryState{};
 
         ls::GameConf profile;

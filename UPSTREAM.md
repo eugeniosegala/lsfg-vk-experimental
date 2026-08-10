@@ -240,6 +240,30 @@ The `.14` candidate keeps Fixed mode unchanged and adds an Adaptive-only recover
 This policy deliberately prioritizes stable base-frame cadence and temporal quality over reaching the target at any
 cost. Adaptive may remain below the requested target when a higher multiplier would be counterproductive.
 
+## Adaptive bounded-bridge test build: `v2.0.0-dev28-experimental.15`
+
+SteamOS traces from `.14` showed a remaining recovery failure that looked like a permanent detach. At a real base rate
+near 60 FPS, testing one intermediate frame could move Gamescope to a roughly 30 FPS cadence. The scheduler then saw
+little estimated output gain, returned to zero generated frames, waited five seconds, and repeated the same 0-to-1
+probe. It never tested whether two intermediates could escape that compositor cadence divisor and produce a useful
+output increase.
+
+The `.15` candidate keeps Fixed mode unchanged and makes Adaptive probing bounded and stateful:
+
+- A rejected first step may make one one-second bridge test at two generated frames, but only when the first step kept
+  at least 85% of the original estimated output, the original output remained well below target, and the configured
+  maximum permits the bridge.
+- The bridge is accepted only when it improves estimated output by at least 15%, retains at least 40% of the original
+  real-frame rate, and stays above the 10 FPS safety floor. Otherwise the scheduler returns to real frames.
+- A failed bridge, rejected first step, or cadence interruption during a probe schedules a 15-second cooldown and then
+  requires two continuous seconds of stable cadence before another attempt.
+- New diagnostics distinguish bridge attempts, accepted/rejected bridges, interrupted probes, and rearm scheduling.
+- Load-shedding decisions do not request swapchain recreation. Existing acquire-timeout recovery remains separately
+  guarded by `LSFGVK_PRESENT_RECOVERY_RECREATE`.
+
+The bridge can briefly increase interpolation load for its one-second evaluation window. It is intentionally attempted
+only once per recovery interval and is rolled back when it does not demonstrate a meaningful benefit.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

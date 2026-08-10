@@ -33,7 +33,9 @@ fractional interpolation outputs toward a configured target while retaining the 
 independent Vulkan-layer implementation, not a port of the closed Windows capture engine: it can add frames up to a 4x
 ceiling, but it cannot reduce a native framerate already above the target or provide the Windows Queue Target modes.
 After startup or a presentation disruption, it stabilizes on real frames and ramps generation gradually; if a higher
-step harms useful throughput, it temporarily falls back to the previous step.
+step harms useful throughput, it temporarily falls back to the previous step. When Gamescope's cadence divisor makes
+the first generated-frame step look counterproductive, the scheduler may make one bounded bridge test at the next
+step. A failed or interrupted test is not repeated until a cooldown has elapsed and cadence has remained stable.
 See [Configuration](docs/Configuration.md) for the exact limits.
 
 ## Installation

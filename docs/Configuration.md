@@ -27,7 +27,9 @@ Next is a list of all available **profile** configuration options:
 - **Maximum Adaptive Multiplier / `adaptive_max_multiplier`**: Limits Adaptive mode to 2x, 3x, or 4x total output.
   Every real frame is still presented. If the target would require a higher ratio, output remains below the target
   instead of adding the more artifact-prone generated frames. Adaptive also ramps toward this limit after startup or
-  recovery and can temporarily reduce it when added generation load harms real-frame throughput. (Default: `3`)
+  recovery and can temporarily reduce it when added generation load harms real-frame throughput. If the compositor's
+  cadence divisor makes the first step misleading, it can make one bounded bridge test at the next step. Rejected or
+  interrupted probes wait at least 15 seconds and require two seconds of stable cadence before retrying. (Default: `3`)
 - **Flow Scale / `flow_scale`**: The resolution scale at which the motion vectors are calculated. A lower value means better performance, but worse quality. (Default: `1.0`)
 - **Performance Mode / `performance_mode`**: When enabled, a significantly lighter frame generation model is used. This has a minor quality impact, but greatly improves performance. 
 (Default: `false`)
