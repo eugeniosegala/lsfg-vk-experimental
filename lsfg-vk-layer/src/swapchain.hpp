@@ -158,6 +158,10 @@ namespace lsfgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> adaptiveStableCadenceOutsideRangeSince;
         std::optional<std::chrono::steady_clock::time_point> adaptiveStableCadenceRetryAt;
         double adaptiveStableCadenceBaselineBaseFps{0.0};
+        std::optional<std::chrono::steady_clock::time_point> adaptiveRescueUntil;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveRescueCooldownUntil;
+        size_t adaptiveRescuePreviousLimit{0};
+        double adaptiveRescueBaselineBaseFps{0.0};
         size_t adaptiveConsecutiveProbeFailures{0};
         size_t adaptiveLastFailedRampLimit{0};
         size_t adaptiveConsecutiveRampFailures{0};

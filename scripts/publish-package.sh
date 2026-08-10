@@ -126,6 +126,9 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   frames when a stable integer cadence can meet the target without excessive work.
 - Adds `adaptive_stable_cadence = true|false` (default `true`) so constant-cadence validation can be disabled per
   profile without disabling Adaptive recovery, multiplier limits, or load protection.
+- Lets strict Adaptive settle before constant-cadence validation. A severe sustained cadence collapse triggers one
+  bounded real-only measurement, then resumes fractional scheduling or probes one higher level only when the selected
+  maximum permits it. Rescue attempts never exceed the configured maximum and have a 15-second cooldown.
 - Warms all three shared temporal-history slots with real frames before Adaptive generates its first output, avoiding
   startup inference from partially initialized history.
 - Exposes Adaptive mode, target, maximum multiplier, and Stable Cadence in the standalone Qt configuration UI. Switching modes should

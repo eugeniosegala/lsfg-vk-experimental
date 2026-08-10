@@ -38,10 +38,12 @@ Next is a list of all available **profile** configuration options:
   real-only and generated frames; it falls back to strict target scheduling if the higher constant workload is not
   sustainable. (Default: `3`)
 - **Stable Cadence / `adaptive_stable_cadence`**: When enabled, Adaptive may use the validated constant-cadence policy
-  described above instead of alternating generated-frame counts to match a fractional target exactly. This can produce
-  more consistent motion on lower-powered devices and common display divisors, at the cost of rendering more generated
-  frames than the strict target average. Disable it to use strict target scheduling while retaining Adaptive recovery,
-  load shedding, multiplier limits, and retry backoff. (Default: `true`)
+  described above instead of alternating generated-frame counts to match a fractional target exactly. Strict scheduling
+  settles first, and constant cadence is considered only when it already needs at least 95% of the corresponding integer
+  output count. A severe sustained collapse starts one second of real-only measurement; Adaptive then resumes fractional
+  scheduling or tests one higher level when the configured maximum permits it. Rescue has a 15-second cooldown and never
+  exceeds the selected maximum. Disable Stable Cadence to use strict target scheduling while retaining the remaining
+  Adaptive recovery, load shedding, multiplier limits, and retry backoff. (Default: `true`)
 - **Flow Scale / `flow_scale`**: The resolution scale at which the motion vectors are calculated. A lower value means better performance, but worse quality. (Default: `1.0`)
 - **Performance Mode / `performance_mode`**: When enabled, a significantly lighter frame generation model is used. This has a minor quality impact, but greatly improves performance. 
 (Default: `false`)

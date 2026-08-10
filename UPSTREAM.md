@@ -283,6 +283,14 @@ Profiles can set `adaptive_stable_cadence = false` to disable only constant-cade
 Adaptive recovery, load shedding, multiplier limits, and retry backoff remain active. The standalone configuration UI
 and `LSFGVK_ADAPTIVE_STABLE_CADENCE=0` environment path expose the same option. Fixed mode remains unchanged.
 
+Stable Cadence now waits two seconds after a successful generation ramp and activates only when strict scheduling
+already requests at least 95% of the matching integer output cadence. If a validated cadence later loses at least 22%
+of its base rate and falls below 80% of the requested output for 500 ms, Adaptive performs one second of real-only
+measurement. It then resumes fractional scheduling or probes one higher generated-frame level when
+`adaptive_max_multiplier` permits it. Rescue attempts never exceed the configured maximum and have a 15-second
+cooldown to prevent oscillation. If the measured real rate still cannot reach the target at the configured ceiling,
+Adaptive keeps the best permitted level instead of repeatedly retrying.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

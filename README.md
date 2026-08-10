@@ -35,9 +35,12 @@ ceiling, but it cannot reduce a native framerate already above the target or pro
 After startup or a presentation disruption, it stabilizes on real frames and ramps generation gradually; if a higher
 step harms useful throughput, it temporarily falls back to the previous step. When Gamescope's cadence divisor makes
 the first generated-frame step look counterproductive, the scheduler may make one bounded bridge test at the next
-step. For safe fractional ratios such as 60 real FPS toward a 90 FPS target, it can briefly validate a constant
-generated-frame cadence rather than alternating generated and real-only frames. It retains that cadence only when it
-continues to meet the target with sufficient base-rate headroom. Set `adaptive_stable_cadence = false` to use strict
+step. When strict scheduling already needs nearly every slot at an integer cadence, it can briefly validate constant
+generation rather than alternating generated and real-only frames. Strict scheduling settles first, and the constant
+cadence is retained only while it continues to meet the target with sufficient base-rate headroom. If that validated
+cadence later suffers a severe sustained collapse, Adaptive measures the real-only rate for one second, then resumes
+fractional scheduling or probes one higher multiplier when the configured maximum permits it. Rescue attempts have a
+15-second cooldown and never exceed `adaptive_max_multiplier`. Set `adaptive_stable_cadence = false` to use strict
 target scheduling instead while retaining the other Adaptive protections. Repeated failures at a higher multiplier use a
 progressive cooldown, while a meaningful base-rate improvement permits an earlier retry. After a generated-image
 recovery, the existing warm-up is retained but Adaptive resumes from its last validated generation level instead of
