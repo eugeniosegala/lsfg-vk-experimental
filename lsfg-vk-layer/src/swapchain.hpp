@@ -87,7 +87,8 @@ namespace lsfgvk::layer {
         /// delay a failed probe until the compositor cadence is stable again
         void scheduleAdaptiveRearm(
             std::chrono::steady_clock::time_point now,
-            std::string_view reason
+            std::string_view reason,
+            size_t fallbackLimit = 0
         );
         /// ramp generated-frame load and reject counterproductive steps
         void updateAdaptiveGenerationLimit(
@@ -136,6 +137,9 @@ namespace lsfgvk::layer {
         bool adaptiveRearmRequired{false};
         std::optional<std::chrono::steady_clock::time_point> adaptiveRearmNotBefore;
         std::optional<std::chrono::steady_clock::time_point> adaptiveStableRearmSince;
+        // The last validated generation level to retain while a higher adaptive
+        // probe is cooling down after an interruption.
+        size_t adaptiveRearmFallbackLimit{0};
         size_t adaptiveConsecutiveProbeFailures{0};
         AdaptiveRecoveryState* adaptiveRecoveryState{};
 

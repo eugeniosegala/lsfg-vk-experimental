@@ -47,6 +47,9 @@ namespace {
     constexpr double adaptiveBridgeMinimumBaseRetention = 0.40;
     constexpr double adaptiveBridgeTargetDeficitRatio = 0.90;
     constexpr auto adaptiveStabilizationDuration = std::chrono::seconds(1);
+    // A recreated generated-frame swapchain can take longer than an ordinary
+    // cadence discontinuity to settle in Gamescope.
+    constexpr auto adaptiveRecoveryStabilizationDuration = std::chrono::seconds(3);
     constexpr auto adaptiveRampEvaluationDuration = std::chrono::seconds(1);
     constexpr auto adaptiveRampStepDelay = std::chrono::milliseconds(250);
     constexpr auto adaptiveRampRetryDelay = std::chrono::seconds(5);
@@ -227,7 +230,8 @@ namespace {
         std::cerr << '\n';
     }
 
-    void logAdaptiveStabilization(std::string_view reason) {
+    void logAdaptiveStabilization(std::string_view reason,
+            const std::chrono::steady_clock::duration duration) {
         if (!presentDiagnosticsEnabled())
             return;
 
@@ -235,7 +239,7 @@ namespace {
                   << " reason=" << reason
                   << " duration_ms="
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
-                         adaptiveStabilizationDuration
+                         duration
                      ).count()
                   << '\n';
     }
@@ -308,7 +312,7 @@ namespace {
     }
 
     void logAdaptiveRearm(std::string_view operation, std::string_view reason,
-            size_t failures) {
+            size_t failures, size_t fallbackLimit) {
         if (!presentDiagnosticsEnabled())
             return;
 
@@ -323,7 +327,8 @@ namespace {
                       << " stable_required_ms="
                       << std::chrono::duration_cast<std::chrono::milliseconds>(
                              adaptiveStableRearmDuration
-                         ).count();
+                         ).count()
+                      << " fallback_generated_limit=" << fallbackLimit;
         }
         std::cerr << '\n';
     }
@@ -609,16 +614,19 @@ void Swapchain::resetAdaptiveScheduler(
 
 void Swapchain::scheduleAdaptiveRearm(
         const std::chrono::steady_clock::time_point now,
-        const std::string_view reason) {
+        const std::string_view reason,
+        const size_t fallbackLimit) {
     this->adaptiveConsecutiveProbeFailures++;
     this->adaptiveRearmRequired = true;
     this->adaptiveRearmNotBefore = now + adaptiveFailedProbeCooldown;
     this->adaptiveStableRearmSince.reset();
+    this->adaptiveRearmFallbackLimit = fallbackLimit;
     this->adaptiveNextRampAt = this->adaptiveRearmNotBefore;
     logAdaptiveRearm(
         "adaptive-rearm-scheduled",
         reason,
-        this->adaptiveConsecutiveProbeFailures
+        this->adaptiveConsecutiveProbeFailures,
+        this->adaptiveRearmFallbackLimit
     );
 }
 
@@ -630,15 +638,24 @@ void Swapchain::beginAdaptiveStabilization(
 
     const bool alreadyStabilizing = this->adaptiveStabilizationUntil &&
         now < *this->adaptiveStabilizationUntil;
+    size_t rearmFallbackLimit = 0;
     if (this->adaptiveRampEvaluationAt) {
+        rearmFallbackLimit = this->adaptiveBridgeActive
+            ? this->adaptiveBridgeBaselineLimit
+            : this->adaptiveRampPreviousLimit;
         logAdaptiveProbeAborted(reason, this->adaptiveGenerationLimit);
-        this->scheduleAdaptiveRearm(now, "probe-interrupted");
+        this->scheduleAdaptiveRearm(
+            now, "probe-interrupted", rearmFallbackLimit
+        );
     } else if (this->adaptiveRearmRequired) {
         // A fresh cadence disruption restarts the stable-cadence requirement,
         // but it does not extend the already bounded cooldown indefinitely.
         this->adaptiveStableRearmSince.reset();
     }
-    this->adaptiveStabilizationUntil = now + adaptiveStabilizationDuration;
+    const auto stabilizationDuration = reason == "swapchain-recreation"
+        ? adaptiveRecoveryStabilizationDuration
+        : adaptiveStabilizationDuration;
+    this->adaptiveStabilizationUntil = now + stabilizationDuration;
     this->adaptiveNextRampAt = this->adaptiveStabilizationUntil;
     if (this->adaptiveRearmNotBefore &&
             *this->adaptiveRearmNotBefore > *this->adaptiveNextRampAt) {
@@ -655,7 +672,7 @@ void Swapchain::beginAdaptiveStabilization(
     this->adaptiveLastDiagnostic.reset();
     this->resetAdaptiveScheduler(now);
     if (!alreadyStabilizing)
-        logAdaptiveStabilization(reason);
+        logAdaptiveStabilization(reason, stabilizationDuration);
 }
 
 void Swapchain::updateAdaptiveGenerationLimit(
@@ -670,6 +687,12 @@ void Swapchain::updateAdaptiveGenerationLimit(
     );
 
     if (this->adaptiveRearmRequired) {
+        // The stabilization phase itself remains real-frame-only. Once it has
+        // completed, retain the last proven level while the failed higher
+        // probe cools down instead of dropping frame generation altogether.
+        this->adaptiveGenerationLimit = std::min(
+            this->adaptiveRearmFallbackLimit, configuredLimit
+        );
         if (!this->adaptiveStableRearmSince)
             this->adaptiveStableRearmSince = now;
 
@@ -683,11 +706,13 @@ void Swapchain::updateAdaptiveGenerationLimit(
         logAdaptiveRearm(
             "adaptive-rearm-ready",
             "stable-cadence",
-            this->adaptiveConsecutiveProbeFailures
+            this->adaptiveConsecutiveProbeFailures,
+            this->adaptiveRearmFallbackLimit
         );
         this->adaptiveRearmRequired = false;
         this->adaptiveRearmNotBefore.reset();
         this->adaptiveStableRearmSince.reset();
+        this->adaptiveRearmFallbackLimit = 0;
         this->adaptiveNextRampAt.reset();
     }
 
