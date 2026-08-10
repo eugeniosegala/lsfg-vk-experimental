@@ -35,6 +35,10 @@ namespace ls {
         std::optional<std::string> gpu;
         /// multiplier for frame generation
         size_t multiplier{2};
+        /// dynamically vary the generated-frame count toward a target framerate
+        bool adaptive{false};
+        /// desired displayed framerate when adaptive mode is enabled
+        uint32_t target_fps{120};
         /// non-inverted flow scale
         float flow_scale{1.00F};
         /// use performance mode

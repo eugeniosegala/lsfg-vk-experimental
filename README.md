@@ -27,6 +27,13 @@ Lossless Scaling Steam application; it is not a separate frame-generation algori
 The experimental status matters: compatibility depends on the game, compositor, GPU driver, and selected options. Please
 test changes one game at a time and include the build version, GPU/driver, and game details in any report.
 
+The experimental line also includes an opt-in Adaptive Frame Generation scheduler, inspired by Lossless Scaling's
+[Adaptive Frame Generation](https://store.steampowered.com/news/app/993090/view/518581441632666732). It varies
+fractional interpolation outputs toward a configured target while retaining the existing Fixed mode. This is an
+independent Vulkan-layer implementation, not a port of the closed Windows capture engine: it can add frames up to a 4x
+ceiling, but it cannot reduce a native framerate already above the target or provide the Windows Queue Target modes.
+See [Configuration](docs/Configuration.md) for the exact limits.
+
 ## Installation
 
 If you are on a Steam Deck or similar handheld, consider

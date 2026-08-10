@@ -188,8 +188,37 @@ ApplicationWindow {
                 }
 
                 GroupEntry {
+                    title: "Adaptive Frame Generation"
+                    description: "Vary generated frames to approach a target framerate (maximum 4x)"
+
+                    CheckBox {
+                        Layout.alignment: Qt.AlignRight
+
+                        checked: backend.adaptive
+                        onToggled: backend.adaptive = checked
+                    }
+                }
+
+                GroupEntry {
+                    title: "Target FPS"
+                    description: "Adaptive mode cannot reduce a base framerate already above this target"
+                    enabled: backend.adaptive
+
+                    SpinBox {
+                        Layout.alignment: Qt.AlignRight
+
+                        from: 10
+                        to: 1000
+
+                        value: backend.target_fps
+                        onValueModified: backend.target_fps = value
+                    }
+                }
+
+                GroupEntry {
                     title: "Multiplier"
                     description: "Control the amount of generated frames"
+                    enabled: !backend.adaptive
 
                     SpinBox {
                         Layout.alignment: Qt.AlignRight

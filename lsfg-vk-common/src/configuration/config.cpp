@@ -41,6 +41,8 @@ active_in = [ # see the wiki for more info
 ]
 # gpu = 'NVIDIA GeForce RTX 5080' # see the wiki for more info
 multiplier = 4
+adaptive = false
+target_fps = 120
 flow_scale = 0.85
 performance_mode = true
 pacing = 'none' # see the wiki for more info
@@ -68,6 +70,8 @@ ConfigFile::ConfigFile() {
             "vkcubepp"
         },
         .multiplier = 4,
+        .adaptive = false,
+        .target_fps = 120,
         .flow_scale = 0.85F,
         .performance_mode = true,
         .pacing = Pacing::None
@@ -125,6 +129,8 @@ namespace {
             .active_in = activityFromString(tbl["active_in"]),
             .gpu = tbl["gpu"].value<std::string>(),
             .multiplier = tbl["multiplier"].value_or(2U),
+            .adaptive = tbl["adaptive"].value_or(false),
+            .target_fps = tbl["target_fps"].value_or(120U),
             .flow_scale = tbl["flow_scale"].value_or(1.0F),
             .performance_mode = tbl["performance_mode"].value_or(false),
             .pacing = parcingFromString(tbl["pacing"].value_or<std::string>("none"))
@@ -132,6 +138,8 @@ namespace {
 
         if (conf.multiplier <= 1)
             throw ls::error("multiplier must be greater than 1");
+        if (conf.target_fps < 10 || conf.target_fps > 1000)
+            throw ls::error("target_fps must be between 10 and 1000");
         if (conf.flow_scale < 0.25F || conf.flow_scale > 1.0F)
             throw ls::error("flow_scale must be between 0.25 and 1.0");
 
@@ -164,6 +172,8 @@ namespace {
             .gpu = std::nullopt,
 
             .multiplier = 2,
+            .adaptive = false,
+            .target_fps = 120,
             .flow_scale = 1.0F,
             .performance_mode = false,
             .pacing = Pacing::None
@@ -173,6 +183,10 @@ namespace {
         if (gpu) conf.gpu = std::string(gpu);
         const char* multiplier = std::getenv("LSFGVK_MULTIPLIER");
         if (multiplier) conf.multiplier = static_cast<size_t>(std::stoul(multiplier));
+        const char* adaptive = std::getenv("LSFGVK_ADAPTIVE");
+        if (adaptive) conf.adaptive = std::string(adaptive) == "1";
+        const char* target_fps = std::getenv("LSFGVK_TARGET_FPS");
+        if (target_fps) conf.target_fps = static_cast<uint32_t>(std::stoul(target_fps));
         const char* flow_scale = std::getenv("LSFGVK_FLOW_SCALE");
         if (flow_scale) conf.flow_scale = std::stof(flow_scale);
         const char* performance = std::getenv("LSFGVK_PERFORMANCE_MODE");
@@ -182,6 +196,8 @@ namespace {
 
         if (conf.multiplier <= 1)
             throw ls::error("multiplier must be greater than 1");
+        if (conf.target_fps < 10 || conf.target_fps > 1000)
+            throw ls::error("target_fps must be between 10 and 1000");
         if (conf.flow_scale < 0.25F || conf.flow_scale > 1.0F)
             throw ls::error("flow_scale must be between 0.25 and 1.0");
 
@@ -240,6 +256,8 @@ void ConfigFile::write(const std::filesystem::path& path) const {
         if (conf.gpu)
             profile.insert("gpu", conf.gpu.value_or(""));
         profile.insert("multiplier", static_cast<int64_t>(conf.multiplier));
+        profile.insert("adaptive", conf.adaptive);
+        profile.insert("target_fps", static_cast<int64_t>(conf.target_fps));
         profile.insert("flow_scale", conf.flow_scale);
         profile.insert("performance_mode", conf.performance_mode);
         switch (conf.pacing) {

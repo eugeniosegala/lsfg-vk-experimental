@@ -32,6 +32,19 @@ namespace vk {
         Buffer(const vk::Vulkan& vk, const void* data, size_t size,
             VkBufferUsageFlags usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
+        /// replace the contents of a host-visible buffer
+        /// @param vk the Vulkan instance
+        /// @param data data to upload
+        /// @param length number of bytes to upload
+        /// @throws ls::vulkan_error on failure
+        void write(const vk::Vulkan& vk, const void* data, size_t length);
+
+        /// replace the contents of a host-visible buffer
+        template<typename T>
+        void write(const vk::Vulkan& vk, const T& data) {
+            this->write(vk, reinterpret_cast<const void*>(&data), sizeof(T));
+        }
+
         /// get the buffer handle
         /// @return the buffer handle
         [[nodiscard]] const auto& handle() const { return this->buffer.get(); }

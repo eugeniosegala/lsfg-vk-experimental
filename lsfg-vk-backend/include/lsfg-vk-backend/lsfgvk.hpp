@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -115,12 +116,24 @@ namespace lsfgvk::backend {
         void scheduleFrames(Context& context);
 
         ///
+        /// Schedule generated frames at explicit interpolation timestamps.
+        ///
+        /// Timestamps must be strictly increasing values between 0 and 1. The
+        /// number of timestamps may not exceed the destination-image capacity
+        /// supplied when the context was opened.
+        ///
+        /// @param context Context to use.
+        /// @param timestamps Normalized positions between the previous and current real frame.
+        /// @throws backend::error on failure
+        ///
+        void scheduleFrames(Context& context, std::span<const float> timestamps);
+
+        ///
         /// Advance a frame without scheduling frame-generation GPU work.
         ///
-        /// The caller must still submit the source frame and advance the shared
-        /// timeline semaphore through every value that generated outputs would
-        /// normally signal. This keeps source-image parity and synchronization
-        /// aligned when generated frames cannot be presented.
+        /// The caller must still submit the source frame and signal its shared
+        /// timeline value. This keeps source-image parity and synchronization
+        /// aligned when no generated outputs are scheduled.
         ///
         /// @param context Context to advance.
         ///

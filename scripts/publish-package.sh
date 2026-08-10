@@ -79,7 +79,10 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 
 ### Important limitations
 
-- This build uses fixed 2x, 3x, or 4x frame-generation multipliers. It does not provide adaptive frame generation or an automatic multiplier.
+- Adaptive Frame Generation is experimental and opt-in. This independent Vulkan-layer scheduler varies between zero
+  and three generated frames per real frame to approach the configured average target, but it cannot reduce a native
+  framerate already above that target, exceed 4x the current base rate, or provide the Windows Queue Target modes.
+  Fixed 2x, 3x, and 4x modes remain available and unchanged.
 - The 0x multiplier previously available in the 1.x line is not present in upstream lsfg-vk v2 and cannot be restored by this packaging layer.
 - Lossless Scaling and its \`Lossless.dll\` must already be installed through Steam; this archive does not include or modify it.
 - Flatpak runtime extensions for 23.08, 24.08, and 25.08 are included in \`$(basename "$flatpak_archive")\`. They use a dedicated experimental extension ID and can coexist with the public Flathub layer.
@@ -89,6 +92,16 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Vulkan implicit layer: \`liblsfg-vk-layer.so\`
 - CLI and Qt configuration UI
 - Vulkan manifest and XDG desktop files
+
+### Added
+
+- Adds opt-in Adaptive Frame Generation through `adaptive = true` and `target_fps = <FPS>` profile settings.
+- Uses a fractional output accumulator to vary the generated-frame count and uploads the corresponding interpolation
+  timestamps before each inference pass. This supports non-integer average ratios such as 30 -> 55 or 50 -> 120.
+- Skips interpolation below a 10 FPS base-rate safety floor and caps generation at three intermediate frames per real
+  frame. Existing Fixed mode continues through its original scheduling path.
+- Exposes Adaptive mode and its target in the standalone Qt configuration UI. Switching modes should be followed by a
+  game restart so the swapchain is created with the intended capacity.
 
 ### Fixed
 
@@ -121,7 +134,7 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
 
 \`\`\`bash
-LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=25 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/lsfg-vk-experimental %command%
+LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/lsfg-vk-experimental %command%
 \`\`\`
 
 After reproducing the problem, extract the latest diagnostic entries with:

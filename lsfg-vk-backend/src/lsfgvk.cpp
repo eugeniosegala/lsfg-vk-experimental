@@ -35,6 +35,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -106,6 +107,9 @@ namespace lsfgvk::backend {
         /// (see lsfg-vk documentation)
         void scheduleFrames();
 
+        /// schedule a variable number of frames at explicit timestamps
+        void scheduleFrames(std::span<const float> timestamps);
+
         /// advance frame state without scheduling GPU work
         /// (see lsfg-vk documentation)
         void advanceFrameWithoutGeneration();
@@ -118,6 +122,7 @@ namespace lsfgvk::backend {
         vk::TimelineSemaphore prepassSemaphore;
         size_t idx{1};
         size_t fidx{0}; // real frame index
+        bool generationScheduled{false};
 
         std::vector<vk::CommandBuffer> cmdbufs;
         vk::Fence cmdbufFence;
@@ -576,15 +581,74 @@ void Instance::scheduleFrames(Context& context) { // NOLINT (static)
 #endif
 }
 
+void Instance::scheduleFrames(Context& context, std::span<const float> timestamps) { // NOLINT (static)
+    if (timestamps.empty())
+        throw backend::error("At least one interpolation timestamp is required");
+#ifdef LSFGVK_TESTING_RENDERDOC
+    const auto& impl = this->m_impl;
+    if (impl->getRenderDocAPI()) {
+        impl->getRenderDocAPI()->StartFrameCapture(
+            RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(impl->getVulkan().inst()),
+            nullptr);
+    }
+#endif
+    try {
+        context.scheduleFrames(timestamps);
+    } catch (const std::exception& e) {
+        throw backend::error("Unable to schedule frames", e);
+    }
+#ifdef LSFGVK_TESTING_RENDERDOC
+    if (impl->getRenderDocAPI()) {
+        impl->getVulkan().df().DeviceWaitIdle(impl->getVulkan().dev());
+        impl->getRenderDocAPI()->EndFrameCapture(
+            RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(impl->getVulkan().inst()),
+            nullptr);
+    }
+#endif
+}
+
 void Instance::advanceFrameWithoutGeneration(Context& context) { // NOLINT (static)
     context.advanceFrameWithoutGeneration();
 }
 
 void Context::scheduleFrames() {
+    this->scheduleFrames({});
+}
+
+void Context::scheduleFrames(std::span<const float> timestamps) {
+    const bool explicitTimestamps = !timestamps.empty();
+    const size_t generatedFrameCount = explicitTimestamps
+        ? timestamps.size()
+        : this->destImages.size();
+    if (generatedFrameCount > this->destImages.size())
+        throw backend::error("Too many interpolation timestamps for this context");
+
+    float previousTimestamp = 0.0F;
+    if (explicitTimestamps) {
+        for (const float timestamp : timestamps) {
+            if (timestamp <= previousTimestamp || timestamp >= 1.0F)
+                throw backend::error(
+                    "Interpolation timestamps must be strictly increasing between 0 and 1"
+                );
+            previousTimestamp = timestamp;
+        }
+    }
+
     // wait for previous pre-pass to complete
-    if (this->fidx && !this->cmdbufFence.wait(this->ctx.vk))
+    if (this->generationScheduled && !this->cmdbufFence.wait(this->ctx.vk))
         throw backend::error("Timeout waiting for previous frame to complete");
     this->cmdbufFence.reset(this->ctx.vk);
+
+    // Every generated pass has its own uniform buffer and descriptor sets.
+    // Previous GPU work is complete at this point, so the timestamp can be
+    // safely replaced before recording the next set of dispatches.
+    if (explicitTimestamps) {
+        for (size_t i = 0; i < timestamps.size(); ++i) {
+            auto constants = backend::getDefaultConstantBuffer(0, 1, this->ctx.flow);
+            constants.timestamp = timestamps[i];
+            this->ctx.constantBuffers.at(i).write(this->ctx.vk, constants);
+        }
+    }
 
     // schedule pre-pass
     const auto& cmdbuf = this->cmdbufs.at(0);
@@ -607,7 +671,7 @@ void Context::scheduleFrames() {
     this->idx++;
 
     // schedule main passes
-    for (size_t i = 0; i < this->destImages.size(); i++) {
+    for (size_t i = 0; i < generatedFrameCount; i++) {
         const auto& cmdbuf = this->cmdbufs.at(i + 1);
         cmdbuf.begin(ctx.vk);
 
@@ -626,19 +690,19 @@ void Context::scheduleFrames() {
         cmdbuf.submit(this->ctx.vk,
             {}, this->prepassSemaphore.handle(), this->idx - 1,
             {}, this->syncSemaphore.handle(), this->idx + i,
-            i == this->destImages.size() - 1 ? this->cmdbufFence.handle() : VK_NULL_HANDLE
+            i == generatedFrameCount - 1 ? this->cmdbufFence.handle() : VK_NULL_HANDLE
         );
     }
 
-    this->idx += this->destImages.size();
+    this->idx += generatedFrameCount;
     this->fidx++;
+    this->generationScheduled = true;
 }
 
 void Context::advanceFrameWithoutGeneration() {
-    // Keep the backend indices aligned with the application side. The caller
-    // advances the imported timeline semaphore through the corresponding
-    // source and generated-output values without dispatching the model.
-    this->idx += this->destImages.size() + 1;
+    // Keep the backend source-frame index and imported timeline aligned with
+    // the application side without dispatching the model.
+    this->idx++;
     this->fidx++;
 }
 

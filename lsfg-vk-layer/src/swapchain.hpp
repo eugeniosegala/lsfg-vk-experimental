@@ -61,6 +61,11 @@ namespace lsfgvk::layer {
             void* next_chain, uint32_t imageIdx,
             const std::vector<VkSemaphore>& semaphores);
     private:
+        /// calculate generated-frame timestamps for the current real frame
+        std::vector<float> generatedFrameTimestamps(
+            std::chrono::steady_clock::time_point now
+        );
+
         std::vector<vk::Image> sourceImages;
         std::vector<vk::Image> destinationImages;
         ls::lazy<vk::TimelineSemaphore> syncSemaphore;
@@ -81,6 +86,11 @@ namespace lsfgvk::layer {
         bool generatedImageAcquireBackoff{false};
         size_t generatedImageAcquireBypassCount{0};
         std::optional<std::chrono::steady_clock::time_point> generatedImageAcquireLastBoundedProbe;
+
+        std::optional<std::chrono::steady_clock::time_point> adaptiveLastRealFrame;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveLastDiagnostic;
+        double adaptiveSmoothedIntervalSeconds{0.0};
+        double adaptiveOutputCredit{0.0};
 
         ls::GameConf profile;
         SwapchainInfo info;

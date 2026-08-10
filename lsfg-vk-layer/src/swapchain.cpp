@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -32,6 +33,17 @@ using namespace lsfgvk::layer;
 
 namespace {
     using DiagnosticsClock = std::chrono::steady_clock;
+
+    constexpr size_t adaptiveMaximumMultiplier = 4;
+    constexpr double adaptiveMinimumBaseFps = 10.0;
+    constexpr double adaptiveIntervalSmoothing = 0.25;
+
+    size_t generatedFrameCapacity(const ls::GameConf& profile) {
+        const size_t multiplier = profile.adaptive
+            ? adaptiveMaximumMultiplier
+            : profile.multiplier;
+        return multiplier - 1;
+    }
 
     bool presentDiagnosticsEnabled() {
         static const bool enabled = [] {
@@ -187,7 +199,7 @@ void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint3
 
     switch (profile.pacing) {
         case ls::Pacing::None:
-            createInfo.minImageCount += profile.multiplier;
+            createInfo.minImageCount += generatedFrameCapacity(profile) + 1;
             if (maxImages && createInfo.minImageCount > maxImages)
                 createInfo.minImageCount = maxImages;
 
@@ -204,7 +216,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     const bool hdr = this->info.format > 57;
 
     std::vector<int> sourceFds(2);
-    std::vector<int> destinationFds(this->profile.multiplier - 1);
+    std::vector<int> destinationFds(generatedFrameCapacity(this->profile));
 
     this->sourceImages.reserve(sourceFds.size());
     for (int& fd : sourceFds)
@@ -266,6 +278,97 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
                   << static_cast<double>(*timeout) / 1'000'000.0
                   << " ms; stalled generated frames will be skipped\n";
     }
+    if (this->profile.adaptive) {
+        std::cerr << "lsfg-vk: adaptive frame generation enabled; target="
+                  << this->profile.target_fps
+                  << " fps, maximum multiplier=" << adaptiveMaximumMultiplier << "x\n";
+    }
+}
+
+std::vector<float> Swapchain::generatedFrameTimestamps(
+        const std::chrono::steady_clock::time_point now) {
+    if (!this->adaptiveLastRealFrame) {
+        this->adaptiveLastRealFrame = now;
+        return {};
+    }
+
+    const double rawIntervalSeconds = std::chrono::duration<double>(
+        now - *this->adaptiveLastRealFrame
+    ).count();
+    this->adaptiveLastRealFrame = now;
+
+    // Loading screens, suspension and base rates below 10 FPS do not provide
+    // useful motion history. Match the Windows implementation's safety floor
+    // by presenting the real frame without interpolation and restarting the
+    // fractional accumulator after the stall.
+    if (rawIntervalSeconds <= 0.0 ||
+            rawIntervalSeconds > 1.0 / adaptiveMinimumBaseFps) {
+        this->adaptiveSmoothedIntervalSeconds = 0.0;
+        this->adaptiveOutputCredit = 0.0;
+        return {};
+    }
+
+    if (this->adaptiveSmoothedIntervalSeconds == 0.0) {
+        this->adaptiveSmoothedIntervalSeconds = rawIntervalSeconds;
+    } else {
+        this->adaptiveSmoothedIntervalSeconds =
+            (1.0 - adaptiveIntervalSmoothing) * this->adaptiveSmoothedIntervalSeconds +
+            adaptiveIntervalSmoothing * rawIntervalSeconds;
+    }
+
+    const double desiredOutputsPerRealFrame =
+        this->adaptiveSmoothedIntervalSeconds *
+        static_cast<double>(this->profile.target_fps);
+
+    size_t generatedFrameCount = 0;
+    if (desiredOutputsPerRealFrame > 1.0) {
+        this->adaptiveOutputCredit += desiredOutputsPerRealFrame;
+        const size_t requestedOutputs = std::max<size_t>(
+            1,
+            static_cast<size_t>(std::floor(this->adaptiveOutputCredit + 1e-9))
+        );
+        generatedFrameCount = std::min(
+            requestedOutputs - 1,
+            this->destinationImages.size()
+        );
+        this->adaptiveOutputCredit -= static_cast<double>(generatedFrameCount + 1);
+        if (this->adaptiveOutputCredit < 0.0)
+            this->adaptiveOutputCredit = 0.0;
+        if (generatedFrameCount == this->destinationImages.size() &&
+                this->adaptiveOutputCredit >= 1.0) {
+            // The requested target is currently above the 4x ceiling. Keep
+            // only the fractional phase instead of accumulating an impossible
+            // backlog that would delay adaptation when the base rate recovers.
+            this->adaptiveOutputCredit = std::fmod(this->adaptiveOutputCredit, 1.0);
+        }
+    } else {
+        // A Vulkan layer cannot present fewer real frames than the application
+        // submits. Do not carry debt when the base rate is already at or above
+        // the requested target.
+        this->adaptiveOutputCredit = 0.0;
+    }
+
+    if (presentDiagnosticsEnabled() &&
+            (!this->adaptiveLastDiagnostic ||
+             now - *this->adaptiveLastDiagnostic >= std::chrono::seconds(1))) {
+        this->adaptiveLastDiagnostic = now;
+        const double baseFps = 1.0 / this->adaptiveSmoothedIntervalSeconds;
+        std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-plan"
+                  << " base_fps=" << baseFps
+                  << " target_fps=" << this->profile.target_fps
+                  << " generated=" << generatedFrameCount
+                  << " max_generated=" << this->destinationImages.size()
+                  << '\n';
+    }
+
+    std::vector<float> timestamps;
+    timestamps.reserve(generatedFrameCount);
+    for (size_t i = 0; i < generatedFrameCount; ++i)
+        timestamps.push_back(
+            static_cast<float>(i + 1) /
+            static_cast<float>(generatedFrameCount + 1)
+        );
+    return timestamps;
 }
 
 VkResult Swapchain::present(const vk::Vulkan& vk,
@@ -275,10 +378,17 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const auto presentStarted = startPresentDiagnostic();
     const auto& swapchainImage = this->info.images.at(imageIdx);
     const auto& sourceImage = this->sourceImages.at(this->fidx % 2);
+    const auto generatedTimestamps = this->profile.adaptive
+        ? this->generatedFrameTimestamps(DiagnosticsClock::now())
+        : std::vector<float>{};
+    const size_t generatedFrameCount = this->profile.adaptive
+        ? generatedTimestamps.size()
+        : this->destinationImages.size();
 
     const auto configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
     bool renderFencePrepared = false;
-    bool bypassGeneratedFrames = false;
+    bool bypassGeneratedFrames = this->profile.adaptive && generatedTimestamps.empty();
+    bool generatedImageUnavailable = false;
     bool boundedRecoveryProbe = false;
     std::optional<uint32_t> preacquiredGeneratedImage;
 
@@ -304,7 +414,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // before scheduling more model work. If Gamescope still has no image, the
     // real frame is copied and presented below while backend/timeline indices
     // advance without producing output that would immediately be discarded.
-    if (configuredAcquireTimeout && this->generatedImageAcquireBackoff) {
+    if (configuredAcquireTimeout && this->generatedImageAcquireBackoff &&
+            generatedFrameCount > 0) {
         prepareRenderFence();
 
         auto& recoveryPass = this->passes.front();
@@ -330,6 +441,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 );
             }
             bypassGeneratedFrames = true;
+            generatedImageUnavailable = true;
         } else if (acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR) {
             logSlowPresentOperation(
                 "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
@@ -357,7 +469,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     if (!bypassGeneratedFrames) {
         const auto scheduleStarted = startPresentDiagnostic();
         try {
-            this->instance.get().scheduleFrames(this->ctx.get());
+            if (this->profile.adaptive)
+                this->instance.get().scheduleFrames(this->ctx.get(), generatedTimestamps);
+            else
+                this->instance.get().scheduleFrames(this->ctx.get());
         } catch (const std::exception& e) {
             throw ls::error("failed to schedule frames", e);
         }
@@ -444,9 +559,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     };
 
     if (bypassGeneratedFrames) {
-        const size_t skippedFrames = this->destinationImages.size();
         const uint64_t sourceTimelineValue = this->idx - 1;
-        const uint64_t finalTimelineValue = sourceTimelineValue + skippedFrames;
         auto& fallbackPass = this->passes.front();
         auto& fallbackSemaphores = this->postCopySemaphores.at(
             this->idx % this->postCopySemaphores.size()
@@ -458,19 +571,20 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         fallbackCommandBuffer.end(vk);
         fallbackCommandBuffer.submit(vk,
             {}, this->syncSemaphore->handle(), sourceTimelineValue,
-            { fallbackSemaphore.handle() }, this->syncSemaphore->handle(), finalTimelineValue,
+            { fallbackSemaphore.handle() }, VK_NULL_HANDLE, 0,
             this->renderFence->handle()
         );
 
         this->instance.get().advanceFrameWithoutGeneration(this->ctx.get());
-        if (!this->generatedImageAcquireBypassCount || boundedRecoveryProbe) {
+        if (generatedImageUnavailable &&
+                (!this->generatedImageAcquireBypassCount || boundedRecoveryProbe)) {
             logPresentFallback(
-                this->fidx, this->idx, 0, skippedFrames, finalTimelineValue,
+                this->fidx, this->idx, 0, generatedFrameCount, sourceTimelineValue,
                 boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry", false
             );
         }
-        this->generatedImageAcquireBypassCount++;
-        this->idx += skippedFrames;
+        if (generatedImageUnavailable)
+            this->generatedImageAcquireBypassCount++;
 
         const auto res = presentOriginalImage(fallbackSemaphore.handle(), next_chain);
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
@@ -481,7 +595,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         return res;
     }
 
-    for (size_t i = 0; i < this->destinationImages.size(); i++) {
+    for (size_t i = 0; i < generatedFrameCount; i++) {
         auto& pcs = this->postCopySemaphores.at(this->idx % this->postCopySemaphores.size());
         auto& destinationImage = this->destinationImages.at(i);
         auto& pass = this->passes.at(i);
@@ -513,7 +627,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             // an overlay is visible. Do not block the game indefinitely. The backend has already scheduled every
             // generated frame for this sequence, so wait for its final timeline value before presenting the original
             // image and advancing both sides to the next sequence.
-            const size_t skippedFrames = this->destinationImages.size() - i;
+            const size_t skippedFrames = generatedFrameCount - i;
             const uint64_t finalGeneratedTimelineValue = this->idx + skippedFrames - 1;
             auto& fallbackSemaphore = pcs.second;
             this->generatedImageAcquireBackoff = true;
@@ -599,7 +713,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         cmdbuf.submit(vk,
             waitSemaphores, this->syncSemaphore->handle(), this->idx,
             signalSemaphores, VK_NULL_HANDLE, 0,
-            i == this->destinationImages.size() - 1 ? this->renderFence->handle() : VK_NULL_HANDLE
+            i == generatedFrameCount - 1 ? this->renderFence->handle() : VK_NULL_HANDLE
         );
         logSlowPresentOperation(
             "submit-generated-copy", this->fidx, this->idx, generatedSubmitStarted,

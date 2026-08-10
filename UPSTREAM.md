@@ -134,6 +134,21 @@ work. This gives Gamescope a short window to release an image without returning 
 forcing the game to recreate its swapchain. Diagnostics identify these periodic attempts with
 `acquire_mode=bounded-retry`.
 
+## Adaptive Frame Generation test build: `v2.0.0-dev28-experimental.9`
+
+This release adds an opt-in Adaptive scheduler on top of the reviewed dev28 engine. Profiles can set
+`adaptive = true` and a `target_fps`; Fixed mode remains the default and retains its existing multiplier path.
+
+The scheduler measures the real-frame interval, keeps a fractional output budget, and selects between zero and three
+generated frames for each real frame. Before dispatch, it updates the model's normalized interpolation timestamps so
+the chosen outputs remain evenly positioned between the two source frames. It suspends interpolation when the measured
+base rate drops below 10 FPS and discards impossible backlog above the 4x safety ceiling.
+
+This is not a copy of Lossless Scaling's Windows capture engine. An inline Vulkan layer cannot present fewer real
+frames than the application submits, so it cannot reduce a base framerate already above the requested target. It also
+cannot reach targets above four times the current base rate. These limitations are exposed in both configuration UIs
+and must remain in release notes while the feature is experimental.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:
