@@ -234,8 +234,8 @@ ApplicationWindow {
                 }
 
                 GroupEntry {
-                    title: "Stable Cadence"
-                    description: "Prefer a constant interpolation cadence when it passes the safety checks"
+                    title: "Smooth Cadence"
+                    description: "Prefer smoother constant interpolation at the cost of lower real-frame cadence and responsiveness"
                     enabled: backend.adaptive
 
                     CheckBox {

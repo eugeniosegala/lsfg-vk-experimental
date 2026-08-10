@@ -124,17 +124,20 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   improvement of at least 15% permits an earlier retry, so a genuinely recovered scene is not held back.
 - Validates a bounded constant cadence for suitable fractional targets, avoiding alternating generated and real-only
   frames when a stable integer cadence can meet the target without excessive work.
-- Adds `adaptive_stable_cadence = true|false` (default `true`) so constant-cadence validation can be disabled per
-  profile without disabling Adaptive recovery, multiplier limits, or load protection.
+- Adds `adaptive_stable_cadence = true|false` (default `false`) so smoother constant-cadence validation can be enabled
+  per profile without changing Adaptive recovery, multiplier limits, or load protection. Constant cadence can lower
+  the real-frame presentation rate and feel less responsive.
 - Lets strict Adaptive settle before constant-cadence validation. A severe sustained cadence collapse triggers one
   bounded real-only measurement, then resumes fractional scheduling or probes one higher level only when the selected
   maximum permits it. Rescue attempts never exceed the configured maximum and have a 15-second cooldown.
 - Preserves the validated generation level and healthy base-rate baseline across abrupt menu/focus cadence stalls.
   Adaptive restores that level only after one second at least 90% of the previous real cadence; after five seconds it
   discards the stale baseline and performs a clean ramp from zero.
+- Treats a sustained gameplay cadence drop as a new operating point after the normal one-second stabilization instead
+  of waiting five seconds for the previous rate to return.
 - Warms all three shared temporal-history slots with real frames before Adaptive generates its first output, avoiding
   startup inference from partially initialized history.
-- Exposes Adaptive mode, target, maximum multiplier, and Stable Cadence in the standalone Qt configuration UI. Switching modes should
+- Exposes Adaptive mode, target, maximum multiplier, and Smooth Cadence in the standalone Qt configuration UI. Switching modes should
   be followed by a game restart so the swapchain is created with the intended capacity.
 
 ### Fixed

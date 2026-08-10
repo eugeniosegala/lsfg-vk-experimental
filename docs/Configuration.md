@@ -39,20 +39,21 @@ Next is a list of all available **profile** configuration options:
   sustainable. An abrupt menu, focus, or display transition preserves the previous real-rate baseline and proven
   generation level. Adaptive restores that level only after one second at least 90% of the earlier base rate; after
   five seconds without recovery it discards the stale baseline and ramps cleanly from zero. (Default: `3`)
-- **Stable Cadence / `adaptive_stable_cadence`**: When enabled, Adaptive may use the validated constant-cadence policy
+- **Smooth Cadence / `adaptive_stable_cadence`**: When enabled, Adaptive may use the validated constant-cadence policy
   described above instead of alternating generated-frame counts to match a fractional target exactly. Strict scheduling
   settles first, and constant cadence is considered only when it already needs at least 95% of the corresponding integer
   output count. A severe sustained collapse starts one second of real-only measurement; Adaptive then resumes fractional
   scheduling or tests one higher level when the configured maximum permits it. Rescue has a 15-second cooldown and never
-  exceeds the selected maximum. Disable Stable Cadence to use strict target scheduling while retaining the remaining
-  Adaptive recovery, load shedding, multiplier limits, and retry backoff. (Default: `true`)
+  exceeds the selected maximum. Constant cadence can lower the real-frame presentation rate and feel less responsive,
+  even when displayed motion is smoother. Leave Smooth Cadence disabled to use strict target scheduling while retaining
+  the remaining Adaptive recovery, load shedding, multiplier limits, and retry backoff. (Default: `false`)
 - **Flow Scale / `flow_scale`**: The resolution scale at which the motion vectors are calculated. A lower value means better performance, but worse quality. (Default: `1.0`)
 - **Performance Mode / `performance_mode`**: When enabled, a significantly lighter frame generation model is used. This has a minor quality impact, but greatly improves performance. 
 (Default: `false`)
 - **Pacing Mode / `pacing`**: This option is explained in greater detail below. Supported values are **None / `none`**.
 - **GPU / `gpu`**: The GPU to use for frame generation. This MUST be the **same GPU** as the one being used by the application. **Dual GPU is NOT supported**. You can identify a GPU through its name (e.g. `NVIDIA GeForce RTX 3080`), uppercase-only ID (e.g. `0x10DE:0x2C02`) or PCI bus ID (e.g. `3:0.0`). If not specified, the primary GPU will be used, which may lead to issues.
 
-The "Multiplier", "Adaptive Target", "Maximum Adaptive Multiplier", "Stable Cadence", "Flow Scale" and "Performance Mode" options can be **hot-reloaded**, meaning that changes to these options will take effect immediately without needing to restart the application. Restart the application after switching between Fixed and Adaptive modes so the swapchain has the intended generated-frame capacity. Options such as "Pacing Mode" or removal of the profile require a swapchain recreation, which usually means resizing or restarting the application. Any other change requires an application restart.
+The "Multiplier", "Adaptive Target", "Maximum Adaptive Multiplier", "Smooth Cadence", "Flow Scale" and "Performance Mode" options can be **hot-reloaded**, meaning that changes to these options will take effect immediately without needing to restart the application. Restart the application after switching between Fixed and Adaptive modes so the swapchain has the intended generated-frame capacity. Options such as "Pacing Mode" or removal of the profile require a swapchain recreation, which usually means resizing or restarting the application. Any other change requires an application restart.
 
 ### Pacing Modes
 

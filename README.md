@@ -40,13 +40,17 @@ generation rather than alternating generated and real-only frames. Strict schedu
 cadence is retained only while it continues to meet the target with sufficient base-rate headroom. If that validated
 cadence later suffers a severe sustained collapse, Adaptive measures the real-only rate for one second, then resumes
 fractional scheduling or probes one higher multiplier when the configured maximum permits it. Rescue attempts have a
-15-second cooldown and never exceed `adaptive_max_multiplier`. Set `adaptive_stable_cadence = false` to use strict
-target scheduling instead while retaining the other Adaptive protections. Repeated failures at a higher multiplier use a
+15-second cooldown and never exceed `adaptive_max_multiplier`. Smooth Cadence is disabled by default because its
+constant interpolation can lower real-frame cadence and feel less responsive, even while motion looks smoother. Set
+`adaptive_stable_cadence = true` to opt into it; strict target scheduling retains all other Adaptive protections.
+Repeated failures at a higher multiplier use a
 progressive cooldown, while a meaningful base-rate improvement permits an earlier retry. After a generated-image
 recovery, the existing warm-up is retained but Adaptive resumes from its last validated generation level instead of
 ramping blindly from zero. Adaptive policy evaluation is frozen while generated output is bypassed, preventing the
-real-frame-only recovery period from falsely validating a multiplier. Abrupt menu, focus, or display transitions also
-retain the pre-transition base-rate baseline and proven generation level. Adaptive waits for one second of real-only
+real-frame-only recovery period from falsely validating a multiplier. Hard cadence stalls associated with abrupt menu,
+focus, or display transitions also retain the pre-transition base-rate baseline and proven generation level. A sustained
+gameplay slowdown instead rebases after the ordinary one-second stabilization, avoiding a five-second wait for an old
+rate that may no longer be achievable. For hard stalls, Adaptive waits for one second of real-only
 cadence at least 90% of that baseline before restoring the proven level; if cadence does not recover within five
 seconds, it discards the stale baseline and performs a clean ramp. The first generated-image recovery during this
 window uses history warm-up without forcing a swapchain rebuild, leaving the guarded rebuild as a second-stage fallback.

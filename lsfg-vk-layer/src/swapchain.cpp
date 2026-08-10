@@ -719,9 +719,11 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
         return {};
     }
 
-    // A sustained interval jump is normally a menu, focus or display-mode
-    // transition. Three samples avoid treating an isolated gameplay hitch as
-    // a compositor discontinuity.
+    // A sustained interval jump can be a menu/focus transition, but it can
+    // also be a legitimate heavier gameplay scene. Three samples avoid
+    // treating an isolated hitch as a cadence change. Unlike a hard stall,
+    // this path performs only the ordinary one-second stabilization and then
+    // rebases Adaptive at the new measured rate.
     const bool cadenceDropCandidate =
         this->adaptiveSmoothedIntervalSeconds > 0.0 &&
             rawIntervalSeconds >=
@@ -1287,11 +1289,12 @@ void Swapchain::beginAdaptiveStabilization(
     if (!this->profile.adaptive)
         return;
 
-    const bool cadenceDiscontinuity =
+    const bool cadenceChange =
         reason == "cadence-stall" || reason == "cadence-drop";
-    if (cadenceDiscontinuity)
+    const bool hardDiscontinuity = reason == "cadence-stall";
+    if (cadenceChange)
         this->adaptiveDiscontinuityStableSince.reset();
-    if (cadenceDiscontinuity &&
+    if (hardDiscontinuity &&
             !this->adaptiveDiscontinuityRecoveryDeadline &&
             this->adaptiveSmoothedIntervalSeconds > 0.0) {
         size_t recoveryLimit = this->validatedAdaptiveGenerationLimit();

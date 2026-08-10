@@ -278,12 +278,13 @@ level across a replacement swapchain, and progressively backs off repeatedly rej
 policy evaluation is frozen while generated output is bypassed, preventing the cheaper real-frame-only fallback from
 falsely validating a multiplier.
 
-Profiles can set `adaptive_stable_cadence = false` to disable only constant-cadence validation. The default remains
-`true` for compatibility with the earlier `.17` candidate. Strict target scheduling is used when it is disabled, while
+Profiles can set `adaptive_stable_cadence = true` to enable constant-cadence validation. It now defaults to `false`
+after Steam Deck testing confirmed the expected trade-off: constant cadence looks smoother but can lower the real-frame
+presentation rate and feel less responsive. Strict target scheduling is used when it is disabled, while
 Adaptive recovery, load shedding, multiplier limits, and retry backoff remain active. The standalone configuration UI
 and `LSFGVK_ADAPTIVE_STABLE_CADENCE=0` environment path expose the same option. Fixed mode remains unchanged.
 
-Stable Cadence now waits two seconds after a successful generation ramp and activates only when strict scheduling
+Smooth Cadence now waits two seconds after a successful generation ramp and activates only when strict scheduling
 already requests at least 95% of the matching integer output cadence. If a validated cadence later loses at least 22%
 of its base rate and falls below 80% of the requested output for 500 ms, Adaptive performs one second of real-only
 measurement. It then resumes fractional scheduling or probes one higher generated-frame level when
@@ -292,15 +293,19 @@ cooldown to prevent oscillation. If the measured real rate still cannot reach th
 Adaptive keeps the best permitted level instead of repeatedly retrying.
 
 SteamOS traces from the later `.17` candidate exposed a separate abrupt-transition path. Opening the Steam menu could
-produce a raw cadence stall before the smoothed Stable Cadence collapse detector ran. Stabilization then discarded the
+produce a raw cadence stall before the smoothed-cadence collapse detector ran. Stabilization then discarded the
 healthy base-rate baseline, the first recovered generated image immediately requested swapchain recreation, and the
 new context rebuilt its multiplier from transient 10–30 FPS samples. The trace contained repeated cadence stalls,
 load-shed decisions, and recreations but no `adaptive-rescue-*` event.
 
-The revised `.17` candidate therefore adds bounded discontinuity recovery for all Adaptive scheduling, independently
-of the Stable Cadence toggle:
+The revised `.17` candidate therefore adds bounded discontinuity recovery for Adaptive scheduling, independently of
+the Smooth Cadence toggle. Later Steam Deck testing showed that treating every sustained cadence drop as a hard
+discontinuity could leave a demanding gameplay scene waiting five seconds for an old rate that was no longer reachable.
+Only a hard cadence stall now retains that old baseline; a sustained gameplay drop stabilizes for one second and rebases
+at the new rate:
 
-- A cadence stall/drop retains the last validated generation level and pre-transition smoothed base rate.
+- A hard cadence stall retains the last validated generation level and pre-transition smoothed base rate.
+- A sustained cadence drop uses the ordinary one-second stabilization, then ramps against its new measured rate.
 - The scheduler presents real frames until the measured base rate remains at least 90% of that baseline for one
   second, then restores the validated level without immediately probing higher.
 - If the earlier cadence does not return within five seconds, the stale baseline is discarded and the normal guarded
