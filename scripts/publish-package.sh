@@ -118,8 +118,12 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Adds one bounded bridge probe when Gamescope's cadence divisor makes the first generated-frame step look
   counterproductive even though the target remains far away. The bridge is retained only when it demonstrates at
   least a 15% estimated-output gain while staying within real-frame safety limits.
-- Delays failed or cadence-interrupted probes for at least 15 seconds and requires two seconds of stable cadence before
-  rearming, avoiding repeated 0-to-1 load oscillation that can look like a permanent detach.
+- Delays failed or cadence-interrupted first-step probes for 15 seconds and requires two seconds of stable cadence
+  before rearming, avoiding repeated 0-to-1 load oscillation that can look like a permanent detach.
+- Backs off repeated rejected higher-multiplier probes from 5 to 15, 30, and then 60 seconds. A measured base-rate
+  improvement of at least 15% permits an earlier retry, so a genuinely recovered scene is not held back.
+- Validates a bounded constant cadence for suitable fractional targets, avoiding alternating generated and real-only
+  frames when a stable integer cadence can meet the target without excessive work.
 - Warms all three shared temporal-history slots with real frames before Adaptive generates its first output, avoiding
   startup inference from partially initialized history.
 - Exposes Adaptive mode, target, and maximum multiplier in the standalone Qt configuration UI. Switching modes should
@@ -143,6 +147,13 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\`; Fixed mode is unchanged.
 - Prevents recovered Adaptive contexts from entering a recreate-and-retry loop by sharing a five-second recreation
   cooldown across replacement swapchains.
+- Preserves the last validated Adaptive generation level across generated-image recovery and guarded swapchain
+  recreation. The existing real-frame warm-up still runs first; higher probes are then held for five seconds instead
+  of immediately rebuilding load from zero.
+- Freezes Adaptive multiplier evaluation while generated output is deliberately bypassed, preventing the cheaper
+  real-frame-only fallback from falsely validating a multiplier that was not actually running.
+- Tolerates ordinary Gamescope timing noise around the exact 80 -> 60 FPS divisor when validating a safe 2x constant
+  cadence, without accepting larger base-rate collapses.
 
 ### Presentation diagnostics
 
@@ -161,9 +172,11 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   retries report \`backend_work=history-only\`. Periodic bounded attempts report
   \`acquire_mode=bounded-retry\`. Adaptive recreation recovery emits \`generated-image-recovered
   recovery_action=swapchain-recreate\`, followed by \`request-swapchain-recreation\`; the newly created context then
-  reports its normal startup history warm-up and stabilization. Ramp/load decisions emit \`adaptive-ramp\`,
+  reports its normal startup history warm-up and stabilization. Recovery restoration emits
+  \`adaptive-recovery-resume-scheduled\`. Ramp/load decisions emit \`adaptive-ramp\`,
   \`adaptive-ramp-accepted\`, or \`adaptive-load-shed\`. Bounded probing adds \`adaptive-bridge\`, bridge-result,
-  probe-abort, and rearm diagnostics; cooldown suppression and context lifecycles are logged separately. The recovery
+  probe-abort, rearm, \`adaptive-ramp-backoff\`, and \`adaptive-ramp-early-retry\` diagnostics; cooldown suppression and
+  context lifecycles are logged separately. The recovery
   entry reports the number of bypassed output frames without logging every retry.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
@@ -175,7 +188,7 @@ LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local
 After reproducing the problem, extract the latest diagnostic entries with:
 
 \`\`\`bash
-grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-ramp|adaptive-ramp-accepted|adaptive-load-shed|adaptive-bridge|adaptive-bridge-accepted|adaptive-bridge-rejected|adaptive-probe-aborted|adaptive-rearm-scheduled|adaptive-rearm-ready|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
+grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-recovery-resume-scheduled|adaptive-ramp|adaptive-ramp-accepted|adaptive-ramp-backoff|adaptive-ramp-early-retry|adaptive-load-shed|adaptive-bridge|adaptive-bridge-accepted|adaptive-bridge-rejected|adaptive-probe-aborted|adaptive-rearm-scheduled|adaptive-rearm-ready|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
 \`\`\`
 
 ### Install

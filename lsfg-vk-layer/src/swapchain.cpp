@@ -55,14 +55,19 @@ namespace {
     constexpr double adaptiveStableCadenceMaximumProbeOvershootRatio = 1.40;
     constexpr double adaptiveStableCadenceMaximumRetainedOvershootRatio = 1.50;
     constexpr double adaptiveStableCadenceMinimumTargetRatio = 0.98;
-    constexpr double adaptiveStableCadenceMinimumBaseRetention = 0.75;
+    constexpr double adaptiveStableCadenceMinimumBaseRetention = 0.74;
     constexpr auto adaptiveStabilizationDuration = std::chrono::seconds(1);
     // A recreated generated-frame swapchain can take longer than an ordinary
     // cadence discontinuity to settle in Gamescope.
     constexpr auto adaptiveRecoveryStabilizationDuration = std::chrono::seconds(3);
     constexpr auto adaptiveRampEvaluationDuration = std::chrono::seconds(1);
     constexpr auto adaptiveRampStepDelay = std::chrono::milliseconds(250);
-    constexpr auto adaptiveRampRetryDelay = std::chrono::seconds(5);
+    constexpr auto adaptiveRampFirstRetryDelay = std::chrono::seconds(5);
+    constexpr auto adaptiveRampSecondRetryDelay = std::chrono::seconds(15);
+    constexpr auto adaptiveRampThirdRetryDelay = std::chrono::seconds(30);
+    constexpr auto adaptiveRampMaximumRetryDelay = std::chrono::seconds(60);
+    constexpr double adaptiveRampEarlyRetryBaseImprovement = 1.15;
+    constexpr auto adaptiveRecoveryHigherProbeDelay = std::chrono::seconds(5);
     constexpr auto adaptiveStableCadenceEvaluationDuration = std::chrono::seconds(1);
     constexpr auto adaptiveStableCadenceExitGraceDuration = std::chrono::milliseconds(500);
     constexpr auto adaptiveStableCadenceRetryDelay = std::chrono::seconds(5);
@@ -75,6 +80,17 @@ namespace {
             ? adaptiveCapacityMultiplier
             : profile.multiplier;
         return multiplier - 1;
+    }
+
+    std::chrono::steady_clock::duration adaptiveRampRetryDelayForFailures(
+            const size_t failures) {
+        if (failures <= 1)
+            return adaptiveRampFirstRetryDelay;
+        if (failures == 2)
+            return adaptiveRampSecondRetryDelay;
+        if (failures == 3)
+            return adaptiveRampThirdRetryDelay;
+        return adaptiveRampMaximumRetryDelay;
     }
 
     bool presentDiagnosticsEnabled() {
@@ -346,6 +362,50 @@ namespace {
         std::cerr << '\n';
     }
 
+    void logAdaptiveRampBackoff(size_t testedLimit, size_t failures,
+            double baselineBaseFps,
+            const std::chrono::steady_clock::duration delay) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-ramp-backoff"
+                  << " tested_generated_limit=" << testedLimit
+                  << " consecutive_failures=" << failures
+                  << " baseline_base_fps=" << baselineBaseFps
+                  << " retry_ms="
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         delay
+                     ).count()
+                  << '\n';
+    }
+
+    void logAdaptiveRampEarlyRetry(size_t testedLimit, double failedBaseFps,
+            double currentBaseFps) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-ramp-early-retry"
+                  << " tested_generated_limit=" << testedLimit
+                  << " failed_base_fps=" << failedBaseFps
+                  << " current_base_fps=" << currentBaseFps << '\n';
+    }
+
+    void logAdaptiveRecoveryResume(size_t generationLimit,
+            const std::chrono::steady_clock::duration higherProbeDelay,
+            std::string_view reason) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << "adaptive-recovery-resume-scheduled"
+                  << " generated_limit=" << generationLimit
+                  << " higher_probe_delay_ms="
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         higherProbeDelay
+                     ).count()
+                  << " reason=" << reason << '\n';
+    }
+
     void logAdaptiveStableCadence(std::string_view operation, size_t generatedLimit,
             double baselineBaseFps, double currentBaseFps,
             std::string_view reason = {}) {
@@ -415,7 +475,8 @@ void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint3
 
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
-            AdaptiveRecoveryState* recoveryState, bool recoveryContext) :
+            AdaptiveRecoveryState* recoveryState, bool recoveryContext,
+            const size_t recoveryGenerationLimit) :
         instance(backend),
         adaptiveRecoveryState(recoveryState),
         profile(std::move(profile)), info(std::move(info)) {
@@ -497,11 +558,26 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             DiagnosticsClock::now(),
             recoveryContext ? "swapchain-recreation" : "startup"
         );
+        if (recoveryContext) {
+            this->restoreAdaptiveGenerationLimit(
+                DiagnosticsClock::now(),
+                recoveryGenerationLimit,
+                "swapchain-recreation"
+            );
+        }
     }
 }
 
 std::vector<float> Swapchain::generatedFrameTimestamps(
         const std::chrono::steady_clock::time_point now) {
+    if (this->generatedImageAcquireBackoff) {
+        // Keep probing for one generated-image slot without advancing ramp,
+        // stable-cadence, or load-shed policy while the generated workload is
+        // deliberately bypassed. Evaluating a multiplier during this phase
+        // would measure only the real-frame path and could falsely accept it.
+        return {0.5F};
+    }
+
     if (!this->adaptiveLastRealFrame) {
         this->adaptiveLastRealFrame = now;
         return {};
@@ -774,6 +850,63 @@ void Swapchain::resetAdaptiveScheduler(
     this->adaptiveOutputCredit = 0.0;
 }
 
+size_t Swapchain::validatedAdaptiveGenerationLimit() const {
+    if (!this->profile.adaptive)
+        return 0;
+
+    const size_t configuredLimit = std::min(
+        this->destinationImages.size(),
+        this->profile.adaptive_max_multiplier - 1
+    );
+    size_t generationLimit = this->adaptiveGenerationLimit;
+    if (this->adaptiveRearmRequired) {
+        generationLimit = this->adaptiveRearmFallbackLimit;
+    } else if (this->adaptiveRampEvaluationAt) {
+        generationLimit = this->adaptiveBridgeActive
+            ? this->adaptiveBridgeBaselineLimit
+            : this->adaptiveRampPreviousLimit;
+    }
+    return std::min(generationLimit, configuredLimit);
+}
+
+void Swapchain::restoreAdaptiveGenerationLimit(
+        const std::chrono::steady_clock::time_point now,
+        const size_t generationLimit,
+        const std::string_view reason) {
+    if (!this->profile.adaptive)
+        return;
+
+    const size_t configuredLimit = std::min(
+        this->destinationImages.size(),
+        this->profile.adaptive_max_multiplier - 1
+    );
+    const size_t restoredLimit = std::min(generationLimit, configuredLimit);
+
+    this->adaptiveGenerationLimit = restoredLimit;
+    this->adaptiveRampPreviousLimit = restoredLimit;
+    this->adaptiveRampEvaluationAt.reset();
+    this->adaptiveRampBaselineBaseFps = 0.0;
+    this->adaptiveBridgeActive = false;
+    this->adaptiveBridgeBaselineLimit = 0;
+    this->adaptiveBridgeBaselineBaseFps = 0.0;
+    this->adaptiveRearmRequired = false;
+    this->adaptiveRearmNotBefore.reset();
+    this->adaptiveStableRearmSince.reset();
+    this->adaptiveRearmFallbackLimit = 0;
+    this->adaptiveConsecutiveProbeFailures = 0;
+    this->adaptiveLastFailedRampLimit = 0;
+    this->adaptiveConsecutiveRampFailures = 0;
+    this->adaptiveFailedRampBaselineBaseFps = 0.0;
+    this->adaptiveOutputCredit = 0.0;
+
+    const auto stabilizationEnd = this->adaptiveStabilizationUntil.value_or(now);
+    const auto higherProbeDelay = restoredLimit > 0 && restoredLimit < configuredLimit
+        ? adaptiveRecoveryHigherProbeDelay
+        : DiagnosticsClock::duration::zero();
+    this->adaptiveNextRampAt = stabilizationEnd + higherProbeDelay;
+    logAdaptiveRecoveryResume(restoredLimit, higherProbeDelay, reason);
+}
+
 void Swapchain::scheduleAdaptiveRearm(
         const std::chrono::steady_clock::time_point now,
         const std::string_view reason,
@@ -933,6 +1066,9 @@ void Swapchain::updateAdaptiveGenerationLimit(
             }
 
             this->adaptiveConsecutiveProbeFailures = 0;
+            this->adaptiveLastFailedRampLimit = 0;
+            this->adaptiveConsecutiveRampFailures = 0;
+            this->adaptiveFailedRampBaselineBaseFps = 0.0;
             this->adaptiveNextRampAt = now + adaptiveRampStepDelay;
             return;
         }
@@ -1001,18 +1137,53 @@ void Swapchain::updateAdaptiveGenerationLimit(
             if (this->adaptiveRampPreviousLimit == 0) {
                 this->scheduleAdaptiveRearm(now, "ramp-rejected");
             } else {
-                this->adaptiveNextRampAt = now + adaptiveRampRetryDelay;
+                if (this->adaptiveLastFailedRampLimit != testedLimit) {
+                    this->adaptiveLastFailedRampLimit = testedLimit;
+                    this->adaptiveConsecutiveRampFailures = 0;
+                }
+                this->adaptiveConsecutiveRampFailures++;
+                this->adaptiveFailedRampBaselineBaseFps =
+                    this->adaptiveRampBaselineBaseFps;
+                const auto retryDelay = adaptiveRampRetryDelayForFailures(
+                    this->adaptiveConsecutiveRampFailures
+                );
+                this->adaptiveNextRampAt = now + retryDelay;
+                logAdaptiveRampBackoff(
+                    testedLimit,
+                    this->adaptiveConsecutiveRampFailures,
+                    this->adaptiveFailedRampBaselineBaseFps,
+                    retryDelay
+                );
             }
             return;
         }
         this->adaptiveConsecutiveProbeFailures = 0;
+        this->adaptiveLastFailedRampLimit = 0;
+        this->adaptiveConsecutiveRampFailures = 0;
+        this->adaptiveFailedRampBaselineBaseFps = 0.0;
         this->adaptiveNextRampAt = now + adaptiveRampStepDelay;
     }
 
     if (this->adaptiveGenerationLimit >= configuredLimit)
         return;
-    if (this->adaptiveNextRampAt && now < *this->adaptiveNextRampAt)
-        return;
+    if (this->adaptiveNextRampAt && now < *this->adaptiveNextRampAt) {
+        const size_t nextLimit = this->adaptiveGenerationLimit + 1;
+        const bool failedRampRecovered =
+            this->adaptiveConsecutiveRampFailures > 0 &&
+            this->adaptiveLastFailedRampLimit == nextLimit &&
+            this->adaptiveFailedRampBaselineBaseFps > 0.0 &&
+            baseFps >= this->adaptiveFailedRampBaselineBaseFps *
+                adaptiveRampEarlyRetryBaseImprovement;
+        if (!failedRampRecovered)
+            return;
+
+        logAdaptiveRampEarlyRetry(
+            nextLimit,
+            this->adaptiveFailedRampBaselineBaseFps,
+            baseFps
+        );
+        this->adaptiveNextRampAt.reset();
+    }
 
     this->adaptiveRampPreviousLimit = this->adaptiveGenerationLimit;
     this->adaptiveRampBaselineBaseFps = baseFps;
@@ -1113,6 +1284,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
             this->generatedImageAcquireBackoff = false;
             this->generatedImageAcquireLastBoundedProbe.reset();
+            const size_t recoveryGenerationLimit =
+                this->validatedAdaptiveGenerationLimit();
             if (this->profile.adaptive && presentRecoveryRecreateEnabled()) {
                 const auto recoveryNow = DiagnosticsClock::now();
                 if (!this->adaptiveRecoveryState ||
@@ -1124,6 +1297,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                     if (this->adaptiveRecoveryState) {
                         this->adaptiveRecoveryState->lastSwapchainRecreation = recoveryNow;
                         this->adaptiveRecoveryState->nextContextIsRecovery = true;
+                        this->adaptiveRecoveryState->nextContextGenerationLimit =
+                            recoveryGenerationLimit;
                     }
                 } else {
                     const auto elapsed = recoveryNow -
@@ -1148,8 +1323,14 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
             this->generatedImageAcquireBypassCount = 0;
             if (this->profile.adaptive && !requestSwapchainRecreation) {
+                const auto recoveryNow = DiagnosticsClock::now();
                 this->beginAdaptiveStabilization(
-                    DiagnosticsClock::now(), "generated-image-recovery"
+                    recoveryNow, "generated-image-recovery"
+                );
+                this->restoreAdaptiveGenerationLimit(
+                    recoveryNow,
+                    recoveryGenerationLimit,
+                    "generated-image-recovery"
                 );
             } else {
                 this->resetAdaptiveScheduler(DiagnosticsClock::now());

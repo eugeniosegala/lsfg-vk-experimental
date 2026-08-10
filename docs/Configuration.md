@@ -29,7 +29,11 @@ Next is a list of all available **profile** configuration options:
   instead of adding the more artifact-prone generated frames. Adaptive also ramps toward this limit after startup or
   recovery and can temporarily reduce it when added generation load harms real-frame throughput. If the compositor's
   cadence divisor makes the first step misleading, it can make one bounded bridge test at the next step. Rejected or
-  interrupted probes wait at least 15 seconds and require two seconds of stable cadence before retrying. For a modest
+  interrupted first-step probes wait 15 seconds and require two seconds of stable cadence before retrying. Repeated
+  failures at a higher multiplier back off progressively from 5 to 15, 30, and then 60 seconds, unless the measured
+  base rate improves by at least 15%. After a generated-image recovery, Adaptive preserves the last validated level
+  through the safety warm-up and waits five seconds before probing a higher level. Multiplier policy is frozen while
+  generated output is bypassed, so recovery cannot falsely accept a level that was not actually running. For a modest
   fractional target such as 60 -> 90, Adaptive can automatically validate a constant cadence to avoid alternating
   real-only and generated frames; it falls back to strict target scheduling if the higher constant workload is not
   sustainable. (Default: `3`)

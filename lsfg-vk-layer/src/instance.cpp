@@ -211,17 +211,23 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     }
 
     const bool recoveryContext = this->adaptiveRecoveryState.nextContextIsRecovery;
+    const size_t recoveryGenerationLimit =
+        this->adaptiveRecoveryState.nextContextGenerationLimit;
     this->adaptiveRecoveryState.nextContextIsRecovery = false;
+    this->adaptiveRecoveryState.nextContextGenerationLimit = 0;
     const bool inserted = this->swapchains.emplace(swapchain,
         Swapchain(vk, this->backend.mut(), profile, info,
-            &this->adaptiveRecoveryState, recoveryContext)).second;
+            &this->adaptiveRecoveryState, recoveryContext,
+            recoveryGenerationLimit)).second;
 
     if (presentDiagnosticsEnabled()) {
         std::cerr << "lsfg-vk: present diagnostics: operation=swapchain-context-create"
                   << " swapchain=" << swapchain
                   << " active_contexts=" << this->swapchains.size()
                   << " inserted=" << inserted
-                  << " recovery_context=" << recoveryContext << '\n';
+                  << " recovery_context=" << recoveryContext
+                  << " recovery_generated_limit=" << recoveryGenerationLimit
+                  << '\n';
     }
 }
 

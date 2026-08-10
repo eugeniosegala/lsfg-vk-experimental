@@ -43,6 +43,7 @@ namespace lsfgvk::layer {
     struct AdaptiveRecoveryState {
         std::optional<std::chrono::steady_clock::time_point> lastSwapchainRecreation;
         bool nextContextIsRecovery{false};
+        size_t nextContextGenerationLimit{0};
     };
 
     /// swapchain context for a layer instance
@@ -57,7 +58,8 @@ namespace lsfgvk::layer {
         /// @param recoveryContext true when this context follows guarded recovery
         Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
-            AdaptiveRecoveryState* recoveryState, bool recoveryContext);
+            AdaptiveRecoveryState* recoveryState, bool recoveryContext,
+            size_t recoveryGenerationLimit);
 
         /// present a frame
         /// @param vk vulkan instance
@@ -89,6 +91,14 @@ namespace lsfgvk::layer {
             std::chrono::steady_clock::time_point now,
             std::string_view reason,
             size_t fallbackLimit = 0
+        );
+        /// return the generation level that was proven before a transient probe
+        size_t validatedAdaptiveGenerationLimit() const;
+        /// retain a proven level after recovery while delaying higher probes
+        void restoreAdaptiveGenerationLimit(
+            std::chrono::steady_clock::time_point now,
+            size_t generationLimit,
+            std::string_view reason
         );
         /// ramp generated-frame load and reject counterproductive steps
         void updateAdaptiveGenerationLimit(
@@ -149,6 +159,9 @@ namespace lsfgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> adaptiveStableCadenceRetryAt;
         double adaptiveStableCadenceBaselineBaseFps{0.0};
         size_t adaptiveConsecutiveProbeFailures{0};
+        size_t adaptiveLastFailedRampLimit{0};
+        size_t adaptiveConsecutiveRampFailures{0};
+        double adaptiveFailedRampBaselineBaseFps{0.0};
         AdaptiveRecoveryState* adaptiveRecoveryState{};
 
         ls::GameConf profile;

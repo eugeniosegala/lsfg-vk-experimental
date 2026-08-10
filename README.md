@@ -35,8 +35,35 @@ ceiling, but it cannot reduce a native framerate already above the target or pro
 After startup or a presentation disruption, it stabilizes on real frames and ramps generation gradually; if a higher
 step harms useful throughput, it temporarily falls back to the previous step. When Gamescope's cadence divisor makes
 the first generated-frame step look counterproductive, the scheduler may make one bounded bridge test at the next
-step. A failed or interrupted test is not repeated until a cooldown has elapsed and cadence has remained stable.
+step. For safe fractional ratios such as 60 real FPS toward a 90 FPS target, it can briefly validate a constant
+generated-frame cadence rather than alternating generated and real-only frames. It retains that cadence only when it
+continues to meet the target with sufficient base-rate headroom. Repeated failures at a higher multiplier use a
+progressive cooldown, while a meaningful base-rate improvement permits an earlier retry. After a generated-image
+recovery, the existing warm-up is retained but Adaptive resumes from its last validated generation level instead of
+ramping blindly from zero. Adaptive policy evaluation is frozen while generated output is bypassed, preventing the
+real-frame-only recovery period from falsely validating a multiplier.
 See [Configuration](docs/Configuration.md) for the exact limits.
+
+### SteamOS / Gamescope recovery override
+
+The guarded swapchain-rebuild stage is intentionally controlled by an environment variable. It applies only to
+Adaptive mode, and only after LSFG-VK has recovered from a genuine generated-image acquisition stall. It can clear
+presentation latency left behind by repeated Steam-menu transitions, but a small number of games may pause, flicker,
+or handle a swapchain rebuild poorly.
+
+The Decky experimental plugin enables the tested 50 ms bounded acquisition timeout and guarded rebuild automatically.
+For direct lsfg-vk use, enable both before your game command:
+
+```bash
+LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=1 your-game-command
+```
+
+If a specific game does not tolerate the rebuild, retain the bounded timeout and history-only recovery while disabling
+only the rebuild:
+
+```bash
+LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=0 your-game-command
+```
 
 ## Installation
 
