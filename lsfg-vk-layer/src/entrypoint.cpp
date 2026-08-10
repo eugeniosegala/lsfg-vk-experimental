@@ -352,6 +352,7 @@ namespace {
 #pragma clang diagnostic ignored "-Wunknown-warning-option"
 #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
         VkResult result = VK_SUCCESS;
+        bool swapchainOutOfDate = false;
 
         // ensure layer config is up to date
         bool reload{};
@@ -414,9 +415,15 @@ namespace {
 
             if (result != VK_SUCCESS && info->pResults)
                 info->pResults[i] = result;
+
+            if (result == VK_ERROR_OUT_OF_DATE_KHR)
+                swapchainOutOfDate = true;
         }
 
-        return result;
+        // A recovery policy may deliberately request recreation of one
+        // game-owned swapchain. Present any remaining swapchains from the
+        // same call, then preserve the recreation signal in the overall result.
+        return swapchainOutOfDate ? VK_ERROR_OUT_OF_DATE_KHR : result;
 #pragma clang diagnostic pop
     }
 

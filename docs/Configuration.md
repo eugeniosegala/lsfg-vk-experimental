@@ -53,6 +53,12 @@ The following environment variables affect lsfg-vk:
 - `DISABLE_LSFGVK`: If set, lsfg-vk will be completely disabled.
 - `LSFGVK_CONFIG`: Path to the configuration file.
 - `LSFGVK_PROFILE`: Name of the profile to use. If set, this will override automatic profile detection.
+- `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS`: Optional timeout for generated-image acquisition. A timeout enters the
+  Gamescope presentation fallback; unset or `0` keeps the normal unbounded acquisition path.
+- `LSFGVK_PRESENT_RECOVERY_RECREATE`: Set to `1` to ask the game to recreate its swapchain after Adaptive recovers
+  from that fallback. This experimental option has no effect without the acquire timeout and does not affect Fixed mode.
+- `LSFGVK_PRESENT_DIAGNOSTICS`: Set to `1` to log slow presentation operations.
+- `LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS`: Minimum duration in milliseconds reported by presentation diagnostics.
 
 If you do not wish to use a configuration file, you can also set configuration options through environment variables. To do this, set `LSFGVK_ENV=1` and then any of the following variables:
 - `LSFGVK_DLL_PATH`: Path to Lossless Scaling DLL.

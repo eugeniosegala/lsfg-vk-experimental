@@ -54,6 +54,14 @@ namespace {
         return enabled;
     }
 
+    bool presentRecoveryRecreateEnabled() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("LSFGVK_PRESENT_RECOVERY_RECREATE");
+            return value && std::string_view(value) != "0";
+        }();
+        return enabled;
+    }
+
     double presentDiagnosticsThresholdMs() {
         static const double threshold = [] {
             constexpr double defaultThresholdMs = 20.0;
@@ -155,12 +163,15 @@ namespace {
 
     void logPresentRecovery(size_t frameIndex, size_t sequenceIndex,
             size_t passIndex, uint32_t imageIndex, size_t bypassedFrames,
-            std::string_view acquireMode, size_t warmupFrames) {
+            std::string_view acquireMode, size_t warmupFrames,
+            bool requestSwapchainRecreation) {
         if (!presentDiagnosticsEnabled())
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation="
-                  << (warmupFrames ? "generated-image-recovered" : "resume-generated-frames")
+                  << ((warmupFrames || requestSwapchainRecreation)
+                      ? "generated-image-recovered"
+                      : "resume-generated-frames")
                   << " frame=" << frameIndex
                   << " sequence=" << sequenceIndex
                   << " pass=" << passIndex
@@ -169,7 +180,20 @@ namespace {
                   << " bypassed_frames=" << bypassedFrames;
         if (warmupFrames)
             std::cerr << " recovery_warmup_frames=" << warmupFrames;
+        if (requestSwapchainRecreation)
+            std::cerr << " recovery_action=swapchain-recreate";
         std::cerr << '\n';
+    }
+
+    void logSwapchainRecreation(size_t frameIndex, size_t sequenceIndex,
+            std::string_view reason) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation=request-swapchain-recreation"
+                  << " frame=" << frameIndex
+                  << " sequence=" << sequenceIndex
+                  << " reason=" << reason << '\n';
     }
 
     void logHistoryWarmup(size_t frameIndex, size_t sequenceIndex,
@@ -414,6 +438,11 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         VkQueue queue, VkSwapchainKHR swapchain,
         void* next_chain, uint32_t imageIdx,
         const std::vector<VkSemaphore>& semaphores) {
+    if (this->swapchainRecreationRequested) {
+        logSwapchainRecreation(this->fidx, this->idx, "pending");
+        return VK_ERROR_OUT_OF_DATE_KHR;
+    }
+
     const auto presentStarted = startPresentDiagnostic();
     const auto& swapchainImage = this->info.images.at(imageIdx);
     const auto& sourceImage = this->sourceImages.at(this->fidx % 2);
@@ -433,6 +462,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     bool boundedRecoveryProbe = false;
     std::optional<uint32_t> preacquiredGeneratedImage;
     std::optional<uint32_t> recoveryWarmupImage;
+    bool requestSwapchainRecreation = false;
 
     const auto prepareRenderFence = [&]() {
         if (renderFencePrepared)
@@ -491,25 +521,28 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
             this->generatedImageAcquireBackoff = false;
             this->generatedImageAcquireLastBoundedProbe.reset();
-            const size_t recoveryWarmupFrames = this->profile.adaptive
+            requestSwapchainRecreation = this->profile.adaptive &&
+                presentRecoveryRecreateEnabled();
+            const size_t recoveryWarmupFrames = this->profile.adaptive &&
+                    !requestSwapchainRecreation
                 ? adaptiveHistoryWarmupFrames
                 : 0;
             logPresentRecovery(
                 this->fidx, this->idx, 0, recoveryImageIndex,
                 this->generatedImageAcquireBypassCount,
                 boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry",
-                recoveryWarmupFrames
+                recoveryWarmupFrames,
+                requestSwapchainRecreation
             );
             this->generatedImageAcquireBypassCount = 0;
             this->resetAdaptiveScheduler(DiagnosticsClock::now());
-            if (recoveryWarmupFrames) {
-                // The successful probe owns a swapchain image, so the first
-                // warm-up frame must present it even though generated output
-                // remains disabled. Copy the real image into it below, then
-                // refresh all temporal slots before trying generation again.
+            if (recoveryWarmupFrames || requestSwapchainRecreation) {
+                // The successful probe owns a swapchain image. Copy the real
+                // image into it and present it below before either warming the
+                // current context or asking the game to recreate that context.
                 recoveryWarmupImage = recoveryImageIndex;
                 this->adaptiveHistoryWarmupRemaining = recoveryWarmupFrames;
-                this->adaptiveHistoryWarmupIsRecovery = true;
+                this->adaptiveHistoryWarmupIsRecovery = recoveryWarmupFrames > 0;
                 bypassGeneratedFrames = true;
             } else {
                 preacquiredGeneratedImage = recoveryImageIndex;
@@ -730,6 +763,17 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         const auto res = presentOriginalImage(fallbackSemaphore.handle(), originalNextChain);
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
+
+        if (requestSwapchainRecreation) {
+            this->swapchainRecreationRequested = true;
+            logSwapchainRecreation(this->fidx, this->idx, "adaptive-recovery");
+            logSlowPresentOperation(
+                "present-total", this->fidx, this->idx,
+                presentStarted, VK_ERROR_OUT_OF_DATE_KHR
+            );
+            this->fidx++;
+            return VK_ERROR_OUT_OF_DATE_KHR;
+        }
 
         logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);
         this->fidx++;

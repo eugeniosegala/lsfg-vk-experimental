@@ -91,6 +91,9 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - The 0x multiplier previously available in the 1.x line is not present in upstream lsfg-vk v2 and cannot be restored by this packaging layer.
 - Lossless Scaling and its \`Lossless.dll\` must already be installed through Steam; this archive does not include or modify it.
 - Flatpak runtime extensions for 23.08, 24.08, and 25.08 are included in \`$(basename "$flatpak_archive")\`. They use a dedicated experimental extension ID and can coexist with the public Flathub layer.
+- \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is a guarded Adaptive-mode recovery test. It asks the application to rebuild
+  its Vulkan swapchain only after an acquire timeout has recovered, but some games may pause, flicker, or mishandle the
+  synthetic out-of-date result. Leave it disabled outside controlled testing.
 
 ### Included
 
@@ -121,12 +124,13 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   bypass does not leave older temporal slots untouched.
 - Resets Adaptive timing smoothing and fractional output credit when generated-image acquisition enters or leaves
   Gamescope backoff, so a compositor discontinuity is not carried into later scheduling decisions.
-- After Gamescope first returns an image, keeps Adaptive output disabled for a three-real-frame history warm-up instead
-  of treating one successful probe as a stable recovery. The acquired probe image is filled with the real frame and
-  presented safely; renewed acquisition failure starts a fresh recovery cycle.
+- Adds an opt-in Adaptive recovery policy that safely presents the reacquired image and original game image before
+  returning \`VK_ERROR_OUT_OF_DATE_KHR\`. This asks the game to rebuild its swapchain and create a fresh LSFG context
+  instead of carrying accumulated presentation latency across repeated Gamescope overlay transitions.
 - Avoids multi-second recovery delays caused by repeatedly missing the image-release window with zero-timeout probes.
   After one second of fallback, the layer makes one bounded reacquisition attempt per second using the configured
-  acquire timeout. It does not force the game to recreate its swapchain.
+  acquire timeout. Swapchain recreation is requested only after one of those probes succeeds and only when
+  \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\`; Fixed mode is unchanged.
 
 ### Presentation diagnostics
 
@@ -143,9 +147,10 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   opt in per launched game.
 - Aggregates expected non-blocking retry diagnostics. The first fallback reports \`backend_work=scheduled\`; subsequent
   retries report \`backend_work=history-only\`. Periodic bounded attempts report
-  \`acquire_mode=bounded-retry\`. Adaptive recovery emits \`generated-image-recovered\` followed by three
-  \`history-warmup\` entries; startup and recovery warm-ups are identified separately. The recovery entry reports the
-  number of bypassed output frames without logging every retry.
+  \`acquire_mode=bounded-retry\`. Adaptive recreation recovery emits \`generated-image-recovered
+  recovery_action=swapchain-recreate\`, followed by \`request-swapchain-recreation\`; the newly created context then
+  reports its normal startup history warm-up. The recovery entry reports the number of bypassed output frames without
+  logging every retry.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
 

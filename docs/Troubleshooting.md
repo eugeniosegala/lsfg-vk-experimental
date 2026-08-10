@@ -70,8 +70,9 @@ updates the model's temporal features for every real frame instead of leaving ol
 If zero-timeout probes keep missing
 the release window, the layer makes one bounded reacquisition attempt per second after the first second of fallback.
 The real game frames continue updating the two source images. Fixed mode resumes automatically as soon as a probe
-succeeds. Adaptive mode first presents three real frames while repopulating its deepest temporal-history ring, then
-attempts generated output again. The same three-frame warm-up runs when an Adaptive context first starts. For example:
+succeeds. By default, Adaptive mode first presents three real frames while repopulating its deepest temporal-history
+ring, then attempts generated output again. The same three-frame warm-up runs when an Adaptive context first starts.
+For example:
 
 ```bash
 LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=25 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/lsfg-vk-experimental %command%
@@ -85,6 +86,20 @@ Fixed-mode recovery uses `resume-generated-frames`. Adaptive recovery reports `g
 three `history-warmup` entries with `reason=recovery`. Adaptive startup uses the same entries with `reason=startup`.
 The recovery record includes the total number of frames whose output work was bypassed.
 
+If repeated overlay transitions still accumulate input latency, the experimental Adaptive recovery can instead ask
+the game to rebuild its Vulkan swapchain after Gamescope releases an image:
+
+```bash
+LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=1 ~/.local/bin/lsfg-vk-experimental %command%
+```
+
+This request is made only after a real acquire timeout and a later successful recovery probe. The acquired image is
+safely presented before lsfg-vk returns `VK_ERROR_OUT_OF_DATE_KHR`, the standard signal applications use to recreate
+their swapchain. Diagnostics report `generated-image-recovered recovery_action=swapchain-recreate`, followed by
+`request-swapchain-recreation`. A short pause or flicker can occur while the game rebuilds its swapchain. Some games may
+mishandle a forced recreation; set `LSFGVK_PRESENT_RECOVERY_RECREATE=0` for that game to return to the history-only
+recovery. Fixed mode is unaffected.
+
 For a normal non-isolated installation, place the same environment variables before its usual launch command.
 
 Clear the Steam log before reproducing the problem. After reproducing it, extract the most recent diagnostic entries
@@ -94,4 +109,5 @@ with:
 grep -aF "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 400
 ```
 
-Disable the diagnostic and acquire-timeout environment variables after collecting the trace.
+Disable the diagnostic variables after collecting the trace. Remove the acquire-timeout and recreation variables too
+if you do not want to continue testing the recovery path.

@@ -90,6 +90,7 @@ namespace lsfgvk::layer {
         bool generatedImageAcquireBackoff{false};
         size_t generatedImageAcquireBypassCount{0};
         std::optional<std::chrono::steady_clock::time_point> generatedImageAcquireLastBoundedProbe;
+        bool swapchainRecreationRequested{false};
         size_t adaptiveHistoryWarmupRemaining{0};
         bool adaptiveHistoryWarmupIsRecovery{false};
 

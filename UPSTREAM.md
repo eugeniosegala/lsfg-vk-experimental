@@ -197,6 +197,28 @@ far enough that the target would require a higher ratio, Adaptive deliberately u
 adding more artifact-prone generated frames. The standalone UI and `LSFGVK_ADAPTIVE_MAX_MULTIPLIER` environment path
 expose the same setting. Fixed mode remains unchanged.
 
+## Adaptive swapchain-recreation recovery test build: `v2.0.0-dev28-experimental.13`
+
+SteamOS testing showed that the `.11`/`.12` history recovery substantially improved Game Mode transitions, but repeated
+Steam-menu cycles could still accumulate input latency. Capping Adaptive at 2x controlled interpolation artifacts but
+did not clear that latency, and in some runs toggling Adaptive off and on could not recover without restarting the
+game. This indicates stale game-owned swapchain or Gamescope presentation state rather than only stale model history.
+
+The `.13` candidate adds the opt-in `LSFGVK_PRESENT_RECOVERY_RECREATE=1` policy. It activates only after a configured
+generated-image acquire timeout has entered fallback and a later probe has successfully reacquired an image. The layer
+first fills and presents that acquired image with the real game frame, presents the application's original image, and
+then returns `VK_ERROR_OUT_OF_DATE_KHR`. This standard Vulkan result asks the application to destroy and recreate its
+swapchain, which also creates a fresh LSFG context and runs the normal Adaptive startup history warm-up.
+
+The request is delayed until image availability has recovered, avoiding recreation loops while the Steam overlay still
+owns the presentation images. Once requested, the old LSFG swapchain continues returning out-of-date until the game
+replaces it. Fixed mode is unchanged. The standalone engine remains unchanged unless both the acquire timeout and the
+new recovery variable are explicitly enabled; the experimental Decky wrapper opts in for local validation.
+
+Some games can mishandle a synthetic out-of-date result, so this remains a guarded test rather than a general default.
+Set `LSFGVK_PRESENT_RECOVERY_RECREATE=0` to retain the three-frame Adaptive recovery warm-up without forcing the
+game-owned swapchain to be recreated.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:
