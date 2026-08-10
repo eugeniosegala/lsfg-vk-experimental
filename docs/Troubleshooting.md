@@ -65,18 +65,20 @@ LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local
 To test recovery from a stalled generated-image acquisition, add an opt-in timeout in milliseconds. If the timeout is
 reached, lsfg-vk skips the remaining generated frames for that presentation and safely presents the original game
 frame. Following attempts probe image availability before scheduling the model, so a Gamescope overlay cannot impose
-the full timeout or waste GPU work on generated frames that cannot be presented. The real game frames continue updating
-the two source images, and generation resumes automatically as soon as the probe succeeds. For example:
+the full timeout or waste GPU work on generated frames that cannot be presented. If zero-timeout probes keep missing
+the release window, the layer makes one bounded reacquisition attempt per second after the first second of fallback.
+The real game frames continue updating the two source images, and generation resumes automatically as soon as a probe
+succeeds. For example:
 
 ```bash
 LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=25 LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/lsfg-vk-experimental %command%
 ```
 
 This recovery is experimental and disabled when `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS` is absent or set to `0`.
-With diagnostics enabled, `skip-generated-frames` reports whether the fallback followed the initial timeout or a
-non-blocking retry. Its `backend_work` field records whether inference was already scheduled or safely bypassed.
-Expected repeated non-blocking failures are aggregated; `resume-generated-frames` reports automatic recovery and the
-total number of frames whose inference work was bypassed.
+With diagnostics enabled, `skip-generated-frames` reports whether the fallback followed the initial timeout, a
+non-blocking retry, or a periodic `bounded-retry`. Its `backend_work` field records whether inference was already
+scheduled or safely bypassed. Expected repeated non-blocking failures are aggregated; `resume-generated-frames`
+reports automatic recovery and the total number of frames whose inference work was bypassed.
 
 For a normal non-isolated installation, place the same environment variables before its usual launch command.
 

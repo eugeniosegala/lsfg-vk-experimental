@@ -12,7 +12,9 @@
 #include "lsfg-vk-common/vulkan/timeline_semaphore.hpp"
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 
+#include <chrono>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -78,6 +80,7 @@ namespace lsfgvk::layer {
         size_t fidx{0}; // real frame index
         bool generatedImageAcquireBackoff{false};
         size_t generatedImageAcquireBypassCount{0};
+        std::optional<std::chrono::steady_clock::time_point> generatedImageAcquireLastBoundedProbe;
 
         ls::GameConf profile;
         SwapchainInfo info;

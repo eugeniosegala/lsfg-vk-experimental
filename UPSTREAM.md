@@ -121,6 +121,19 @@ Diagnostics now distinguish `backend_work=scheduled` on the initial timeout from
 backoff. Repeated expected `VK_NOT_READY` results are aggregated instead of logged every frame; the recovery entry
 reports the total as `bypassed_frames`.
 
+## Gamescope bounded-reacquisition test release: `v2.0.0-dev28-experimental.8`
+
+Testing `.7` showed that its zero-timeout backoff kept the Steam menu responsive and avoided wasted inference work, but
+the probe could repeatedly run at a point where the application had already acquired the only currently available
+swapchain image. Captured recoveries consequently took 225 and 529 real frames (approximately four and nine seconds at
+60 fps), despite each probe itself returning immediately.
+
+After one second of fallback, `.8` now makes one bounded reacquisition attempt per second using the configured
+`LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS` value. All intervening attempts remain non-blocking and continue bypassing model
+work. This gives Gamescope a short window to release an image without returning a synthetic out-of-date result or
+forcing the game to recreate its swapchain. Diagnostics identify these periodic attempts with
+`acquire_mode=bounded-retry`.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

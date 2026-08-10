@@ -80,6 +80,8 @@ namespace {
         return timeout;
     }
 
+    constexpr auto generatedImageAcquireBoundedProbeInterval = std::chrono::seconds(1);
+
     double elapsedMilliseconds(const DiagnosticsClock::time_point start) {
         return std::chrono::duration<double, std::milli>(
             DiagnosticsClock::now() - start
@@ -123,7 +125,7 @@ namespace {
 
     void logPresentFallback(size_t frameIndex, size_t sequenceIndex,
             size_t passIndex, size_t skippedFrames, uint64_t timelineValue,
-            bool nonBlockingRetry, bool generationScheduled) {
+            std::string_view acquireMode, bool generationScheduled) {
         if (!presentDiagnosticsEnabled())
             return;
 
@@ -133,13 +135,14 @@ namespace {
                   << " pass=" << passIndex
                   << " skipped=" << skippedFrames
                   << " wait_timeline=" << timelineValue
-                  << " acquire_mode=" << (nonBlockingRetry ? "nonblocking-retry" : "initial-timeout")
+                  << " acquire_mode=" << acquireMode
                   << " backend_work=" << (generationScheduled ? "scheduled" : "bypassed")
                   << '\n';
     }
 
     void logPresentRecovery(size_t frameIndex, size_t sequenceIndex,
-            size_t passIndex, uint32_t imageIndex, size_t bypassedFrames) {
+            size_t passIndex, uint32_t imageIndex, size_t bypassedFrames,
+            std::string_view acquireMode) {
         if (!presentDiagnosticsEnabled())
             return;
 
@@ -148,6 +151,7 @@ namespace {
                   << " sequence=" << sequenceIndex
                   << " pass=" << passIndex
                   << " image=" << imageIndex
+                  << " acquire_mode=" << acquireMode
                   << " bypassed_frames=" << bypassedFrames << '\n';
     }
 
@@ -275,6 +279,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const auto configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
     bool renderFencePrepared = false;
     bool bypassGeneratedFrames = false;
+    bool boundedRecoveryProbe = false;
     std::optional<uint32_t> preacquiredGeneratedImage;
 
     const auto prepareRenderFence = [&]() {
@@ -304,14 +309,21 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
         auto& recoveryPass = this->passes.front();
         uint32_t recoveryImageIndex{};
+        const auto now = DiagnosticsClock::now();
+        boundedRecoveryProbe = !this->generatedImageAcquireLastBoundedProbe ||
+            now - *this->generatedImageAcquireLastBoundedProbe >=
+                generatedImageAcquireBoundedProbeInterval;
+        const uint64_t recoveryTimeout = boundedRecoveryProbe ? *configuredAcquireTimeout : 0;
+        if (boundedRecoveryProbe)
+            this->generatedImageAcquireLastBoundedProbe = now;
         const auto acquireStarted = startPresentDiagnostic();
         const auto acquireResult = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
-            0, recoveryPass.acquireSemaphore.handle(), VK_NULL_HANDLE,
+            recoveryTimeout, recoveryPass.acquireSemaphore.handle(), VK_NULL_HANDLE,
             &recoveryImageIndex
         );
 
         if (acquireResult == VK_TIMEOUT || acquireResult == VK_NOT_READY) {
-            if (!this->generatedImageAcquireBypassCount) {
+            if (!this->generatedImageAcquireBypassCount || boundedRecoveryProbe) {
                 logSlowPresentOperation(
                     "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
                     0, recoveryImageIndex
@@ -325,9 +337,11 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
             preacquiredGeneratedImage = recoveryImageIndex;
             this->generatedImageAcquireBackoff = false;
+            this->generatedImageAcquireLastBoundedProbe.reset();
             logPresentRecovery(
                 this->fidx, this->idx, 0, recoveryImageIndex,
-                this->generatedImageAcquireBypassCount
+                this->generatedImageAcquireBypassCount,
+                boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry"
             );
             this->generatedImageAcquireBypassCount = 0;
         } else {
@@ -449,10 +463,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         );
 
         this->instance.get().advanceFrameWithoutGeneration(this->ctx.get());
-        if (!this->generatedImageAcquireBypassCount) {
+        if (!this->generatedImageAcquireBypassCount || boundedRecoveryProbe) {
             logPresentFallback(
                 this->fidx, this->idx, 0, skippedFrames, finalTimelineValue,
-                true, false
+                boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry", false
             );
         }
         this->generatedImageAcquireBypassCount++;
@@ -504,6 +518,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             auto& fallbackSemaphore = pcs.second;
             this->generatedImageAcquireBackoff = true;
             this->generatedImageAcquireBypassCount = 0;
+            this->generatedImageAcquireLastBoundedProbe = DiagnosticsClock::now();
 
             auto& fallbackCommandBuffer = pass.commandBuffer;
             fallbackCommandBuffer.begin(vk);
@@ -516,7 +531,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
             logPresentFallback(
                 this->fidx, this->idx, i, skippedFrames, finalGeneratedTimelineValue,
-                false, true
+                "initial-timeout", true
             );
             this->idx += skippedFrames;
 
@@ -533,6 +548,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkAcquireNextImageKHR() failed");
         this->generatedImageAcquireBackoff = false;
+        this->generatedImageAcquireLastBoundedProbe.reset();
 
         const auto& aquiredSwapchainImage = this->info.images.at(aqImageIdx);
 
