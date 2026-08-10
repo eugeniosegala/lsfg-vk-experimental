@@ -100,7 +100,7 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 
 ### Added
 
-- Adds opt-in Adaptive Frame Generation through `adaptive = true` and `target_fps = <FPS>` profile settings.
+- Adds opt-in Adaptive Frame Generation through \`adaptive = true\` and \`target_fps = <FPS>\` profile settings.
 - Uses a fractional output accumulator to vary the generated-frame count and uploads the corresponding interpolation
   timestamps before each inference pass. This supports non-integer average ratios such as 30 -> 55 or 50 -> 120.
 - Skips interpolation below a 10 FPS base-rate safety floor and caps generation at three intermediate frames per real
@@ -133,7 +133,7 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   point in the presentation cycle. The timeout remains disabled by default in the standalone engine; integrations can
   opt in per launched game.
 - Aggregates expected non-blocking retry diagnostics. The first fallback reports whether backend work was scheduled or
-  bypassed, periodic bounded attempts report `acquire_mode=bounded-retry`, and the recovery entry reports the number of
+  bypassed, periodic bounded attempts report \`acquire_mode=bounded-retry\`, and the recovery entry reports the number of
   bypassed frames without logging every retry.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
