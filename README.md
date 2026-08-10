@@ -45,15 +45,20 @@ target scheduling instead while retaining the other Adaptive protections. Repeat
 progressive cooldown, while a meaningful base-rate improvement permits an earlier retry. After a generated-image
 recovery, the existing warm-up is retained but Adaptive resumes from its last validated generation level instead of
 ramping blindly from zero. Adaptive policy evaluation is frozen while generated output is bypassed, preventing the
-real-frame-only recovery period from falsely validating a multiplier.
+real-frame-only recovery period from falsely validating a multiplier. Abrupt menu, focus, or display transitions also
+retain the pre-transition base-rate baseline and proven generation level. Adaptive waits for one second of real-only
+cadence at least 90% of that baseline before restoring the proven level; if cadence does not recover within five
+seconds, it discards the stale baseline and performs a clean ramp. The first generated-image recovery during this
+window uses history warm-up without forcing a swapchain rebuild, leaving the guarded rebuild as a second-stage fallback.
 See [Configuration](docs/Configuration.md) for the exact limits.
 
 ### SteamOS / Gamescope recovery override
 
 The guarded swapchain-rebuild stage is intentionally controlled by an environment variable. It applies only to
-Adaptive mode, and only after LSFG-VK has recovered from a genuine generated-image acquisition stall. It can clear
-presentation latency left behind by repeated Steam-menu transitions, but a small number of games may pause, flicker,
-or handle a swapchain rebuild poorly.
+Adaptive mode, and only after LSFG-VK has recovered from a genuine generated-image acquisition stall. During a detected
+menu or focus discontinuity, the first recovery uses a soft history warm-up; a later stall can still request the
+rebuild. This can clear presentation latency left behind by repeated Steam-menu transitions, but a small number of
+games may pause, flicker, or handle a swapchain rebuild poorly.
 
 The Decky experimental plugin enables the tested 50 ms bounded acquisition timeout and guarded rebuild automatically.
 For direct lsfg-vk use, enable both before your game command:

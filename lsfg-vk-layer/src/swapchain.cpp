@@ -85,6 +85,13 @@ namespace {
     constexpr double adaptiveRescueRecoveredBaseRatio = 0.90;
     constexpr auto adaptiveRescueMeasurementDuration = std::chrono::seconds(1);
     constexpr auto adaptiveRescueCooldown = std::chrono::seconds(15);
+    // Overlay/focus discontinuities bypass the ordinary collapse detector
+    // because the raw cadence stalls before a smoothed sample can be scored.
+    // Keep the last proven level, wait for real-only cadence to recover, and
+    // restore it only after a bounded stable measurement.
+    constexpr double adaptiveDiscontinuityRecoveredBaseRatio = 0.90;
+    constexpr auto adaptiveDiscontinuityStableDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveDiscontinuityMaximumDuration = std::chrono::seconds(5);
     constexpr auto adaptiveFailedProbeCooldown = std::chrono::seconds(15);
     constexpr auto adaptiveStableRearmDuration = std::chrono::seconds(2);
     constexpr auto adaptiveRecreationCooldown = std::chrono::seconds(5);
@@ -476,6 +483,49 @@ namespace {
                   << '\n';
     }
 
+    void logAdaptiveDiscontinuityRecoveryStart(size_t generationLimit,
+            double baselineBaseFps, std::string_view reason,
+            std::chrono::steady_clock::duration maximumDuration) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << "adaptive-discontinuity-recovery-start"
+                  << " generated_limit=" << generationLimit
+                  << " baseline_base_fps=" << baselineBaseFps
+                  << " reason=" << reason
+                  << " maximum_ms="
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         maximumDuration
+                     ).count()
+                  << '\n';
+    }
+
+    void logAdaptiveDiscontinuityRecoveryComplete(size_t generationLimit,
+            double baselineBaseFps, double measuredBaseFps,
+            std::string_view decision) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << "adaptive-discontinuity-recovery-complete"
+                  << " generated_limit=" << generationLimit
+                  << " baseline_base_fps=" << baselineBaseFps
+                  << " measured_base_fps=" << measuredBaseFps
+                  << " decision=" << decision << '\n';
+    }
+
+    void logAdaptiveDiscontinuitySoftRecovery(size_t generationLimit) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << "adaptive-discontinuity-soft-recovery"
+                  << " generated_limit=" << generationLimit
+                  << " action=history-warmup"
+                  << '\n';
+    }
+
     void logSwapchainRecreationSuppressed(double remainingMs) {
         if (!presentDiagnosticsEnabled())
             return;
@@ -529,7 +579,12 @@ void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint3
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
             AdaptiveRecoveryState* recoveryState, bool recoveryContext,
-            const size_t recoveryGenerationLimit) :
+            const size_t recoveryGenerationLimit,
+            const bool discontinuityRecoveryContext,
+            const double discontinuityBaselineBaseFps,
+            const std::optional<std::chrono::steady_clock::time_point>
+                discontinuityDeadline,
+            const bool discontinuitySoftRecoveryAttempted) :
         instance(backend),
         adaptiveRecoveryState(recoveryState),
         profile(std::move(profile)), info(std::move(info)) {
@@ -615,11 +670,22 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             recoveryContext ? "swapchain-recreation" : "startup"
         );
         if (recoveryContext) {
-            this->restoreAdaptiveGenerationLimit(
-                DiagnosticsClock::now(),
-                recoveryGenerationLimit,
-                "swapchain-recreation"
-            );
+            if (discontinuityRecoveryContext) {
+                this->beginAdaptiveDiscontinuityRecovery(
+                    DiagnosticsClock::now(),
+                    recoveryGenerationLimit,
+                    discontinuityBaselineBaseFps,
+                    discontinuityDeadline,
+                    discontinuitySoftRecoveryAttempted,
+                    "swapchain-recreation"
+                );
+            } else {
+                this->restoreAdaptiveGenerationLimit(
+                    DiagnosticsClock::now(),
+                    recoveryGenerationLimit,
+                    "swapchain-recreation"
+                );
+            }
         }
     }
 }
@@ -683,6 +749,93 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
     }
 
     const double baseFps = 1.0 / this->adaptiveSmoothedIntervalSeconds;
+    if (this->adaptiveDiscontinuityRecoveryDeadline) {
+        const size_t recoveryLimit = this->adaptiveDiscontinuityGenerationLimit;
+        const double baselineBaseFps =
+            this->adaptiveDiscontinuityBaselineBaseFps;
+        const bool initialStabilizationComplete =
+            !this->adaptiveStabilizationUntil ||
+            now >= *this->adaptiveStabilizationUntil;
+        const bool baseRecovered = baselineBaseFps > 0.0 &&
+            baseFps >= baselineBaseFps *
+                adaptiveDiscontinuityRecoveredBaseRatio;
+
+        if (baseRecovered) {
+            if (!this->adaptiveDiscontinuityStableSince)
+                this->adaptiveDiscontinuityStableSince = now;
+        } else {
+            this->adaptiveDiscontinuityStableSince.reset();
+        }
+
+        const bool recoveredCadenceStable = initialStabilizationComplete &&
+            this->adaptiveDiscontinuityStableSince &&
+            now - *this->adaptiveDiscontinuityStableSince >=
+                adaptiveDiscontinuityStableDuration;
+        const bool recoveryExpired =
+            now >= *this->adaptiveDiscontinuityRecoveryDeadline;
+
+        if (recoveredCadenceStable || recoveryExpired) {
+            const std::string_view decision = recoveredCadenceStable
+                ? "restore-validated-level"
+                : "timeout-ramp-from-zero";
+            this->adaptiveDiscontinuityRecoveryDeadline.reset();
+            this->adaptiveDiscontinuityStableSince.reset();
+            this->adaptiveDiscontinuityGenerationLimit = 0;
+            this->adaptiveDiscontinuityBaselineBaseFps = 0.0;
+            this->adaptiveDiscontinuitySoftRecoveryAttempted = false;
+            this->adaptiveStabilizationUntil.reset();
+            this->adaptiveOutputCredit = 0.0;
+            if (recoveredCadenceStable) {
+                this->restoreAdaptiveGenerationLimit(
+                    now, recoveryLimit, "cadence-discontinuity"
+                );
+                if (this->profile.adaptive_stable_cadence) {
+                    this->adaptiveStableCadenceRetryAt =
+                        now + adaptiveStableCadenceStrictSettlingDuration;
+                }
+            } else {
+                this->adaptiveGenerationLimit = 0;
+                this->adaptiveRampEvaluationAt.reset();
+                this->adaptiveBridgeActive = false;
+                this->adaptiveBridgeBaselineLimit = 0;
+                this->adaptiveBridgeBaselineBaseFps = 0.0;
+                this->adaptiveRearmRequired = false;
+                this->adaptiveRearmNotBefore.reset();
+                this->adaptiveStableRearmSince.reset();
+                this->adaptiveRearmFallbackLimit = 0;
+                this->adaptiveConsecutiveProbeFailures = 0;
+                this->adaptiveLastFailedRampLimit = 0;
+                this->adaptiveConsecutiveRampFailures = 0;
+                this->adaptiveFailedRampBaselineBaseFps = 0.0;
+                this->adaptiveNextRampAt = now + adaptiveRampStepDelay;
+            }
+            logAdaptiveDiscontinuityRecoveryComplete(
+                recoveryLimit,
+                baselineBaseFps,
+                baseFps,
+                decision
+            );
+            // Keep this transition frame real-only. The restored or freshly
+            // ramped policy starts on the following real frame.
+            return {};
+        }
+
+        this->adaptiveOutputCredit = 0.0;
+        if (presentDiagnosticsEnabled() &&
+                (!this->adaptiveLastDiagnostic ||
+                 now - *this->adaptiveLastDiagnostic >= std::chrono::seconds(1))) {
+            this->adaptiveLastDiagnostic = now;
+            std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-plan"
+                      << " base_fps=" << baseFps
+                      << " target_fps=" << this->profile.target_fps
+                      << " generated=0 max_generated=0"
+                      << " phase=discontinuity-recovery"
+                      << " recovery_generated_limit=" << recoveryLimit
+                      << '\n';
+        }
+        return {};
+    }
+
     if (this->adaptiveRescueUntil) {
         if (now < *this->adaptiveRescueUntil) {
             this->adaptiveOutputCredit = 0.0;
@@ -1068,6 +1221,48 @@ void Swapchain::restoreAdaptiveGenerationLimit(
     logAdaptiveRecoveryResume(restoredLimit, higherProbeDelay, reason);
 }
 
+void Swapchain::beginAdaptiveDiscontinuityRecovery(
+        const std::chrono::steady_clock::time_point now,
+        const size_t generationLimit,
+        const double baselineBaseFps,
+        const std::optional<std::chrono::steady_clock::time_point> deadline,
+        const bool softRecoveryAttempted,
+        const std::string_view reason) {
+    if (!this->profile.adaptive || generationLimit == 0 ||
+            baselineBaseFps <= 0.0)
+        return;
+
+    const size_t configuredLimit = std::min(
+        this->destinationImages.size(),
+        this->profile.adaptive_max_multiplier - 1
+    );
+    this->adaptiveDiscontinuityGenerationLimit = std::min(
+        generationLimit, configuredLimit
+    );
+    if (this->adaptiveDiscontinuityGenerationLimit == 0)
+        return;
+
+    this->adaptiveDiscontinuityBaselineBaseFps = baselineBaseFps;
+    const auto minimumDeadline = now + adaptiveDiscontinuityStableDuration;
+    this->adaptiveDiscontinuityRecoveryDeadline = deadline
+        ? std::max(*deadline, minimumDeadline)
+        : now + adaptiveDiscontinuityMaximumDuration;
+    this->adaptiveDiscontinuityStableSince.reset();
+    this->adaptiveDiscontinuitySoftRecoveryAttempted = softRecoveryAttempted;
+    this->adaptiveOutputCredit = 0.0;
+
+    const auto remainingDuration =
+        *this->adaptiveDiscontinuityRecoveryDeadline > now
+        ? *this->adaptiveDiscontinuityRecoveryDeadline - now
+        : DiagnosticsClock::duration::zero();
+    logAdaptiveDiscontinuityRecoveryStart(
+        this->adaptiveDiscontinuityGenerationLimit,
+        baselineBaseFps,
+        reason,
+        remainingDuration
+    );
+}
+
 void Swapchain::scheduleAdaptiveRearm(
         const std::chrono::steady_clock::time_point now,
         const std::string_view reason,
@@ -1091,6 +1286,29 @@ void Swapchain::beginAdaptiveStabilization(
         const std::string_view reason) {
     if (!this->profile.adaptive)
         return;
+
+    const bool cadenceDiscontinuity =
+        reason == "cadence-stall" || reason == "cadence-drop";
+    if (cadenceDiscontinuity)
+        this->adaptiveDiscontinuityStableSince.reset();
+    if (cadenceDiscontinuity &&
+            !this->adaptiveDiscontinuityRecoveryDeadline &&
+            this->adaptiveSmoothedIntervalSeconds > 0.0) {
+        size_t recoveryLimit = this->validatedAdaptiveGenerationLimit();
+        if (this->adaptiveStableCadenceLimit) {
+            recoveryLimit = std::max(
+                recoveryLimit, *this->adaptiveStableCadenceLimit
+            );
+        }
+        this->beginAdaptiveDiscontinuityRecovery(
+            now,
+            recoveryLimit,
+            1.0 / this->adaptiveSmoothedIntervalSeconds,
+            std::nullopt,
+            false,
+            reason
+        );
+    }
 
     const bool alreadyStabilizing = this->adaptiveStabilizationUntil &&
         now < *this->adaptiveStabilizationUntil;
@@ -1456,9 +1674,21 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
             this->generatedImageAcquireBackoff = false;
             this->generatedImageAcquireLastBoundedProbe.reset();
-            const size_t recoveryGenerationLimit =
-                this->validatedAdaptiveGenerationLimit();
-            if (this->profile.adaptive && presentRecoveryRecreateEnabled()) {
+            const bool discontinuityRecoveryActive =
+                this->profile.adaptive &&
+                this->adaptiveDiscontinuityRecoveryDeadline.has_value();
+            const size_t recoveryGenerationLimit = discontinuityRecoveryActive
+                ? this->adaptiveDiscontinuityGenerationLimit
+                : this->validatedAdaptiveGenerationLimit();
+            const bool useSoftDiscontinuityRecovery =
+                discontinuityRecoveryActive &&
+                !this->adaptiveDiscontinuitySoftRecoveryAttempted;
+            if (useSoftDiscontinuityRecovery) {
+                this->adaptiveDiscontinuitySoftRecoveryAttempted = true;
+                logAdaptiveDiscontinuitySoftRecovery(recoveryGenerationLimit);
+            }
+            if (this->profile.adaptive && presentRecoveryRecreateEnabled() &&
+                    !useSoftDiscontinuityRecovery) {
                 const auto recoveryNow = DiagnosticsClock::now();
                 if (!this->adaptiveRecoveryState ||
                         !this->adaptiveRecoveryState->lastSwapchainRecreation ||
@@ -1471,6 +1701,16 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                         this->adaptiveRecoveryState->nextContextIsRecovery = true;
                         this->adaptiveRecoveryState->nextContextGenerationLimit =
                             recoveryGenerationLimit;
+                        this->adaptiveRecoveryState->nextContextIsDiscontinuityRecovery =
+                            discontinuityRecoveryActive;
+                        this->adaptiveRecoveryState->
+                            nextContextDiscontinuityBaselineBaseFps =
+                                this->adaptiveDiscontinuityBaselineBaseFps;
+                        this->adaptiveRecoveryState->nextContextDiscontinuityDeadline =
+                            this->adaptiveDiscontinuityRecoveryDeadline;
+                        this->adaptiveRecoveryState->
+                            nextContextDiscontinuitySoftRecoveryAttempted =
+                                this->adaptiveDiscontinuitySoftRecoveryAttempted;
                     }
                 } else {
                     const auto elapsed = recoveryNow -
@@ -1499,11 +1739,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 this->beginAdaptiveStabilization(
                     recoveryNow, "generated-image-recovery"
                 );
-                this->restoreAdaptiveGenerationLimit(
-                    recoveryNow,
-                    recoveryGenerationLimit,
-                    "generated-image-recovery"
-                );
+                if (!discontinuityRecoveryActive) {
+                    this->restoreAdaptiveGenerationLimit(
+                        recoveryNow,
+                        recoveryGenerationLimit,
+                        "generated-image-recovery"
+                    );
+                }
             } else {
                 this->resetAdaptiveScheduler(DiagnosticsClock::now());
             }

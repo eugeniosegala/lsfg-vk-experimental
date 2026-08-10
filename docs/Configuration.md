@@ -36,7 +36,9 @@ Next is a list of all available **profile** configuration options:
   generated output is bypassed, so recovery cannot falsely accept a level that was not actually running. For a modest
   fractional target such as 60 -> 90, Adaptive can automatically validate a constant cadence to avoid alternating
   real-only and generated frames; it falls back to strict target scheduling if the higher constant workload is not
-  sustainable. (Default: `3`)
+  sustainable. An abrupt menu, focus, or display transition preserves the previous real-rate baseline and proven
+  generation level. Adaptive restores that level only after one second at least 90% of the earlier base rate; after
+  five seconds without recovery it discards the stale baseline and ramps cleanly from zero. (Default: `3`)
 - **Stable Cadence / `adaptive_stable_cadence`**: When enabled, Adaptive may use the validated constant-cadence policy
   described above instead of alternating generated-frame counts to match a fractional target exactly. Strict scheduling
   settles first, and constant cadence is considered only when it already needs at least 95% of the corresponding integer
@@ -73,8 +75,10 @@ The following environment variables affect lsfg-vk:
 - `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS`: Optional timeout for generated-image acquisition. A timeout enters the
   Gamescope presentation fallback; unset or `0` keeps the normal unbounded acquisition path.
 - `LSFGVK_PRESENT_RECOVERY_RECREATE`: Set to `1` to ask the game to recreate its swapchain after Adaptive recovers
-  from that fallback. Recreation requests have a five-second cooldown shared across replacement contexts. This
-  experimental option has no effect without the acquire timeout and does not affect Fixed mode.
+  from that fallback. During a detected menu/focus discontinuity, the first recovery uses history warm-up without a
+  rebuild; a later recovery can still request one. Recreation requests have a five-second cooldown shared across
+  replacement contexts. This experimental option has no effect without the acquire timeout and does not affect Fixed
+  mode.
 - `LSFGVK_PRESENT_DIAGNOSTICS`: Set to `1` to log slow presentation operations.
 - `LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS`: Minimum duration in milliseconds reported by presentation diagnostics.
 

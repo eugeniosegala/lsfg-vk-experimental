@@ -213,12 +213,28 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     const bool recoveryContext = this->adaptiveRecoveryState.nextContextIsRecovery;
     const size_t recoveryGenerationLimit =
         this->adaptiveRecoveryState.nextContextGenerationLimit;
+    const bool discontinuityRecoveryContext =
+        this->adaptiveRecoveryState.nextContextIsDiscontinuityRecovery;
+    const double discontinuityBaselineBaseFps =
+        this->adaptiveRecoveryState.nextContextDiscontinuityBaselineBaseFps;
+    const auto discontinuityDeadline =
+        this->adaptiveRecoveryState.nextContextDiscontinuityDeadline;
+    const bool discontinuitySoftRecoveryAttempted =
+        this->adaptiveRecoveryState.nextContextDiscontinuitySoftRecoveryAttempted;
     this->adaptiveRecoveryState.nextContextIsRecovery = false;
     this->adaptiveRecoveryState.nextContextGenerationLimit = 0;
+    this->adaptiveRecoveryState.nextContextIsDiscontinuityRecovery = false;
+    this->adaptiveRecoveryState.nextContextDiscontinuityBaselineBaseFps = 0.0;
+    this->adaptiveRecoveryState.nextContextDiscontinuityDeadline.reset();
+    this->adaptiveRecoveryState.nextContextDiscontinuitySoftRecoveryAttempted = false;
     const bool inserted = this->swapchains.emplace(swapchain,
         Swapchain(vk, this->backend.mut(), profile, info,
             &this->adaptiveRecoveryState, recoveryContext,
-            recoveryGenerationLimit)).second;
+            recoveryGenerationLimit,
+            discontinuityRecoveryContext,
+            discontinuityBaselineBaseFps,
+            discontinuityDeadline,
+            discontinuitySoftRecoveryAttempted)).second;
 
     if (presentDiagnosticsEnabled()) {
         std::cerr << "lsfg-vk: present diagnostics: operation=swapchain-context-create"
@@ -227,6 +243,8 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
                   << " inserted=" << inserted
                   << " recovery_context=" << recoveryContext
                   << " recovery_generated_limit=" << recoveryGenerationLimit
+                  << " discontinuity_recovery="
+                  << discontinuityRecoveryContext
                   << '\n';
     }
 }

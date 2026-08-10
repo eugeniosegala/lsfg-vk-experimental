@@ -44,6 +44,11 @@ namespace lsfgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> lastSwapchainRecreation;
         bool nextContextIsRecovery{false};
         size_t nextContextGenerationLimit{0};
+        bool nextContextIsDiscontinuityRecovery{false};
+        double nextContextDiscontinuityBaselineBaseFps{0.0};
+        std::optional<std::chrono::steady_clock::time_point>
+            nextContextDiscontinuityDeadline;
+        bool nextContextDiscontinuitySoftRecoveryAttempted{false};
     };
 
     /// swapchain context for a layer instance
@@ -59,7 +64,12 @@ namespace lsfgvk::layer {
         Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
             AdaptiveRecoveryState* recoveryState, bool recoveryContext,
-            size_t recoveryGenerationLimit);
+            size_t recoveryGenerationLimit,
+            bool discontinuityRecoveryContext,
+            double discontinuityBaselineBaseFps,
+            std::optional<std::chrono::steady_clock::time_point>
+                discontinuityDeadline,
+            bool discontinuitySoftRecoveryAttempted);
 
         /// present a frame
         /// @param vk vulkan instance
@@ -98,6 +108,15 @@ namespace lsfgvk::layer {
         void restoreAdaptiveGenerationLimit(
             std::chrono::steady_clock::time_point now,
             size_t generationLimit,
+            std::string_view reason
+        );
+        /// retain a proven pre-overlay cadence until real presentation settles
+        void beginAdaptiveDiscontinuityRecovery(
+            std::chrono::steady_clock::time_point now,
+            size_t generationLimit,
+            double baselineBaseFps,
+            std::optional<std::chrono::steady_clock::time_point> deadline,
+            bool softRecoveryAttempted,
             std::string_view reason
         );
         /// ramp generated-frame load and reject counterproductive steps
@@ -162,6 +181,13 @@ namespace lsfgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> adaptiveRescueCooldownUntil;
         size_t adaptiveRescuePreviousLimit{0};
         double adaptiveRescueBaselineBaseFps{0.0};
+        std::optional<std::chrono::steady_clock::time_point>
+            adaptiveDiscontinuityRecoveryDeadline;
+        std::optional<std::chrono::steady_clock::time_point>
+            adaptiveDiscontinuityStableSince;
+        size_t adaptiveDiscontinuityGenerationLimit{0};
+        double adaptiveDiscontinuityBaselineBaseFps{0.0};
+        bool adaptiveDiscontinuitySoftRecoveryAttempted{false};
         size_t adaptiveConsecutiveProbeFailures{0};
         size_t adaptiveLastFailedRampLimit{0};
         size_t adaptiveConsecutiveRampFailures{0};

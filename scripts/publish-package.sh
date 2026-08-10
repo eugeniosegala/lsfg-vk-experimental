@@ -129,6 +129,9 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Lets strict Adaptive settle before constant-cadence validation. A severe sustained cadence collapse triggers one
   bounded real-only measurement, then resumes fractional scheduling or probes one higher level only when the selected
   maximum permits it. Rescue attempts never exceed the configured maximum and have a 15-second cooldown.
+- Preserves the validated generation level and healthy base-rate baseline across abrupt menu/focus cadence stalls.
+  Adaptive restores that level only after one second at least 90% of the previous real cadence; after five seconds it
+  discards the stale baseline and performs a clean ramp from zero.
 - Warms all three shared temporal-history slots with real frames before Adaptive generates its first output, avoiding
   startup inference from partially initialized history.
 - Exposes Adaptive mode, target, maximum multiplier, and Stable Cadence in the standalone Qt configuration UI. Switching modes should
@@ -155,6 +158,9 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Preserves the last validated Adaptive generation level across generated-image recovery and guarded swapchain
   recreation. The existing real-frame warm-up still runs first; higher probes are then held for five seconds instead
   of immediately rebuilding load from zero.
+- Uses temporal-history warm-up instead of an immediate swapchain rebuild for the first generated-image recovery in a
+  detected cadence discontinuity. A later stall can still use the guarded rebuild and carries the original recovery
+  baseline into the replacement context.
 - Freezes Adaptive multiplier evaluation while generated output is deliberately bypassed, preventing the cheaper
   real-frame-only fallback from falsely validating a multiplier that was not actually running.
 - Tolerates ordinary Gamescope timing noise around the exact 80 -> 60 FPS divisor when validating a safe 2x constant
@@ -193,7 +199,7 @@ LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local
 After reproducing the problem, extract the latest diagnostic entries with:
 
 \`\`\`bash
-grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-recovery-resume-scheduled|adaptive-ramp|adaptive-ramp-accepted|adaptive-ramp-backoff|adaptive-ramp-early-retry|adaptive-load-shed|adaptive-bridge|adaptive-bridge-accepted|adaptive-bridge-rejected|adaptive-probe-aborted|adaptive-rearm-scheduled|adaptive-rearm-ready|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
+grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-discontinuity|adaptive-recovery-resume-scheduled|adaptive-ramp|adaptive-ramp-accepted|adaptive-ramp-backoff|adaptive-ramp-early-retry|adaptive-load-shed|adaptive-bridge|adaptive-bridge-accepted|adaptive-bridge-rejected|adaptive-probe-aborted|adaptive-rearm-scheduled|adaptive-rearm-ready|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
 \`\`\`
 
 ### Install

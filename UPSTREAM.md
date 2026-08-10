@@ -291,6 +291,29 @@ measurement. It then resumes fractional scheduling or probes one higher generate
 cooldown to prevent oscillation. If the measured real rate still cannot reach the target at the configured ceiling,
 Adaptive keeps the best permitted level instead of repeatedly retrying.
 
+SteamOS traces from the later `.17` candidate exposed a separate abrupt-transition path. Opening the Steam menu could
+produce a raw cadence stall before the smoothed Stable Cadence collapse detector ran. Stabilization then discarded the
+healthy base-rate baseline, the first recovered generated image immediately requested swapchain recreation, and the
+new context rebuilt its multiplier from transient 10–30 FPS samples. The trace contained repeated cadence stalls,
+load-shed decisions, and recreations but no `adaptive-rescue-*` event.
+
+The revised `.17` candidate therefore adds bounded discontinuity recovery for all Adaptive scheduling, independently
+of the Stable Cadence toggle:
+
+- A cadence stall/drop retains the last validated generation level and pre-transition smoothed base rate.
+- The scheduler presents real frames until the measured base rate remains at least 90% of that baseline for one
+  second, then restores the validated level without immediately probing higher.
+- If the earlier cadence does not return within five seconds, the stale baseline is discarded and the normal guarded
+  ramp restarts from zero using settled measurements.
+- The first generated-image recovery in this window uses temporal-history warm-up without requesting a replacement
+  swapchain. If acquisition stalls again, the existing guarded recreation path remains available and carries the
+  discontinuity baseline and deadline into the replacement context.
+- Diagnostics report `adaptive-discontinuity-recovery-start`, `phase=discontinuity-recovery`,
+  `adaptive-discontinuity-soft-recovery`, and `adaptive-discontinuity-recovery-complete`.
+
+Fixed mode is unchanged. The bounded recovery can intentionally show real-frame output for up to five seconds instead
+of applying interpolation against an unstable compositor cadence.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:
