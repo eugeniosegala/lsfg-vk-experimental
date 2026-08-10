@@ -74,6 +74,7 @@ namespace lsfgvk::layer {
         std::optional<ls::GameConf> active_profile;
 
         ls::lazy<backend::Instance> backend;
+        AdaptiveRecoveryState adaptiveRecoveryState;
         std::unordered_map<VkSwapchainKHR, Swapchain> swapchains;
     };
 

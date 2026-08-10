@@ -25,6 +25,11 @@ using namespace lsfgvk;
 using namespace lsfgvk::layer;
 
 namespace {
+    bool presentDiagnosticsEnabled() {
+        const char* value = std::getenv("LSFGVK_PRESENT_DIAGNOSTICS");
+        return value && std::string(value) != "0";
+    }
+
     /// helper function to add required extensions
     std::vector<const char*> add_extensions(const char* const* existingExtensions, size_t count,
             const std::vector<const char*>& requiredExtensions) {
@@ -205,10 +210,27 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         unsetenv("DISABLE_LSFGVK");
     }
 
-    this->swapchains.emplace(swapchain,
-        Swapchain(vk, this->backend.mut(), profile, info));
+    const bool recoveryContext = this->adaptiveRecoveryState.nextContextIsRecovery;
+    this->adaptiveRecoveryState.nextContextIsRecovery = false;
+    const bool inserted = this->swapchains.emplace(swapchain,
+        Swapchain(vk, this->backend.mut(), profile, info,
+            &this->adaptiveRecoveryState, recoveryContext)).second;
+
+    if (presentDiagnosticsEnabled()) {
+        std::cerr << "lsfg-vk: present diagnostics: operation=swapchain-context-create"
+                  << " swapchain=" << swapchain
+                  << " active_contexts=" << this->swapchains.size()
+                  << " inserted=" << inserted
+                  << " recovery_context=" << recoveryContext << '\n';
+    }
 }
 
 void Root::removeSwapchainContext(VkSwapchainKHR swapchain) {
-    this->swapchains.erase(swapchain);
+    const size_t removed = this->swapchains.erase(swapchain);
+    if (presentDiagnosticsEnabled()) {
+        std::cerr << "lsfg-vk: present diagnostics: operation=swapchain-context-destroy"
+                  << " swapchain=" << swapchain
+                  << " active_contexts=" << this->swapchains.size()
+                  << " removed=" << removed << '\n';
+    }
 }

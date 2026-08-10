@@ -219,6 +219,27 @@ Some games can mishandle a synthetic out-of-date result, so this remains a guard
 Set `LSFGVK_PRESENT_RECOVERY_RECREATE=0` to retain the three-frame Adaptive recovery warm-up without forcing the
 game-owned swapchain to be recreated.
 
+## Adaptive stabilization test build: `v2.0.0-dev28-experimental.14`
+
+SteamOS testing of `.13` confirmed that swapchain recreation could clear accumulated presentation latency, but a
+recreated context could immediately request the maximum Adaptive load while the game and Gamescope were still
+settling. On a low base rate, this could collapse real-frame throughput, increase interpolation distance and trigger
+another acquire timeout. Repeated Steam-menu transitions could therefore enter a recreate-and-retry loop.
+
+The `.14` candidate keeps Fixed mode unchanged and adds an Adaptive-only recovery controller:
+
+- Adaptive presents real frames for one second after startup, recovery, or a sustained cadence discontinuity.
+- Generated-frame load ramps from 0 to 1 to 2 or 3 intermediates instead of jumping directly to the configured limit.
+- Each step is evaluated against real-frame throughput. A step that reduces useful output or collapses base FPS for
+  only a marginal output gain is rolled back and retried after five seconds.
+- Swapchain recreation requests share a five-second cooldown across replacement contexts, preventing a recovered
+  context from immediately starting another recreation loop.
+- Opt-in diagnostics now report stabilization, ramp decisions, load shedding, cooldown suppression, and swapchain
+  context creation/destruction.
+
+This policy deliberately prioritizes stable base-frame cadence and temporal quality over reaching the target at any
+cost. Adaptive may remain below the requested target when a higher multiplier would be counterproductive.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

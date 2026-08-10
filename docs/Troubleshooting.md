@@ -96,9 +96,10 @@ LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=1 ~/.local
 This request is made only after a real acquire timeout and a later successful recovery probe. The acquired image is
 safely presented before lsfg-vk returns `VK_ERROR_OUT_OF_DATE_KHR`, the standard signal applications use to recreate
 their swapchain. Diagnostics report `generated-image-recovered recovery_action=swapchain-recreate`, followed by
-`request-swapchain-recreation`. A short pause or flicker can occur while the game rebuilds its swapchain. Some games may
-mishandle a forced recreation; set `LSFGVK_PRESENT_RECOVERY_RECREATE=0` for that game to return to the history-only
-recovery. Fixed mode is unaffected.
+`request-swapchain-recreation`. The replacement context stabilizes on real frames before generated-frame load is
+ramped one step at a time. A five-second cross-context cooldown suppresses immediate recreation loops. A short pause
+or flicker can occur while the game rebuilds its swapchain. Some games may mishandle a forced recreation; set
+`LSFGVK_PRESENT_RECOVERY_RECREATE=0` for that game to return to the history-only recovery. Fixed mode is unaffected.
 
 For a normal non-isolated installation, place the same environment variables before its usual launch command.
 
@@ -106,8 +107,12 @@ Clear the Steam log before reproducing the problem. After reproducing it, extrac
 with:
 
 ```bash
-grep -aF "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 400
+grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-ramp|adaptive-ramp-accepted|adaptive-load-shed|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
 ```
+
+`adaptive-stabilization` and `adaptive-ramp` show the normal restart sequence. `adaptive-load-shed` means a tested
+multiplier reduced useful throughput and was rolled back. `swapchain-recreation-suppressed` confirms the cooldown
+prevented a repeated recreation request.
 
 Disable the diagnostic variables after collecting the trace. Remove the acquire-timeout and recreation variables too
 if you do not want to continue testing the recovery path.

@@ -26,7 +26,8 @@ Next is a list of all available **profile** configuration options:
   real framerate can exceed this value. Targets above the configured multiplier limit cannot be reached. (Default: `120`)
 - **Maximum Adaptive Multiplier / `adaptive_max_multiplier`**: Limits Adaptive mode to 2x, 3x, or 4x total output.
   Every real frame is still presented. If the target would require a higher ratio, output remains below the target
-  instead of adding the more artifact-prone generated frames. (Default: `3`)
+  instead of adding the more artifact-prone generated frames. Adaptive also ramps toward this limit after startup or
+  recovery and can temporarily reduce it when added generation load harms real-frame throughput. (Default: `3`)
 - **Flow Scale / `flow_scale`**: The resolution scale at which the motion vectors are calculated. A lower value means better performance, but worse quality. (Default: `1.0`)
 - **Performance Mode / `performance_mode`**: When enabled, a significantly lighter frame generation model is used. This has a minor quality impact, but greatly improves performance. 
 (Default: `false`)
@@ -56,7 +57,8 @@ The following environment variables affect lsfg-vk:
 - `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS`: Optional timeout for generated-image acquisition. A timeout enters the
   Gamescope presentation fallback; unset or `0` keeps the normal unbounded acquisition path.
 - `LSFGVK_PRESENT_RECOVERY_RECREATE`: Set to `1` to ask the game to recreate its swapchain after Adaptive recovers
-  from that fallback. This experimental option has no effect without the acquire timeout and does not affect Fixed mode.
+  from that fallback. Recreation requests have a five-second cooldown shared across replacement contexts. This
+  experimental option has no effect without the acquire timeout and does not affect Fixed mode.
 - `LSFGVK_PRESENT_DIAGNOSTICS`: Set to `1` to log slow presentation operations.
 - `LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS`: Minimum duration in milliseconds reported by presentation diagnostics.
 

@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,12 @@ namespace lsfgvk::layer {
     void context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo);
 
+    /// Recovery coordination that survives a game-owned swapchain recreation.
+    struct AdaptiveRecoveryState {
+        std::optional<std::chrono::steady_clock::time_point> lastSwapchainRecreation;
+        bool nextContextIsRecovery{false};
+    };
+
     /// swapchain context for a layer instance
     class Swapchain {
     public:
@@ -46,8 +53,11 @@ namespace lsfgvk::layer {
         /// @param backend lsfg-vk backend instance
         /// @param profile active game profile
         /// @param info swapchain info
+        /// @param recoveryState recovery coordination shared across swapchains
+        /// @param recoveryContext true when this context follows guarded recovery
         Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
-            ls::GameConf profile, SwapchainInfo info);
+            ls::GameConf profile, SwapchainInfo info,
+            AdaptiveRecoveryState* recoveryState, bool recoveryContext);
 
         /// present a frame
         /// @param vk vulkan instance
@@ -68,6 +78,16 @@ namespace lsfgvk::layer {
         /// reset timing state after a compositor presentation discontinuity
         void resetAdaptiveScheduler(
             std::chrono::steady_clock::time_point now
+        );
+        /// run real frames only while game/compositor cadence settles
+        void beginAdaptiveStabilization(
+            std::chrono::steady_clock::time_point now,
+            std::string_view reason
+        );
+        /// ramp generated-frame load and reject counterproductive steps
+        void updateAdaptiveGenerationLimit(
+            std::chrono::steady_clock::time_point now,
+            double baseFps
         );
 
         std::vector<vk::Image> sourceImages;
@@ -98,6 +118,14 @@ namespace lsfgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> adaptiveLastDiagnostic;
         double adaptiveSmoothedIntervalSeconds{0.0};
         double adaptiveOutputCredit{0.0};
+        std::optional<std::chrono::steady_clock::time_point> adaptiveStabilizationUntil;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveNextRampAt;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveRampEvaluationAt;
+        size_t adaptiveGenerationLimit{0};
+        size_t adaptiveRampPreviousLimit{0};
+        size_t adaptiveCadenceDropFrames{0};
+        double adaptiveRampBaselineBaseFps{0.0};
+        AdaptiveRecoveryState* adaptiveRecoveryState{};
 
         ls::GameConf profile;
         SwapchainInfo info;

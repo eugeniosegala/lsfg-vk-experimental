@@ -93,7 +93,8 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Flatpak runtime extensions for 23.08, 24.08, and 25.08 are included in \`$(basename "$flatpak_archive")\`. They use a dedicated experimental extension ID and can coexist with the public Flathub layer.
 - \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is a guarded Adaptive-mode recovery test. It asks the application to rebuild
   its Vulkan swapchain only after an acquire timeout has recovered, but some games may pause, flicker, or mishandle the
-  synthetic out-of-date result. Leave it disabled outside controlled testing.
+  synthetic out-of-date result. Recreation requests have a five-second cross-context cooldown. Leave it disabled
+  outside controlled testing.
 
 ### Included
 
@@ -110,6 +111,10 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   timestamps before each inference pass. This supports non-integer average ratios such as 30 -> 55 or 50 -> 120.
 - Skips interpolation below a 10 FPS base-rate safety floor and caps generation at the selected Adaptive limit, never
   exceeding three intermediate frames per real frame. Existing Fixed mode continues through its original path.
+- Stabilizes on real frames for one second after startup, recovery, or a sustained cadence disruption, then ramps
+  generated-frame load one step at a time instead of immediately requesting the configured maximum.
+- Evaluates each Adaptive ramp step against base and estimated output throughput. Counterproductive steps are rolled
+  back for five seconds, prioritizing stable real-frame cadence over reaching the target at any cost.
 - Warms all three shared temporal-history slots with real frames before Adaptive generates its first output, avoiding
   startup inference from partially initialized history.
 - Exposes Adaptive mode, target, and maximum multiplier in the standalone Qt configuration UI. Switching modes should
@@ -131,6 +136,8 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   After one second of fallback, the layer makes one bounded reacquisition attempt per second using the configured
   acquire timeout. Swapchain recreation is requested only after one of those probes succeeds and only when
   \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\`; Fixed mode is unchanged.
+- Prevents recovered Adaptive contexts from entering a recreate-and-retry loop by sharing a five-second recreation
+  cooldown across replacement swapchains.
 
 ### Presentation diagnostics
 
@@ -149,8 +156,9 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   retries report \`backend_work=history-only\`. Periodic bounded attempts report
   \`acquire_mode=bounded-retry\`. Adaptive recreation recovery emits \`generated-image-recovered
   recovery_action=swapchain-recreate\`, followed by \`request-swapchain-recreation\`; the newly created context then
-  reports its normal startup history warm-up. The recovery entry reports the number of bypassed output frames without
-  logging every retry.
+  reports its normal startup history warm-up and stabilization. Ramp/load decisions emit \`adaptive-ramp\`,
+  \`adaptive-ramp-accepted\`, or \`adaptive-load-shed\`; cooldown suppression and context lifecycles are logged
+  separately. The recovery entry reports the number of bypassed output frames without logging every retry.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
 
@@ -161,7 +169,7 @@ LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local
 After reproducing the problem, extract the latest diagnostic entries with:
 
 \`\`\`bash
-grep -aF "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 400
+grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-ramp|adaptive-ramp-accepted|adaptive-load-shed|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
 \`\`\`
 
 ### Install
