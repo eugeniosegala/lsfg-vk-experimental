@@ -37,7 +37,8 @@ step harms useful throughput, it temporarily falls back to the previous step. Wh
 the first generated-frame step look counterproductive, the scheduler may make one bounded bridge test at the next
 step. For safe fractional ratios such as 60 real FPS toward a 90 FPS target, it can briefly validate a constant
 generated-frame cadence rather than alternating generated and real-only frames. It retains that cadence only when it
-continues to meet the target with sufficient base-rate headroom. Repeated failures at a higher multiplier use a
+continues to meet the target with sufficient base-rate headroom. Set `adaptive_stable_cadence = false` to use strict
+target scheduling instead while retaining the other Adaptive protections. Repeated failures at a higher multiplier use a
 progressive cooldown, while a meaningful base-rate improvement permits an earlier retry. After a generated-image
 recovery, the existing warm-up is retained but Adaptive resumes from its last validated generation level instead of
 ramping blindly from zero. Adaptive policy evaluation is frozen while generated output is bypassed, preventing the

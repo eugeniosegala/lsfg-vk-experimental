@@ -234,6 +234,19 @@ ApplicationWindow {
                 }
 
                 GroupEntry {
+                    title: "Stable Cadence"
+                    description: "Prefer a constant interpolation cadence when it passes the safety checks"
+                    enabled: backend.adaptive
+
+                    CheckBox {
+                        Layout.alignment: Qt.AlignRight
+
+                        checked: backend.adaptive_stable_cadence
+                        onToggled: backend.adaptive_stable_cadence = checked
+                    }
+                }
+
+                GroupEntry {
                     title: "Multiplier"
                     description: "Control the amount of generated frames"
                     enabled: !backend.adaptive

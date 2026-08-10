@@ -34,6 +34,7 @@ namespace lsfgvk::ui {
         Q_PROPERTY(bool adaptive READ getAdaptive WRITE adaptiveUpdated NOTIFY refreshUI)
         Q_PROPERTY(uint target_fps READ getTargetFPS WRITE targetFPSUpdated NOTIFY refreshUI)
         Q_PROPERTY(size_t adaptive_max_multiplier READ getAdaptiveMaxMultiplier WRITE adaptiveMaxMultiplierUpdated NOTIFY refreshUI)
+        Q_PROPERTY(bool adaptive_stable_cadence READ getAdaptiveStableCadence WRITE adaptiveStableCadenceUpdated NOTIFY refreshUI)
         Q_PROPERTY(float flow_scale READ getFlowScale WRITE flowScaleUpdated NOTIFY refreshUI)
         Q_PROPERTY(bool performance_mode READ getPerformanceMode WRITE performanceModeUpdated NOTIFY refreshUI)
         Q_PROPERTY(int pacing_mode READ getPacingMode WRITE pacingModeUpdated NOTIFY refreshUI)
@@ -89,6 +90,10 @@ namespace lsfgvk::ui {
         [[nodiscard]] size_t getAdaptiveMaxMultiplier() const {
             VALIDATE_AND_GET_PROFILE(3)
             return conf.adaptive_max_multiplier;
+        }
+        [[nodiscard]] bool getAdaptiveStableCadence() const {
+            VALIDATE_AND_GET_PROFILE(true)
+            return conf.adaptive_stable_cadence;
         }
         [[nodiscard]] float getFlowScale() const {
             VALIDATE_AND_GET_PROFILE(1.0F)
@@ -167,6 +172,11 @@ namespace lsfgvk::ui {
         void adaptiveMaxMultiplierUpdated(size_t adaptive_max_multiplier) {
             VALIDATE_AND_GET_PROFILE()
             conf.adaptive_max_multiplier = std::clamp<size_t>(adaptive_max_multiplier, 2, 4);
+            MARK_DIRTY()
+        }
+        void adaptiveStableCadenceUpdated(bool adaptive_stable_cadence) {
+            VALIDATE_AND_GET_PROFILE()
+            conf.adaptive_stable_cadence = adaptive_stable_cadence;
             MARK_DIRTY()
         }
         void flowScaleUpdated(float flow_scale) {

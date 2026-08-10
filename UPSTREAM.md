@@ -264,6 +264,25 @@ The `.15` candidate keeps Fixed mode unchanged and makes Adaptive probing bounde
 The bridge can briefly increase interpolation load for its one-second evaluation window. It is intentionally attempted
 only once per recovery interval and is rolled back when it does not demonstrate a meaningful benefit.
 
+## Adaptive retained-level test build: `v2.0.0-dev28-experimental.16`
+
+The `.16` candidate carries the last validated generated-frame level through Gamescope recovery. The replacement
+context still performs its real-frame stabilization and temporal-history warm-up, then resumes that proven level
+instead of always rebuilding Adaptive load from zero. Higher-level probes remain delayed so recovery does not
+immediately repeat the load that contributed to a disruption.
+
+## Adaptive cadence and retry test build: `v2.0.0-dev28-experimental.17`
+
+The `.17` candidate adds bounded constant-cadence validation for suitable fractional targets, retains the validated
+level across a replacement swapchain, and progressively backs off repeatedly rejected higher-level probes. Adaptive
+policy evaluation is frozen while generated output is bypassed, preventing the cheaper real-frame-only fallback from
+falsely validating a multiplier.
+
+Profiles can set `adaptive_stable_cadence = false` to disable only constant-cadence validation. The default remains
+`true` for compatibility with the earlier `.17` candidate. Strict target scheduling is used when it is disabled, while
+Adaptive recovery, load shedding, multiplier limits, and retry backoff remain active. The standalone configuration UI
+and `LSFGVK_ADAPTIVE_STABLE_CADENCE=0` environment path expose the same option. Fixed mode remains unchanged.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

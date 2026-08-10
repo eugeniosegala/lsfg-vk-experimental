@@ -41,6 +41,8 @@ namespace ls {
         uint32_t target_fps{120};
         /// maximum total multiplier Adaptive may use
         size_t adaptive_max_multiplier{3};
+        /// prefer a validated constant interpolation cadence when safe
+        bool adaptive_stable_cadence{true};
         /// non-inverted flow scale
         float flow_scale{1.00F};
         /// use performance mode

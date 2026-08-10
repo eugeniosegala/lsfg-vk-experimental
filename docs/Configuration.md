@@ -37,13 +37,18 @@ Next is a list of all available **profile** configuration options:
   fractional target such as 60 -> 90, Adaptive can automatically validate a constant cadence to avoid alternating
   real-only and generated frames; it falls back to strict target scheduling if the higher constant workload is not
   sustainable. (Default: `3`)
+- **Stable Cadence / `adaptive_stable_cadence`**: When enabled, Adaptive may use the validated constant-cadence policy
+  described above instead of alternating generated-frame counts to match a fractional target exactly. This can produce
+  more consistent motion on lower-powered devices and common display divisors, at the cost of rendering more generated
+  frames than the strict target average. Disable it to use strict target scheduling while retaining Adaptive recovery,
+  load shedding, multiplier limits, and retry backoff. (Default: `true`)
 - **Flow Scale / `flow_scale`**: The resolution scale at which the motion vectors are calculated. A lower value means better performance, but worse quality. (Default: `1.0`)
 - **Performance Mode / `performance_mode`**: When enabled, a significantly lighter frame generation model is used. This has a minor quality impact, but greatly improves performance. 
 (Default: `false`)
 - **Pacing Mode / `pacing`**: This option is explained in greater detail below. Supported values are **None / `none`**.
 - **GPU / `gpu`**: The GPU to use for frame generation. This MUST be the **same GPU** as the one being used by the application. **Dual GPU is NOT supported**. You can identify a GPU through its name (e.g. `NVIDIA GeForce RTX 3080`), uppercase-only ID (e.g. `0x10DE:0x2C02`) or PCI bus ID (e.g. `3:0.0`). If not specified, the primary GPU will be used, which may lead to issues.
 
-The "Multiplier", "Adaptive Target", "Maximum Adaptive Multiplier", "Flow Scale" and "Performance Mode" options can be **hot-reloaded**, meaning that changes to these options will take effect immediately without needing to restart the application. Restart the application after switching between Fixed and Adaptive modes so the swapchain has the intended generated-frame capacity. Options such as "Pacing Mode" or removal of the profile require a swapchain recreation, which usually means resizing or restarting the application. Any other change requires an application restart.
+The "Multiplier", "Adaptive Target", "Maximum Adaptive Multiplier", "Stable Cadence", "Flow Scale" and "Performance Mode" options can be **hot-reloaded**, meaning that changes to these options will take effect immediately without needing to restart the application. Restart the application after switching between Fixed and Adaptive modes so the swapchain has the intended generated-frame capacity. Options such as "Pacing Mode" or removal of the profile require a swapchain recreation, which usually means resizing or restarting the application. Any other change requires an application restart.
 
 ### Pacing Modes
 
@@ -78,6 +83,7 @@ If you do not wish to use a configuration file, you can also set configuration o
 - `LSFGVK_ADAPTIVE`: Set to `1` to enable Adaptive Frame Generation.
 - `LSFGVK_TARGET_FPS`: Adaptive displayed-framerate target.
 - `LSFGVK_ADAPTIVE_MAX_MULTIPLIER`: Maximum Adaptive multiplier from `2` to `4`.
+- `LSFGVK_ADAPTIVE_STABLE_CADENCE`: Set to `0` to disable stable-cadence validation in Adaptive mode.
 - `LSFGVK_FLOW_SCALE`: Flow scale value.
 - `LSFGVK_PERFORMANCE_MODE`: If set to `1`, performance mode will be enabled.
 - `LSFGVK_PACING`: Pacing mode to use.

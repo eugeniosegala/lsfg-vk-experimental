@@ -553,7 +553,10 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
         std::cerr << "lsfg-vk: adaptive frame generation enabled; target="
                   << this->profile.target_fps
                   << " fps, maximum multiplier="
-                  << this->profile.adaptive_max_multiplier << "x\n";
+                  << this->profile.adaptive_max_multiplier
+                  << "x, stable cadence="
+                  << (this->profile.adaptive_stable_cadence ? "enabled" : "disabled")
+                  << '\n';
         this->beginAdaptiveStabilization(
             DiagnosticsClock::now(),
             recoveryContext ? "swapchain-recreation" : "startup"
@@ -658,6 +661,8 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
     );
 
     const auto stableCadenceCandidate = [&]() -> std::optional<size_t> {
+        if (!this->profile.adaptive_stable_cadence)
+            return std::nullopt;
         if (desiredOutputsPerRealFrame <= 1.0)
             return std::nullopt;
 

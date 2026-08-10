@@ -44,6 +44,7 @@ multiplier = 4
 adaptive = false
 target_fps = 120
 adaptive_max_multiplier = 3
+adaptive_stable_cadence = true
 flow_scale = 0.85
 performance_mode = true
 pacing = 'none' # see the wiki for more info
@@ -74,6 +75,7 @@ ConfigFile::ConfigFile() {
         .adaptive = false,
         .target_fps = 120,
         .adaptive_max_multiplier = 3,
+        .adaptive_stable_cadence = true,
         .flow_scale = 0.85F,
         .performance_mode = true,
         .pacing = Pacing::None
@@ -134,6 +136,7 @@ namespace {
             .adaptive = tbl["adaptive"].value_or(false),
             .target_fps = tbl["target_fps"].value_or(120U),
             .adaptive_max_multiplier = tbl["adaptive_max_multiplier"].value_or(3U),
+            .adaptive_stable_cadence = tbl["adaptive_stable_cadence"].value_or(true),
             .flow_scale = tbl["flow_scale"].value_or(1.0F),
             .performance_mode = tbl["performance_mode"].value_or(false),
             .pacing = parcingFromString(tbl["pacing"].value_or<std::string>("none"))
@@ -180,6 +183,7 @@ namespace {
             .adaptive = false,
             .target_fps = 120,
             .adaptive_max_multiplier = 3,
+            .adaptive_stable_cadence = true,
             .flow_scale = 1.0F,
             .performance_mode = false,
             .pacing = Pacing::None
@@ -196,6 +200,9 @@ namespace {
         const char* adaptive_max_multiplier = std::getenv("LSFGVK_ADAPTIVE_MAX_MULTIPLIER");
         if (adaptive_max_multiplier)
             conf.adaptive_max_multiplier = static_cast<size_t>(std::stoul(adaptive_max_multiplier));
+        const char* adaptive_stable_cadence = std::getenv("LSFGVK_ADAPTIVE_STABLE_CADENCE");
+        if (adaptive_stable_cadence)
+            conf.adaptive_stable_cadence = std::string(adaptive_stable_cadence) != "0";
         const char* flow_scale = std::getenv("LSFGVK_FLOW_SCALE");
         if (flow_scale) conf.flow_scale = std::stof(flow_scale);
         const char* performance = std::getenv("LSFGVK_PERFORMANCE_MODE");
@@ -270,6 +277,7 @@ void ConfigFile::write(const std::filesystem::path& path) const {
         profile.insert("adaptive", conf.adaptive);
         profile.insert("target_fps", static_cast<int64_t>(conf.target_fps));
         profile.insert("adaptive_max_multiplier", static_cast<int64_t>(conf.adaptive_max_multiplier));
+        profile.insert("adaptive_stable_cadence", conf.adaptive_stable_cadence);
         profile.insert("flow_scale", conf.flow_scale);
         profile.insert("performance_mode", conf.performance_mode);
         switch (conf.pacing) {
