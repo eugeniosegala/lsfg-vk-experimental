@@ -118,8 +118,9 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Adds one bounded bridge probe when Gamescope's cadence divisor makes the first generated-frame step look
   counterproductive even though the target remains far away. The bridge is retained only when it demonstrates at
   least a 15% estimated-output gain while staying within real-frame safety limits.
-- Delays failed or cadence-interrupted first-step probes for 15 seconds and requires two seconds of stable cadence
-  before rearming, avoiding repeated 0-to-1 load oscillation that can look like a permanent detach.
+- Rearms a probe interrupted by an overlay or cadence transition after two stable seconds without counting the
+  interruption as a failed load test. A genuinely rejected first-step or bridge probe retains the 15-second cooldown,
+  but may retry early after a 15% real-only base-rate improvement remains stable for two seconds.
 - Backs off repeated rejected higher-multiplier probes from 5 to 15, 30, and then 60 seconds. A measured base-rate
   improvement of at least 15% permits an earlier retry, so a genuinely recovered scene is not held back.
 - Validates a bounded constant cadence for suitable fractional targets, avoiding alternating generated and real-only
@@ -130,6 +131,13 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - Lets strict Adaptive settle before constant-cadence validation. A severe sustained cadence collapse triggers one
   bounded real-only measurement, then resumes fractional scheduling or probes one higher level only when the selected
   maximum permits it. Rescue attempts never exceed the configured maximum and have a 15-second cooldown.
+- Monitors newly accepted strict-Adaptive load after the initial probe window. If the higher level later causes a
+  sustained base-rate collapse without a meaningful estimated-output gain, Adaptive measures real-only cadence for one
+  second. It restores the previous proven level only when removing generation load recovers cadence; otherwise it
+  retains the higher level for a genuinely heavier game scene. A confirmed load-induced collapse holds the failed
+  higher level for 15 seconds.
+- Stops probing higher multipliers when the current validated level can already supply at least 98% of the target,
+  avoiding unnecessary 3x or 4x inference load while retaining automatic reconsideration if the base rate later falls.
 - Preserves the validated generation level and healthy base-rate baseline across abrupt menu/focus cadence stalls.
   Adaptive restores that level only after one second at least 90% of the previous real cadence; after five seconds it
   discards the stale baseline and performs a clean ramp from zero.
@@ -168,6 +176,10 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
   real-frame-only fallback from falsely validating a multiplier that was not actually running.
 - Tolerates ordinary Gamescope timing noise around the exact 80 -> 60 FPS divisor when validating a safe 2x constant
   cadence, without accepting larger base-rate collapses.
+- Prevents a Steam-menu interruption during a ramp or bridge probe from imposing the same 15-second penalty as a
+  genuine throughput rejection, reducing extended real-frame-only periods after returning to the game.
+- Prevents strict Adaptive from remaining trapped at a higher multiplier that passed its initial probe but later
+  reduced real-frame throughput enough to perform worse than the previous validated level.
 
 ### Presentation diagnostics
 
@@ -176,6 +188,8 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 - SteamOS traces identified generated-image acquisition as the operation dominating the observed Game Mode overlay
   stalls, with the total presentation duration closely tracking that wait.
 - Diagnostics are disabled by default and do not perform timing or logging during normal runs.
+- Reports `phase=rearm-cooldown`, the rearm reason, remaining cooldown, baseline base rate, and whether rearming followed
+  interruption settling, a recovered real-only rate, or normal cooldown expiry.
 - Adds an opt-in \`LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS\` recovery path. When Gamescope cannot provide an extra image before the
   configured timeout, lsfg-vk skips the remaining generated frames for that presentation, presents the original game
   frame, and switches subsequent attempts to non-blocking probes before scheduling more inference. After one second of

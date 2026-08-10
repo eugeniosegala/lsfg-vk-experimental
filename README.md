@@ -43,8 +43,19 @@ fractional scheduling or probes one higher multiplier when the configured maximu
 15-second cooldown and never exceed `adaptive_max_multiplier`. Smooth Cadence is disabled by default because its
 constant interpolation can lower real-frame cadence and feel less responsive, even while motion looks smoother. Set
 `adaptive_stable_cadence = true` to opt into it; strict target scheduling retains all other Adaptive protections.
-Repeated failures at a higher multiplier use a
-progressive cooldown, while a meaningful base-rate improvement permits an earlier retry. After a generated-image
+Strict target scheduling also monitors a newly accepted higher multiplier after its initial evaluation window. If its
+full load later causes a sustained base-rate collapse without a meaningful output gain, Adaptive measures one second
+of real-only cadence. It restores the previous proven level when removing generation load recovers cadence; otherwise,
+it retains the higher level because the slowdown belongs to the game scene. A confirmed load-induced collapse holds
+the failed higher level for 15 seconds. This avoids feedback traps where 3x work can reduce a game that is capable of
+60 FPS at 2x to roughly 40 real FPS without penalizing genuinely demanding scenes.
+Adaptive also stops increasing its multiplier once the current proven level can supply at least 98% of the requested
+target; if the base rate later falls, it can reconsider the next level automatically.
+Repeated failures at a higher multiplier use a progressive cooldown, while a meaningful base-rate improvement permits
+an earlier retry. A probe interrupted by an overlay or cadence transition is no longer counted as a failed load test:
+it rearms after two stable seconds instead of inheriting the 15-second rejection cooldown. A genuinely rejected
+first-step or bridge probe keeps that cooldown, but can rearm early after a 15% real-only base-rate improvement remains
+stable for two seconds. After a generated-image
 recovery, the existing warm-up is retained but Adaptive resumes from its last validated generation level instead of
 ramping blindly from zero. Adaptive policy evaluation is frozen while generated output is bypassed, preventing the
 real-frame-only recovery period from falsely validating a multiplier. Hard cadence stalls associated with abrupt menu,

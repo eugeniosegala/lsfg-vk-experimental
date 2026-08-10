@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -96,11 +97,12 @@ namespace lsfgvk::layer {
             std::chrono::steady_clock::time_point now,
             std::string_view reason
         );
-        /// delay a failed probe until the compositor cadence is stable again
+        /// rearm an interrupted or rejected probe once its recovery policy allows
         void scheduleAdaptiveRearm(
             std::chrono::steady_clock::time_point now,
             std::string_view reason,
-            size_t fallbackLimit = 0
+            size_t fallbackLimit = 0,
+            double baselineBaseFps = 0.0
         );
         /// return the generation level that was proven before a transient probe
         size_t validatedAdaptiveGenerationLimit() const;
@@ -166,8 +168,11 @@ namespace lsfgvk::layer {
         bool adaptiveRearmRequired{false};
         std::optional<std::chrono::steady_clock::time_point> adaptiveRearmNotBefore;
         std::optional<std::chrono::steady_clock::time_point> adaptiveStableRearmSince;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveRearmImprovementSince;
+        std::string adaptiveRearmReason;
+        double adaptiveRearmBaselineBaseFps{0.0};
         // The last validated generation level to retain while a higher adaptive
-        // probe is cooling down after an interruption.
+        // probe settles after interruption or cools down after rejection.
         size_t adaptiveRearmFallbackLimit{0};
         // A bounded preference for a constant generated-frame cadence. This is
         // used only when the strict target scheduler would otherwise alternate
@@ -181,6 +186,12 @@ namespace lsfgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> adaptiveRescueCooldownUntil;
         size_t adaptiveRescuePreviousLimit{0};
         double adaptiveRescueBaselineBaseFps{0.0};
+        bool adaptiveRescueFromStrictLoad{false};
+        size_t adaptiveRescueStrictLoadLimit{0};
+        size_t adaptiveStrictLoadBaselineLimit{0};
+        double adaptiveStrictLoadBaselineBaseFps{0.0};
+        std::optional<std::chrono::steady_clock::time_point>
+            adaptiveStrictLoadCollapseSince;
         std::optional<std::chrono::steady_clock::time_point>
             adaptiveDiscontinuityRecoveryDeadline;
         std::optional<std::chrono::steady_clock::time_point>

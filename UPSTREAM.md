@@ -316,6 +316,31 @@ at the new rate:
 - Diagnostics report `adaptive-discontinuity-recovery-start`, `phase=discontinuity-recovery`,
   `adaptive-discontinuity-soft-recovery`, and `adaptive-discontinuity-recovery-complete`.
 
+Later traces showed that a ramp or bridge probe interrupted by a Steam-menu transition still inherited the same
+15-second cooldown as a genuine throughput rejection. This produced an avoidable real-frame-only interval even though
+the probe had never completed. The final `.17` policy separates those outcomes:
+
+- An interrupted probe does not increment the failed-probe count and rearms after two stable seconds.
+- A genuinely rejected first-step or bridge probe retains the 15-second cooldown.
+- A rejected probe may rearm before the cooldown expires only when the real-only base rate improves by at least 15%
+  over its pre-probe baseline and remains there for two seconds.
+- Diagnostics expose `phase=rearm-cooldown`, the original rearm reason, remaining cooldown, baseline rate, and the
+  decision that allowed rearming.
+
+A Witcher 3 trace then exposed a strict-scheduler feedback trap outside Smooth Cadence: Fixed 2x retained roughly
+60 real FPS and reached the display ceiling, while Adaptive could remain near 40 real FPS at its 3x ceiling long after
+the higher level's one-second probe. The theoretical output estimate still equalled the target, so no later policy
+reconsidered that accepted level. The final `.17` candidate now monitors the full load of a newly accepted strict level.
+If real cadence remains below 70% of the previous level's baseline for one second and the higher level provides less
+than a 15% estimated-output gain, it performs a one-second real-only measurement. If cadence recovers without
+generated-frame work, it restores the previous proven level and delays another higher-load probe for 15 seconds. If
+cadence does not recover, it retains the higher level because the game scene itself became more demanding. This
+safeguard is independent of Smooth Cadence.
+The ramp controller now also stops at the lowest validated level whose measured base-rate capacity reaches at least
+98% of the requested target. If the base rate later falls below that threshold, the next level becomes eligible again.
+For the reported Witcher 3 case, roughly 60 real FPS at 2x is therefore retained for a 120 FPS target instead of
+unnecessarily probing 3x and risking the observed 40-FPS feedback state.
+
 Fixed mode is unchanged. The bounded recovery can intentionally show real-frame output for up to five seconds instead
 of applying interpolation against an unstable compositor cadence.
 
