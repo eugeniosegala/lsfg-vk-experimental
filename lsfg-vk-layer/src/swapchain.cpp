@@ -46,6 +46,16 @@ namespace {
     constexpr double adaptiveBridgeMinimumOutputRetention = 0.85;
     constexpr double adaptiveBridgeMinimumBaseRetention = 0.40;
     constexpr double adaptiveBridgeTargetDeficitRatio = 0.90;
+    // A constant cadence is worthwhile only when it does not ask the engine to
+    // produce substantially more frames than the requested output target. This
+    // covers common display divisors such as 60 -> 90 (120 internal FPS), with
+    // enough tolerance for smoothed frame-time noise, while excluding expensive
+    // cases such as 100 -> 120 (200 internal FPS). Once validated, a slightly
+    // wider bound prevents ordinary scene variation from immediately undoing it.
+    constexpr double adaptiveStableCadenceMaximumProbeOvershootRatio = 1.40;
+    constexpr double adaptiveStableCadenceMaximumRetainedOvershootRatio = 1.50;
+    constexpr double adaptiveStableCadenceMinimumTargetRatio = 0.98;
+    constexpr double adaptiveStableCadenceMinimumBaseRetention = 0.75;
     constexpr auto adaptiveStabilizationDuration = std::chrono::seconds(1);
     // A recreated generated-frame swapchain can take longer than an ordinary
     // cadence discontinuity to settle in Gamescope.
@@ -53,6 +63,9 @@ namespace {
     constexpr auto adaptiveRampEvaluationDuration = std::chrono::seconds(1);
     constexpr auto adaptiveRampStepDelay = std::chrono::milliseconds(250);
     constexpr auto adaptiveRampRetryDelay = std::chrono::seconds(5);
+    constexpr auto adaptiveStableCadenceEvaluationDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveStableCadenceExitGraceDuration = std::chrono::milliseconds(500);
+    constexpr auto adaptiveStableCadenceRetryDelay = std::chrono::seconds(5);
     constexpr auto adaptiveFailedProbeCooldown = std::chrono::seconds(15);
     constexpr auto adaptiveStableRearmDuration = std::chrono::seconds(2);
     constexpr auto adaptiveRecreationCooldown = std::chrono::seconds(5);
@@ -333,6 +346,23 @@ namespace {
         std::cerr << '\n';
     }
 
+    void logAdaptiveStableCadence(std::string_view operation, size_t generatedLimit,
+            double baselineBaseFps, double currentBaseFps,
+            std::string_view reason = {}) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation=" << operation
+                  << " generated_limit=" << generatedLimit
+                  << " baseline_base_fps=" << baselineBaseFps
+                  << " current_base_fps=" << currentBaseFps
+                  << " projected_output_fps="
+                  << currentBaseFps * static_cast<double>(generatedLimit + 1);
+        if (!reason.empty())
+            std::cerr << " reason=" << reason;
+        std::cerr << '\n';
+    }
+
     void logSwapchainRecreationSuppressed(double remainingMs) {
         if (!presentDiagnosticsEnabled())
             return;
@@ -550,8 +580,140 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
             this->adaptiveGenerationLimit,
         }
     );
+
+    const auto stableCadenceCandidate = [&]() -> std::optional<size_t> {
+        if (desiredOutputsPerRealFrame <= 1.0)
+            return std::nullopt;
+
+        const double minimumUsefulOutputFps =
+            static_cast<double>(this->profile.target_fps) *
+                adaptiveStableCadenceMinimumTargetRatio;
+        const size_t candidateOutputs = static_cast<size_t>(std::ceil(
+            minimumUsefulOutputFps / baseFps - 1e-9
+        ));
+        if (candidateOutputs <= 1)
+            return std::nullopt;
+
+        const size_t candidateGenerated = candidateOutputs - 1;
+        if (candidateGenerated > maximumGeneratedFrameCount)
+            return std::nullopt;
+
+        const double projectedOutputFps = baseFps *
+            static_cast<double>(candidateOutputs);
+        if (projectedOutputFps >
+                static_cast<double>(this->profile.target_fps) *
+                    adaptiveStableCadenceMaximumProbeOvershootRatio)
+            return std::nullopt;
+
+        return candidateGenerated;
+    }();
+
+    if (this->adaptiveStableCadenceLimit) {
+        const size_t generatedLimit = *this->adaptiveStableCadenceLimit;
+        const double targetFps = static_cast<double>(this->profile.target_fps);
+        const double projectedOutputFps = baseFps *
+            static_cast<double>(generatedLimit + 1);
+        const bool capacityAvailable =
+            generatedLimit <= maximumGeneratedFrameCount;
+        const bool cadenceStillUseful =
+            desiredOutputsPerRealFrame > 1.0 &&
+            projectedOutputFps >=
+                targetFps * adaptiveStableCadenceMinimumTargetRatio &&
+            projectedOutputFps <=
+                targetFps * adaptiveStableCadenceMaximumRetainedOvershootRatio;
+
+        if (!capacityAvailable) {
+            logAdaptiveStableCadence(
+                "adaptive-stable-cadence-disabled",
+                generatedLimit,
+                this->adaptiveStableCadenceBaselineBaseFps,
+                baseFps,
+                "capacity-changed"
+            );
+            this->adaptiveStableCadenceLimit.reset();
+            this->adaptiveStableCadenceEvaluationAt.reset();
+            this->adaptiveStableCadenceOutsideRangeSince.reset();
+            this->adaptiveStableCadenceRetryAt =
+                now + adaptiveStableCadenceRetryDelay;
+        } else if (!cadenceStillUseful) {
+            if (!this->adaptiveStableCadenceOutsideRangeSince)
+                this->adaptiveStableCadenceOutsideRangeSince = now;
+            if (now - *this->adaptiveStableCadenceOutsideRangeSince >=
+                    adaptiveStableCadenceExitGraceDuration) {
+                logAdaptiveStableCadence(
+                    "adaptive-stable-cadence-disabled",
+                    generatedLimit,
+                    this->adaptiveStableCadenceBaselineBaseFps,
+                    baseFps,
+                    "outside-useful-range"
+                );
+                this->adaptiveStableCadenceLimit.reset();
+                this->adaptiveStableCadenceEvaluationAt.reset();
+                this->adaptiveStableCadenceOutsideRangeSince.reset();
+                this->adaptiveStableCadenceRetryAt =
+                    now + adaptiveStableCadenceRetryDelay;
+            }
+        } else {
+            this->adaptiveStableCadenceOutsideRangeSince.reset();
+        }
+
+        if (this->adaptiveStableCadenceLimit &&
+                this->adaptiveStableCadenceEvaluationAt &&
+                now >= *this->adaptiveStableCadenceEvaluationAt) {
+            const size_t evaluatedGeneratedLimit =
+                *this->adaptiveStableCadenceLimit;
+            const double evaluatedProjectedOutputFps = baseFps *
+                static_cast<double>(evaluatedGeneratedLimit + 1);
+            const bool accepted =
+                evaluatedProjectedOutputFps >=
+                    targetFps * adaptiveStableCadenceMinimumTargetRatio &&
+                evaluatedProjectedOutputFps <=
+                    targetFps *
+                        adaptiveStableCadenceMaximumRetainedOvershootRatio &&
+                baseFps >= this->adaptiveStableCadenceBaselineBaseFps *
+                    adaptiveStableCadenceMinimumBaseRetention;
+            logAdaptiveStableCadence(
+                accepted ? "adaptive-stable-cadence-accepted"
+                         : "adaptive-stable-cadence-rejected",
+                evaluatedGeneratedLimit,
+                this->adaptiveStableCadenceBaselineBaseFps,
+                baseFps
+            );
+            this->adaptiveStableCadenceEvaluationAt.reset();
+            if (!accepted) {
+                this->adaptiveStableCadenceLimit.reset();
+                this->adaptiveStableCadenceOutsideRangeSince.reset();
+                this->adaptiveStableCadenceRetryAt =
+                    now + adaptiveStableCadenceRetryDelay;
+            }
+        }
+    }
+
+    if (!this->adaptiveStableCadenceLimit && stableCadenceCandidate &&
+            !this->adaptiveRampEvaluationAt &&
+            !this->adaptiveRearmRequired &&
+            (!this->adaptiveStableCadenceRetryAt ||
+             now >= *this->adaptiveStableCadenceRetryAt)) {
+        this->adaptiveStableCadenceLimit = *stableCadenceCandidate;
+        this->adaptiveStableCadenceBaselineBaseFps = baseFps;
+        this->adaptiveStableCadenceEvaluationAt =
+            now + adaptiveStableCadenceEvaluationDuration;
+        this->adaptiveStableCadenceOutsideRangeSince.reset();
+        this->adaptiveStableCadenceRetryAt.reset();
+        this->adaptiveOutputCredit = 0.0;
+        logAdaptiveStableCadence(
+            "adaptive-stable-cadence-probe",
+            *stableCadenceCandidate,
+            baseFps,
+            baseFps
+        );
+    }
+
     size_t generatedFrameCount = 0;
-    if (desiredOutputsPerRealFrame > 1.0) {
+    if (this->adaptiveStableCadenceLimit) {
+        generatedFrameCount = *this->adaptiveStableCadenceLimit;
+        this->adaptiveOutputCredit = 0.0;
+    } else if (desiredOutputsPerRealFrame > 1.0) {
         this->adaptiveOutputCredit += desiredOutputsPerRealFrame;
         const size_t requestedOutputs = std::max<size_t>(
             1,
@@ -652,7 +814,11 @@ void Swapchain::beginAdaptiveStabilization(
         // but it does not extend the already bounded cooldown indefinitely.
         this->adaptiveStableRearmSince.reset();
     }
-    const auto stabilizationDuration = reason == "swapchain-recreation"
+    // Startup can include an uncapped splash screen or launcher followed by
+    // normal gameplay. Do not let those first samples start a probe that the
+    // gameplay transition immediately interrupts and cools down for 15 seconds.
+    const auto stabilizationDuration =
+        reason == "swapchain-recreation" || reason == "startup"
         ? adaptiveRecoveryStabilizationDuration
         : adaptiveStabilizationDuration;
     this->adaptiveStabilizationUntil = now + stabilizationDuration;
@@ -668,6 +834,11 @@ void Swapchain::beginAdaptiveStabilization(
     this->adaptiveBridgeActive = false;
     this->adaptiveBridgeBaselineLimit = 0;
     this->adaptiveBridgeBaselineBaseFps = 0.0;
+    this->adaptiveStableCadenceLimit.reset();
+    this->adaptiveStableCadenceEvaluationAt.reset();
+    this->adaptiveStableCadenceOutsideRangeSince.reset();
+    this->adaptiveStableCadenceRetryAt.reset();
+    this->adaptiveStableCadenceBaselineBaseFps = 0.0;
     this->adaptiveCadenceDropFrames = 0;
     this->adaptiveLastDiagnostic.reset();
     this->resetAdaptiveScheduler(now);
@@ -715,6 +886,11 @@ void Swapchain::updateAdaptiveGenerationLimit(
         this->adaptiveRearmFallbackLimit = 0;
         this->adaptiveNextRampAt.reset();
     }
+
+    // A validated constant cadence already supplies the desired smoothness.
+    // Do not probe a higher generated-frame level until it becomes unsuitable.
+    if (this->adaptiveStableCadenceLimit)
+        return;
 
     if (this->adaptiveRampEvaluationAt) {
         if (now < *this->adaptiveRampEvaluationAt)

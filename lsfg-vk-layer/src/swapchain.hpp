@@ -140,6 +140,14 @@ namespace lsfgvk::layer {
         // The last validated generation level to retain while a higher adaptive
         // probe is cooling down after an interruption.
         size_t adaptiveRearmFallbackLimit{0};
+        // A bounded preference for a constant generated-frame cadence. This is
+        // used only when the strict target scheduler would otherwise alternate
+        // between frame counts (for example, 60 real FPS toward a 90 FPS target).
+        std::optional<size_t> adaptiveStableCadenceLimit;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveStableCadenceEvaluationAt;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveStableCadenceOutsideRangeSince;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveStableCadenceRetryAt;
+        double adaptiveStableCadenceBaselineBaseFps{0.0};
         size_t adaptiveConsecutiveProbeFailures{0};
         AdaptiveRecoveryState* adaptiveRecoveryState{};
 

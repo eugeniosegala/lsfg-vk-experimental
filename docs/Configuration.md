@@ -29,7 +29,10 @@ Next is a list of all available **profile** configuration options:
   instead of adding the more artifact-prone generated frames. Adaptive also ramps toward this limit after startup or
   recovery and can temporarily reduce it when added generation load harms real-frame throughput. If the compositor's
   cadence divisor makes the first step misleading, it can make one bounded bridge test at the next step. Rejected or
-  interrupted probes wait at least 15 seconds and require two seconds of stable cadence before retrying. (Default: `3`)
+  interrupted probes wait at least 15 seconds and require two seconds of stable cadence before retrying. For a modest
+  fractional target such as 60 -> 90, Adaptive can automatically validate a constant cadence to avoid alternating
+  real-only and generated frames; it falls back to strict target scheduling if the higher constant workload is not
+  sustainable. (Default: `3`)
 - **Flow Scale / `flow_scale`**: The resolution scale at which the motion vectors are calculated. A lower value means better performance, but worse quality. (Default: `1.0`)
 - **Performance Mode / `performance_mode`**: When enabled, a significantly lighter frame generation model is used. This has a minor quality impact, but greatly improves performance. 
 (Default: `false`)
