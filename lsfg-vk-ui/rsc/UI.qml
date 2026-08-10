@@ -201,7 +201,7 @@ ApplicationWindow {
 
                 GroupEntry {
                     title: "Target FPS"
-                    description: "Adaptive mode cannot reduce a base framerate already above this target"
+                    description: "Desired output; the multiplier limit may intentionally keep it below target"
                     enabled: backend.adaptive
 
                     SpinBox {
@@ -212,6 +212,24 @@ ApplicationWindow {
 
                         value: backend.target_fps
                         onValueModified: backend.target_fps = value
+                    }
+                }
+
+                GroupEntry {
+                    title: "Maximum Adaptive Multiplier"
+                    description: "Limit interpolation to protect image quality when the real framerate falls"
+                    enabled: backend.adaptive
+
+                    SpinBox {
+                        Layout.alignment: Qt.AlignRight
+
+                        from: 2
+                        to: 4
+
+                        value: backend.adaptive_max_multiplier
+                        textFromValue: function(value) { return value + "x" }
+                        valueFromText: function(text) { return parseInt(text) }
+                        onValueModified: backend.adaptive_max_multiplier = value
                     }
                 }
 

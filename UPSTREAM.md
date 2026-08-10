@@ -184,6 +184,19 @@ This deliberately trades approximately three base-frame intervals for a clean te
 is roughly 100 ms. Fixed mode retains its immediate recovery path. Diagnostics distinguish `generated-image-recovered`
 from `history-warmup` and identify whether warm-up was caused by `startup` or `recovery`.
 
+## Adaptive quality-limit test build: `v2.0.0-dev28-experimental.12`
+
+SteamOS comparison testing showed that Adaptive output matched Fixed 2x image quality when both produced approximately
+100 FPS from the same real-frame rate. Raising only the Adaptive target to 120 FPS increased ghosting because the
+scheduler had to mix 2x and 3x intervals. This was expected target-first behaviour, not additional temporal-history
+corruption: every real frame remained present, but a larger fraction of displayed frames was generated.
+
+The `.12` candidate adds `adaptive_max_multiplier = 2|3|4`, defaulting to `3`. The target remains the requested output
+rate, while this independent ceiling defines the highest acceptable interpolation ratio. If the real-frame rate falls
+far enough that the target would require a higher ratio, Adaptive deliberately undershoots the target rather than
+adding more artifact-prone generated frames. The standalone UI and `LSFGVK_ADAPTIVE_MAX_MULTIPLIER` environment path
+expose the same setting. Fixed mode remains unchanged.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

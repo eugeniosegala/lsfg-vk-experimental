@@ -34,14 +34,14 @@ using namespace lsfgvk::layer;
 namespace {
     using DiagnosticsClock = std::chrono::steady_clock;
 
-    constexpr size_t adaptiveMaximumMultiplier = 4;
+    constexpr size_t adaptiveCapacityMultiplier = 4;
     constexpr size_t adaptiveHistoryWarmupFrames = 3;
     constexpr double adaptiveMinimumBaseFps = 10.0;
     constexpr double adaptiveIntervalSmoothing = 0.25;
 
     size_t generatedFrameCapacity(const ls::GameConf& profile) {
         const size_t multiplier = profile.adaptive
-            ? adaptiveMaximumMultiplier
+            ? adaptiveCapacityMultiplier
             : profile.multiplier;
         return multiplier - 1;
     }
@@ -305,7 +305,8 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     if (this->profile.adaptive) {
         std::cerr << "lsfg-vk: adaptive frame generation enabled; target="
                   << this->profile.target_fps
-                  << " fps, maximum multiplier=" << adaptiveMaximumMultiplier << "x\n";
+                  << " fps, maximum multiplier="
+                  << this->profile.adaptive_max_multiplier << "x\n";
     }
 }
 
@@ -344,6 +345,10 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
         this->adaptiveSmoothedIntervalSeconds *
         static_cast<double>(this->profile.target_fps);
 
+    const size_t maximumGeneratedFrameCount = std::min(
+        this->destinationImages.size(),
+        this->profile.adaptive_max_multiplier - 1
+    );
     size_t generatedFrameCount = 0;
     if (desiredOutputsPerRealFrame > 1.0) {
         this->adaptiveOutputCredit += desiredOutputsPerRealFrame;
@@ -353,14 +358,14 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
         );
         generatedFrameCount = std::min(
             requestedOutputs - 1,
-            this->destinationImages.size()
+            maximumGeneratedFrameCount
         );
         this->adaptiveOutputCredit -= static_cast<double>(generatedFrameCount + 1);
         if (this->adaptiveOutputCredit < 0.0)
             this->adaptiveOutputCredit = 0.0;
-        if (generatedFrameCount == this->destinationImages.size() &&
+        if (generatedFrameCount == maximumGeneratedFrameCount &&
                 this->adaptiveOutputCredit >= 1.0) {
-            // The requested target is currently above the 4x ceiling. Keep
+            // The requested target is currently above the configured ceiling. Keep
             // only the fractional phase instead of accumulating an impossible
             // backlog that would delay adaptation when the base rate recovers.
             this->adaptiveOutputCredit = std::fmod(this->adaptiveOutputCredit, 1.0);
@@ -381,7 +386,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
                   << " base_fps=" << baseFps
                   << " target_fps=" << this->profile.target_fps
                   << " generated=" << generatedFrameCount
-                  << " max_generated=" << this->destinationImages.size()
+                  << " max_generated=" << maximumGeneratedFrameCount
                   << '\n';
     }
 

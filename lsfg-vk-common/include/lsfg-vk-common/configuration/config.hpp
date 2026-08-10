@@ -39,6 +39,8 @@ namespace ls {
         bool adaptive{false};
         /// desired displayed framerate when adaptive mode is enabled
         uint32_t target_fps{120};
+        /// maximum total multiplier Adaptive may use
+        size_t adaptive_max_multiplier{3};
         /// non-inverted flow scale
         float flow_scale{1.00F};
         /// use performance mode

@@ -101,14 +101,16 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 ### Added
 
 - Adds opt-in Adaptive Frame Generation through \`adaptive = true\` and \`target_fps = <FPS>\` profile settings.
+- Adds \`adaptive_max_multiplier = 2|3|4\`, defaulting to 3x, so users can preserve image quality by allowing the
+  displayed rate to undershoot the target instead of using a higher interpolation ratio when the real framerate falls.
 - Uses a fractional output accumulator to vary the generated-frame count and uploads the corresponding interpolation
   timestamps before each inference pass. This supports non-integer average ratios such as 30 -> 55 or 50 -> 120.
-- Skips interpolation below a 10 FPS base-rate safety floor and caps generation at three intermediate frames per real
-  frame. Existing Fixed mode continues through its original scheduling path.
+- Skips interpolation below a 10 FPS base-rate safety floor and caps generation at the selected Adaptive limit, never
+  exceeding three intermediate frames per real frame. Existing Fixed mode continues through its original path.
 - Warms all three shared temporal-history slots with real frames before Adaptive generates its first output, avoiding
   startup inference from partially initialized history.
-- Exposes Adaptive mode and its target in the standalone Qt configuration UI. Switching modes should be followed by a
-  game restart so the swapchain is created with the intended capacity.
+- Exposes Adaptive mode, target, and maximum multiplier in the standalone Qt configuration UI. Switching modes should
+  be followed by a game restart so the swapchain is created with the intended capacity.
 
 ### Fixed
 

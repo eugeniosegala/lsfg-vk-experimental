@@ -43,6 +43,7 @@ active_in = [ # see the wiki for more info
 multiplier = 4
 adaptive = false
 target_fps = 120
+adaptive_max_multiplier = 3
 flow_scale = 0.85
 performance_mode = true
 pacing = 'none' # see the wiki for more info
@@ -72,6 +73,7 @@ ConfigFile::ConfigFile() {
         .multiplier = 4,
         .adaptive = false,
         .target_fps = 120,
+        .adaptive_max_multiplier = 3,
         .flow_scale = 0.85F,
         .performance_mode = true,
         .pacing = Pacing::None
@@ -131,6 +133,7 @@ namespace {
             .multiplier = tbl["multiplier"].value_or(2U),
             .adaptive = tbl["adaptive"].value_or(false),
             .target_fps = tbl["target_fps"].value_or(120U),
+            .adaptive_max_multiplier = tbl["adaptive_max_multiplier"].value_or(3U),
             .flow_scale = tbl["flow_scale"].value_or(1.0F),
             .performance_mode = tbl["performance_mode"].value_or(false),
             .pacing = parcingFromString(tbl["pacing"].value_or<std::string>("none"))
@@ -140,6 +143,8 @@ namespace {
             throw ls::error("multiplier must be greater than 1");
         if (conf.target_fps < 10 || conf.target_fps > 1000)
             throw ls::error("target_fps must be between 10 and 1000");
+        if (conf.adaptive_max_multiplier < 2 || conf.adaptive_max_multiplier > 4)
+            throw ls::error("adaptive_max_multiplier must be between 2 and 4");
         if (conf.flow_scale < 0.25F || conf.flow_scale > 1.0F)
             throw ls::error("flow_scale must be between 0.25 and 1.0");
 
@@ -174,6 +179,7 @@ namespace {
             .multiplier = 2,
             .adaptive = false,
             .target_fps = 120,
+            .adaptive_max_multiplier = 3,
             .flow_scale = 1.0F,
             .performance_mode = false,
             .pacing = Pacing::None
@@ -187,6 +193,9 @@ namespace {
         if (adaptive) conf.adaptive = std::string(adaptive) == "1";
         const char* target_fps = std::getenv("LSFGVK_TARGET_FPS");
         if (target_fps) conf.target_fps = static_cast<uint32_t>(std::stoul(target_fps));
+        const char* adaptive_max_multiplier = std::getenv("LSFGVK_ADAPTIVE_MAX_MULTIPLIER");
+        if (adaptive_max_multiplier)
+            conf.adaptive_max_multiplier = static_cast<size_t>(std::stoul(adaptive_max_multiplier));
         const char* flow_scale = std::getenv("LSFGVK_FLOW_SCALE");
         if (flow_scale) conf.flow_scale = std::stof(flow_scale);
         const char* performance = std::getenv("LSFGVK_PERFORMANCE_MODE");
@@ -198,6 +207,8 @@ namespace {
             throw ls::error("multiplier must be greater than 1");
         if (conf.target_fps < 10 || conf.target_fps > 1000)
             throw ls::error("target_fps must be between 10 and 1000");
+        if (conf.adaptive_max_multiplier < 2 || conf.adaptive_max_multiplier > 4)
+            throw ls::error("adaptive_max_multiplier must be between 2 and 4");
         if (conf.flow_scale < 0.25F || conf.flow_scale > 1.0F)
             throw ls::error("flow_scale must be between 0.25 and 1.0");
 
@@ -258,6 +269,7 @@ void ConfigFile::write(const std::filesystem::path& path) const {
         profile.insert("multiplier", static_cast<int64_t>(conf.multiplier));
         profile.insert("adaptive", conf.adaptive);
         profile.insert("target_fps", static_cast<int64_t>(conf.target_fps));
+        profile.insert("adaptive_max_multiplier", static_cast<int64_t>(conf.adaptive_max_multiplier));
         profile.insert("flow_scale", conf.flow_scale);
         profile.insert("performance_mode", conf.performance_mode);
         switch (conf.pacing) {
