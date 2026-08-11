@@ -4,202 +4,198 @@
   <img src="assets/lsfg-vk-experimental-logo.png" alt="Experimental frame-generation mark for SteamOS and Linux" width="256" />
 </p>
 
-> **Experimental fork:** This repository builds independently developed experimental changes on top of the lsfg-vk
-> `develop` branch, with the explicit goal of pushing the library to its limits. Builds can change rapidly, regress
-> for particular games or drivers, and should be tested per game rather than assumed to replace a known-good installation.
-> See [UPSTREAM.md](UPSTREAM.md) for the reviewed upstream baseline and every carried change.
+> **Experimental fork:** This repository carries independently developed features and fixes on top of the lsfg-vk
+> `develop` branch. Builds can change quickly or regress for a particular game, compositor, driver, or GPU. Test each
+> game independently and retain a known-good rollback. [UPSTREAM.md](UPSTREAM.md) records the reviewed baseline and the
+> complete experimental history.
 
-**Lossless Scaling** is a Windows-exclusive program featuring various algorithms for scaling and interpolating programs.
+[Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) is a Windows application that provides
+scaling and frame-generation models. **lsfg-vk Experimental** is a Linux Vulkan layer that uses the frame-generation
+model from the installed `Lossless.dll` to insert additional images between real game frames.
 
-**lsfg-vk Experimental** is a Vulkan layer that hooks into Vulkan applications and generates additional frames using
-Lossless Scaling's frame generation algorithm.
+This fork packages the evolving lsfg-vk 2.x implementation. It does not include, modify, or replace `Lossless.dll`, and
+it does not introduce a separate frame-generation model. For the established 1.x release line, use the
+[stable lsfg-vk documentation](https://github.com/PancakeTAS/lsfg-vk/tree/ff1a0f72a7d6d08b84d58b7b4dc5f05c9f904f98).
 
-For the established 1.x release line, use
-the [stable lsfg-vk documentation](https://github.com/PancakeTAS/lsfg-vk/tree/ff1a0f72a7d6d08b84d58b7b4dc5f05c9f904f98).
-Keep a working configuration handy when testing this experimental fork.
+## What this experimental build adds
 
-## What is this?
+- **Adaptive Frame Generation:** Set a displayed-FPS target and let the Vulkan layer schedule between zero and three
+  generated frames per real frame, up to a configurable 2x, 3x, or 4x ceiling. Fixed 2x, 3x, and 4x remain available
+  and unchanged.
+- **Load-aware adaptation:** Adaptive ramps generation gradually, retains proven levels, rolls back work that harms
+  useful throughput, and waits for sustained evidence before trying a more expensive multiplier.
+- **Optional Smooth Cadence:** Suitable fractional targets can prefer a validated constant interpolation cadence.
+  This can look smoother but may lower real-frame cadence and responsiveness, so it is disabled by default.
+- **SteamOS/Gamescope recovery:** Generated-image stalls fall back to real frames, keep temporal history current, and
+  recover without repeatedly spending the full acquire timeout. An optional guarded swapchain rebuild can clear stale
+  presentation state after recovery.
+- **Menu and DX12 transition protection:** Adaptive preserves its proven gameplay state across hard cadence stalls and
+  ignores implausibly fast DX12/VKD3D presentation bursts instead of treating them as a new game framerate.
+- **Diagnostic tooling:** Opt-in, per-swapchain presentation records expose timing, recovery, ramp, rescue, and
+  fast-cadence decisions without adding logging overhead to normal runs.
+- **Experimental Flatpak extensions:** Dedicated runtime extensions for Freedesktop 23.08, 24.08, and 25.08 can coexist
+  with the public `lsfgvk` extension.
 
-This repository packages the evolving 2.x lsfg-vk implementation for people who specifically want to test new Vulkan
-frame-generation work. It remains the same Linux compatibility layer and still uses the `Lossless.dll` installed by the
-Lossless Scaling Steam application; it is not a separate frame-generation algorithm.
+See [Configuration](docs/Configuration.md) for the exact settings and controller limits, and
+[Troubleshooting](docs/Troubleshooting.md) for diagnostic and recovery commands.
 
-The experimental status matters: compatibility depends on the game, compositor, GPU driver, and selected options. Please
-test changes one game at a time and include the build version, GPU/driver, and game details in any report.
+### Adaptive Frame Generation quick start
 
-The experimental line also includes an opt-in Adaptive Frame Generation scheduler, inspired by Lossless Scaling's
-[Adaptive Frame Generation](https://store.steampowered.com/news/app/993090/view/518581441632666732). It varies
-fractional interpolation outputs toward a configured target while retaining the existing Fixed mode. This is an
-independent Vulkan-layer implementation, not a port of the closed Windows capture engine: it can add frames up to a 4x
-ceiling, but it cannot reduce a native framerate already above the target or provide the Windows Queue Target modes.
-After startup or a presentation disruption, it stabilizes on real frames and ramps generation gradually; if a higher
-step harms useful throughput, it temporarily falls back to the previous step. When Gamescope's cadence divisor makes
-the first generated-frame step look counterproductive, the scheduler may make one bounded bridge test at the next
-step. When strict scheduling already needs nearly every slot at an integer cadence, it can briefly validate constant
-generation rather than alternating generated and real-only frames. Strict scheduling settles first, and the constant
-cadence is retained only while it continues to meet the target with sufficient base-rate headroom. If that validated
-cadence later suffers a severe sustained collapse, Adaptive measures the real-only rate for one second, then resumes
-fractional scheduling or probes one higher multiplier when the configured maximum permits it. Rescue attempts have a
-15-second cooldown and never exceed `adaptive_max_multiplier`. Smooth Cadence is disabled by default because its
-constant interpolation can lower real-frame cadence and feel less responsive, even while motion looks smoother. Set
-`adaptive_stable_cadence = true` to opt into it; strict target scheduling retains all other Adaptive protections.
-Strict target scheduling also monitors a newly accepted higher multiplier after its initial evaluation window. If its
-full load later causes a sustained base-rate collapse without a meaningful output gain, Adaptive measures one second
-of real-only cadence. It restores the previous proven level when removing generation load recovers cadence; otherwise,
-it retains the higher level because the slowdown belongs to the game scene. A confirmed load-induced collapse holds
-the failed higher level for 15 seconds. This avoids feedback traps where 3x work can reduce a game that is capable of
-60 FPS at 2x to roughly 40 real FPS without penalizing genuinely demanding scenes.
-Adaptive also stops increasing its multiplier once the current proven level can supply at least 98% of the requested
-target; if the base rate later falls, it can reconsider the next level automatically.
-Repeated failures at a higher multiplier use a progressive cooldown, while a meaningful base-rate improvement permits
-an earlier retry. A probe interrupted by an overlay or cadence transition is no longer counted as a failed load test:
-it rearms after two stable seconds instead of inheriting the 15-second rejection cooldown. A genuinely rejected
-first-step or bridge probe keeps that cooldown, but can rearm early after a 15% real-only base-rate improvement remains
-stable for two seconds. After a generated-image
-recovery, the existing warm-up is retained but Adaptive resumes from its last validated generation level instead of
-ramping blindly from zero. Adaptive policy evaluation is frozen while generated output is bypassed, preventing the
-real-frame-only recovery period from falsely validating a multiplier. Hard cadence stalls associated with abrupt menu,
-focus, or display transitions also retain the pre-transition base-rate baseline and proven generation level. A sustained
-gameplay slowdown instead rebases after the ordinary one-second stabilization, avoiding a five-second wait for an old
-rate that may no longer be achievable. For hard stalls, Adaptive waits for one second of real-only
-cadence at least 90% of that baseline before restoring the proven level; if cadence does not recover within five
-seconds, it discards the stale baseline and performs a clean ramp. The first generated-image recovery during this
-window uses history warm-up without forcing a swapchain rebuild, leaving the guarded rebuild as a second-stage fallback.
-See [Configuration](docs/Configuration.md) for the exact limits.
+Adaptive mode is opt-in. Configure it through `lsfg-vk-ui` or a profile in `~/.config/lsfg-vk/conf.toml`:
 
-### SteamOS / Gamescope recovery override
+```toml
+[[profile]]
+name = "Adaptive 120 FPS"
+active_in = ["Game.exe"]
+adaptive = true
+target_fps = 120
+adaptive_max_multiplier = 3
+adaptive_stable_cadence = false
+```
 
-The guarded swapchain-rebuild stage is intentionally controlled by an environment variable. It applies only to
-Adaptive mode, and only after LSFG-VK has recovered from a genuine generated-image acquisition stall. During a detected
-menu or focus discontinuity, the first recovery uses a soft history warm-up; a later stall can still request the
-rebuild. This can clear presentation latency left behind by repeated Steam-menu transitions, but a small number of
-games may pause, flicker, or handle a swapchain rebuild poorly.
+Restart the game after switching between Fixed and Adaptive modes so its swapchain is created with the correct output
+capacity. Target, multiplier ceiling, Smooth Cadence, flow scale, and performance mode can then be adjusted while the
+game is running.
 
-The Decky experimental plugin enables the tested 50 ms bounded acquisition timeout and guarded rebuild automatically.
-For direct lsfg-vk use, enable both before your game command:
+The target is an objective, not a guaranteed lock:
+
+- Adaptive cannot reduce a game that already renders above the target. Apply a separate game or compositor cap when
+  needed.
+- It cannot exceed the selected multiplier ceiling or the available GPU/compositor throughput. If the real rate is too
+  low, it deliberately remains below target rather than silently using a more artifact-prone ratio.
+- Higher ratios and wider gaps between real frames can increase ghosting and input latency.
+- Smooth Cadence may improve motion consistency on constrained hardware, but strict scheduling is usually more
+  responsive. Leave it disabled unless a game benefits from the trade-off.
+- lsfg-vk v2 has no 0x multiplier. Set `DISABLE_LSFGVK=1`, or remove the launch wrapper and restart the game, when
+  frame generation must be disabled completely.
+
+This scheduler is an independent Vulkan-layer implementation inspired by Lossless Scaling's
+[Adaptive Frame Generation](https://store.steampowered.com/news/app/993090/view/518581441632666732). It is not a port of
+the closed Windows capture engine and does not provide its Queue Target modes.
+
+### SteamOS and Gamescope recovery
+
+The [Decky LSFG-VK Experimental plugin](https://github.com/eugeniosegala/decky-lsfg-vk-experimental) applies the tested
+50 ms generated-image timeout and guarded Adaptive swapchain recovery to games launched with its isolated wrapper.
+Direct lsfg-vk users can opt in before their normal game command:
 
 ```bash
 LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=1 your-game-command
 ```
 
-If a specific game does not tolerate the rebuild, retain the bounded timeout and history-only recovery while disabling
-only the rebuild:
+The rebuild is requested only after a genuine acquire timeout later recovers. A game may briefly pause or flicker while
+recreating its swapchain, and a small number of games may mishandle the request. Keep the bounded real-frame fallback
+but disable forced recreation for those games:
 
 ```bash
 LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=0 your-game-command
 ```
 
+The guarded rebuild affects Adaptive only. Fixed mode can use the bounded acquisition fallback but resumes immediately
+when image acquisition succeeds. See
+[Diagnosing presentation stalls](docs/Troubleshooting.md#diagnosing-presentation-stalls) for the full workflow.
+
 ## Installation
 
-If you are on a Steam Deck or similar handheld, consider
-the [Decky LSFG-VK Experimental plugin](https://github.com/eugeniosegala/decky-lsfg-vk-experimental). It installs its
-own private experimental layer and per-game launcher, so it can coexist with the public Decky LSFG-VK plugin. The Decky
-plugin is independently maintained; direct plugin questions to its repository and community support channels. If you use
-the plugin for a game, follow its installation guide and launcher instructions instead of manually installing this archive
-for that game.
+### Steam Deck and SteamOS
 
-1. Before proceeding, please make sure you
-   have [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) downloaded on Steam. For an
-   experimental build, keep a rollback path to a previously working release.
-2. Download the Linux archive from this
-   fork's [GitHub Releases](https://github.com/eugeniosegala/lsfg-vk-experimental/releases). The archive name includes
-   its exact experimental version, for example `lsfg-vk-2.0.0-dev28-experimental.1-linux.tar.xz`.
-3. Open a terminal in the folder where you downloaded the file and run the following:
+Use the [Decky LSFG-VK Experimental plugin](https://github.com/eugeniosegala/decky-lsfg-vk-experimental) for a private,
+per-game installation that can coexist with the public Decky plugin. Follow that repository's installation, engine
+update, launch-wrapper, and Heroic instructions instead of manually extracting this engine archive for the same game.
 
-```bash
-tar -xJf lsfg-vk-2.0.0-dev28-experimental.1-linux.tar.xz -C ~/.local
-```
+### Direct 64-bit Linux installation
 
-This will extract lsfg-vk to `~/.local`. Please **keep track of the files that were extracted**, in case you want to
-uninstall lsfg-vk later.
+1. Purchase and install [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) through Steam.
+2. Download the versioned Linux archive from this fork's
+   [GitHub Releases](https://github.com/eugeniosegala/lsfg-vk-experimental/releases).
+3. Extract it into your local prefix. For version `2.0.0-dev28-experimental.18`:
 
-4. The graphical interface requires Qt6 and Qt6 Quick in order to run. If you do not have these installed, install the
-   following packages:
+   ```bash
+   tar -xJf lsfg-vk-2.0.0-dev28-experimental.18-linux.tar.xz -C ~/.local
+   ```
+
+Keep track of the extracted files so the direct installation can be removed or rolled back later.
+
+The graphical interface requires Qt 6 and Qt Quick. Install the appropriate packages for your distribution if they are
+not already available:
 
 ```bash
-sudo apt install qt6-qpa-plugins libqt6quick6 qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-window qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qt-labs-folderlistmodel # On Debian/Ubuntu-based systems
-sudo pacman -S qt6-declarative qt6-base # On Arch-based systems
-sudo dnf install qt6-qtdeclarative qt6-qtbase # On Fedora
+sudo apt install qt6-qpa-plugins libqt6quick6 qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-window qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qtquick-templates qml6-module-qt-labs-folderlistmodel
+sudo pacman -S qt6-declarative qt6-base
+sudo dnf install qt6-qtdeclarative qt6-qtbase
 ```
 
-5. (Optional) If you wish to use lsfg-vk within Flatpak applications, see the [Flatpak Guide](docs/Flatpak-Guide.md).
-
-## Package and publish a release
-
-Releases are made locally with scripts; this repository does not use GitHub Actions or CI to build or publish them. On
-Linux, the scripts build directly. On macOS, `package-local.sh` uses a local `linux/amd64` Docker container
-automatically; install Docker Desktop and start it first. The archive always targets 64-bit Linux.
-
-Install the build dependencies described in [Building from Source](docs/Building-From-Source.md), then create an archive
-for local testing:
-
-```bash
-scripts/package-local.sh
-```
-
-This creates `out/lsfg-vk-experimental-linux.tar.xz`. It builds and verifies the Vulkan layer, CLI, UI, manifest, and
-XDG files, but does not create a tag, upload anything, or change GitHub.
-
-To publish the version in [`VERSION`](VERSION), first commit a clean `develop` branch, authenticate the GitHub CLI with
-`gh auth login -h github.com`, then run:
-
-```bash
-scripts/publish-package.sh
-```
-
-The publish script builds `out/lsfg-vk-<VERSION>-linux.tar.xz`, records its SHA-256 in generated release notes, creates
-an annotated `v<VERSION>` tag, pushes `develop` and the tag, and publishes a GitHub prerelease with the archive
-attached. Bump `VERSION` before every subsequent release.
+Run only the command for your distribution. For sandboxed applications, install the extension matching the
+application's Freedesktop runtime as described in the [Flatpak Guide](docs/Flatpak-Guide.md).
 
 ## Usage
 
-In order to start using lsfg-vk, you will need to configure it. This can either be done using the GUI application, or
-manually.
+### Graphical configuration
 
-### Graphical Configuration
+Open **lsfg-vk Configuration Window** from the application launcher or run:
 
-Start 'lsfg-vk Configuration Window' from your application launcher, or run `~/.local/bin/lsfg-vk-ui` in a terminal:
+```bash
+~/.local/bin/lsfg-vk-ui
+```
 
-- On the left side, you will see a list of profiles. Each profile has its own settings.
-- All properties in the "Global Settings" section apply to all profiles.
-    - Should Lossless Scaling be installed in a non-standard location, you can specify the path here.
-- Select a profile and configure the "Profile Settings" section to your liking.
-    - When editing the "Active In" list, you can add a game using its executable name (e.g. `Game.exe`, `mpv`).
-- Please see the [documentation](docs/Configuration.md) for detailed information on each setting.
-- Once you are done configuring, simply starting a game that matches one of the profiles will automatically apply the
-  settings.
+Create or select a profile, configure its frame-generation mode, and add the target executable or process under
+**Active In**. Global settings apply to every profile, including a custom `Lossless.dll` path.
 
-### Manual Configuration
+### Manual configuration
 
-The default configuration is located in `~/.config/lsfg-vk/conf.toml`. It will be created automatically when any Vulkan
-application is started.
+The default configuration is `~/.config/lsfg-vk/conf.toml`; it is created when a Vulkan application first loads the
+layer. Profiles are stored as `[[profile]]` sections and can match Linux binaries, Windows executables, process names,
+or a trailing executable path through `active_in`.
 
-- In the `[global]` section, you can change where Lossless Scaling is installed, as well as other global settings.
-- Each profile is defined in its own `[[profile]]` section.
-- The `active_in` array/string defines which applications the profile is active in. You can add applications using their
-  executable name (e.g. `Game.exe`, `mpv`).
-- Please see the [documentation](docs/Configuration.md) for detailed information on each setting.
-- Once you are done configuring, simply starting a game that matches one of the profiles will automatically apply the
-  settings.
-
-You can validate the configuration using `lsfg-vk-cli`:
+Validate the configuration with:
 
 ```bash
 ~/.local/bin/lsfg-vk-cli validate
 ```
 
-### Benchmarking Mode
+Detailed field descriptions and environment-variable equivalents are in
+[Configuration](docs/Configuration.md).
 
-You can run a frame generation benchmark using `lsfg-vk-cli`:
+### Benchmarking
+
+Run the built-in frame-generation benchmark with:
 
 ```bash
 ~/.local/bin/lsfg-vk-cli benchmark
 ```
 
-By default, the benchmark will run for 10 seconds. Add `-h` to see all available benchmarking options.
+The default duration is 10 seconds. Add `-h` to list the available options.
+
+## Build and publish a release
+
+This repository builds and publishes locally without GitHub Actions. Install the dependencies from
+[Building from Source](docs/Building-From-Source.md). On macOS, start Docker Desktop; the packaging scripts build the
+64-bit Linux artifacts inside a local `linux/amd64` container.
+
+Create and verify a local host archive without changing GitHub:
+
+```bash
+scripts/package-local.sh
+```
+
+Build the Flatpak runtime-extension archive when required:
+
+```bash
+scripts/package-flatpaks.sh
+```
+
+To publish the version declared in [`VERSION`](VERSION), commit a clean `develop` branch, authenticate `gh`, and run:
+
+```bash
+scripts/publish-package.sh
+```
+
+The publish script builds and verifies the host and Flatpak archives, calculates their SHA-256 checksums, creates and
+pushes an annotated version tag, and publishes a GitHub prerelease with generated notes. Bump `VERSION` before each new
+release.
 
 ## Credits
 
 - **[PancakeTAS](https://github.com/PancakeTAS/lsfg-vk)** for creating the lsfg-vk Vulkan compatibility layer
-- **[Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/)** developers for the original frame
-  generation technology
+- **[Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/)** developers for the original
+  frame-generation technology

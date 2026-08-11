@@ -4,6 +4,21 @@ This repository follows [`PancakeTAS/lsfg-vk`](https://github.com/PancakeTAS/lsf
 remote. It is intentionally not a blind mirror: this ledger records every commit carried on top of the reviewed upstream
 baseline so a future update can distinguish upstream work from experimental-fork work.
 
+## Current status
+
+| Item                       | Value                                                                                  |
+|----------------------------|----------------------------------------------------------------------------------------|
+| Release version            | `2.0.0-dev28-experimental.18`                                                          |
+| Release basis              | First cumulative engine prerelease after `v2.0.0-dev28-experimental.9`                |
+| Pre-publication validation | Native and Flatpak archives built, verified, and runtime-tested locally               |
+| Included change range      | `.10` through `.18`: temporal recovery, Adaptive safeguards, and transition handling  |
+| Fixed-mode impact          | Fixed 2x, 3x, and 4x scheduling remains on its existing path                          |
+| Ledger reconciled          | 2026-08-11                                                                             |
+
+The sections below are chronological. Versions through `.9` document the published prereleases; `.10` through `.17`
+record the successive local test builds consolidated into the `.18` release. The detailed history is intentionally
+retained here so the public README and release notes can remain concise.
+
 ## Reviewed baseline
 
 | Item                        | Value                                                                                                               |
@@ -13,9 +28,11 @@ baseline so a future update can distinguish upstream work from experimental-fork
 | Baseline commit             | [`8b0da266`](https://github.com/PancakeTAS/lsfg-vk/commit/8b0da2661c6f3473a7fccc8ba643880050e71642)                 |
 | Experimental branch         | `develop` → `experimental/develop`                                                                                  |
 | Current experimental branch | [`develop`](https://github.com/eugeniosegala/lsfg-vk-experimental/commits/develop)                                   |
-| Reviewed on                 | 2026-08-09                                                                                                          |
+| Reviewed on                 | 2026-08-11                                                                                                          |
 
-## Changes carried on top of upstream
+The upstream `develop` reference was fetched again on 2026-08-11 and still pointed to the baseline above.
+
+## Initial carried changes and repository setup
 
 | Experimental commit                                                                                                | Source or reason                                                                                                                                                              | What it changes                                                                                               |
 |--------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
@@ -31,7 +48,18 @@ identical. The commit IDs differ because the changes were carried into this repo
 upstream branch. The PR was open when checked; when it lands upstream, compare the merged patch before deciding whether
 these two carried commits can be retired.
 
-## Experimental packaging release: `v2.0.0-dev28-experimental.2`
+The chronological build history below records the later engine, configuration, diagnostic, and packaging work. Git
+history remains authoritative for exact patches; this ledger records why each change exists and how it was validated.
+
+## Experimental build history
+
+### Initial experimental release: `v2.0.0-dev28-experimental.1`
+
+The first fork release established the reviewed upstream dev28 baseline, carried the two PR #544 safety fixes listed
+above, branded the experimental distribution, and replaced GitHub Actions with local Linux/Docker packaging scripts.
+It did not add Adaptive scheduling or Gamescope recovery; those changes begin in the later entries below.
+
+### Experimental packaging release: `v2.0.0-dev28-experimental.2`
 
 This release does not change the lsfg-vk rendering code. It packages the existing reviewed dev28 engine for the
 experimental Decky integration, including support for sandboxed Flatpak applications such as Heroic.
@@ -49,7 +77,7 @@ The separate extension ID is intentional. It allows a user to keep the public an
 the Decky plugin selects the experimental one only for Flatpak applications the user explicitly enables. It does not
 modify or replace the public Flathub extension.
 
-## Flatpak packaging hotfix: `v2.0.0-dev28-experimental.3`
+### Flatpak packaging hotfix: `v2.0.0-dev28-experimental.3`
 
 This release fixes the experimental Flatpak extensions only; it does not change the host rendering code or the
 reviewed dev28 lineage. The previous extensions installed `liblsfg-vk-layer.so` in `lib64`, while their Vulkan
@@ -65,7 +93,7 @@ All supported Flatpak manifests now reference:
 The Flatpak packaging script now validates both the installed library and the manifest path before creating a bundle,
 so this mismatch fails the release build instead of reaching users.
 
-## Presentation diagnostic release: `v2.0.0-dev28-experimental.4`
+### Presentation diagnostic release: `v2.0.0-dev28-experimental.4`
 
 This release fixes an undefined access in the Vulkan submission helper when no timeline semaphore is present. It also
 adds opt-in timing diagnostics around frame scheduling, render-fence waits, generated-image acquisition, GPU copy
@@ -76,7 +104,7 @@ behaviour. They are disabled by default, and this release does not yet claim to 
 [`docs/Troubleshooting.md`](docs/Troubleshooting.md#diagnosing-presentation-stalls) for the diagnostic launch option and
 log extraction command.
 
-## Gamescope presentation-recovery test release: `v2.0.0-dev28-experimental.5`
+### Gamescope presentation-recovery test release: `v2.0.0-dev28-experimental.5`
 
 Diagnostics collected on SteamOS showed that the Steam-menu slowdown is dominated by
 `vkAcquireNextImageKHR` waiting for an extra swapchain image used for a generated frame. Individual waits reached
@@ -93,7 +121,7 @@ frame multipliers, pacing modes, and games before it can safely become the defau
 [`docs/Troubleshooting.md`](docs/Troubleshooting.md#diagnosing-presentation-stalls) for the test launch option and log
 extraction command.
 
-## Gamescope non-blocking recovery test release: `v2.0.0-dev28-experimental.6`
+### Gamescope non-blocking recovery test release: `v2.0.0-dev28-experimental.6`
 
 Testing `.5` confirmed that its synchronization fallback completed successfully, but also revealed that repeated
 acquisition attempts each waited for the full configured timeout. During one captured slowdown, every frame spent
@@ -105,7 +133,7 @@ continues presenting original game frames while Gamescope has no spare image and
 when an image becomes available. Diagnostic fallback entries identify `initial-timeout` and `nonblocking-retry` modes,
 and a `resume-generated-frames` entry identifies successful recovery.
 
-## Gamescope inference-bypass recovery test release: `v2.0.0-dev28-experimental.7`
+### Gamescope inference-bypass recovery test release: `v2.0.0-dev28-experimental.7`
 
 SteamOS testing of `.6` showed that the non-blocking recovery reliably avoided persistent stalls, but the engine still
 scheduled frame-generation work on every retry before discovering that Gamescope had no image available. The generated
@@ -121,7 +149,7 @@ Diagnostics now distinguish `backend_work=scheduled` on the initial timeout from
 backoff. Repeated expected `VK_NOT_READY` results are aggregated instead of logged every frame; the recovery entry
 reports the total as `bypassed_frames`.
 
-## Gamescope bounded-reacquisition test release: `v2.0.0-dev28-experimental.8`
+### Gamescope bounded-reacquisition test release: `v2.0.0-dev28-experimental.8`
 
 Testing `.7` showed that its zero-timeout backoff kept the Steam menu responsive and avoided wasted inference work, but
 the probe could repeatedly run at a point where the application had already acquired the only currently available
@@ -134,7 +162,7 @@ work. This gives Gamescope a short window to release an image without returning 
 forcing the game to recreate its swapchain. Diagnostics identify these periodic attempts with
 `acquire_mode=bounded-retry`.
 
-## Adaptive Frame Generation test build: `v2.0.0-dev28-experimental.9`
+### Adaptive Frame Generation release: `v2.0.0-dev28-experimental.9`
 
 This release adds an opt-in Adaptive scheduler on top of the reviewed dev28 engine. Profiles can set
 `adaptive = true` and a `target_fps`; Fixed mode remains the default and retains its existing multiplier path.
@@ -149,7 +177,7 @@ frames than the application submits, so it cannot reduce a base framerate alread
 cannot reach targets above four times the current base rate. These limitations are exposed in both configuration UIs
 and must remain in release notes while the feature is experimental.
 
-## Temporal-history recovery test build: `v2.0.0-dev28-experimental.10`
+### Temporal-history recovery test build: `v2.0.0-dev28-experimental.10`
 
 SteamOS Adaptive testing at a 30 FPS base and 120 FPS target confirmed that the scheduler remained at three generated
 frames before and after a Gamescope overlay transition. The increasing ghosting was therefore not caused by multiplier
@@ -166,7 +194,7 @@ until Gamescope releases an image. Adaptive timing credit is also reset when acq
 compositor discontinuity is not carried into later scheduling decisions. Diagnostics report
 `backend_work=history-only` for this path.
 
-## Adaptive history warm-up test build: `v2.0.0-dev28-experimental.11`
+### Adaptive history warm-up test build: `v2.0.0-dev28-experimental.11`
 
 SteamOS testing of `.10` showed that continuous history maintenance improved recovery but did not make the temporal
 handoff reliable. One trace recorded repeated single-image recoveries followed by immediate new acquisition failures:
@@ -184,7 +212,7 @@ This deliberately trades approximately three base-frame intervals for a clean te
 is roughly 100 ms. Fixed mode retains its immediate recovery path. Diagnostics distinguish `generated-image-recovered`
 from `history-warmup` and identify whether warm-up was caused by `startup` or `recovery`.
 
-## Adaptive quality-limit test build: `v2.0.0-dev28-experimental.12`
+### Adaptive quality-limit test build: `v2.0.0-dev28-experimental.12`
 
 SteamOS comparison testing showed that Adaptive output matched Fixed 2x image quality when both produced approximately
 100 FPS from the same real-frame rate. Raising only the Adaptive target to 120 FPS increased ghosting because the
@@ -197,7 +225,7 @@ far enough that the target would require a higher ratio, Adaptive deliberately u
 adding more artifact-prone generated frames. The standalone UI and `LSFGVK_ADAPTIVE_MAX_MULTIPLIER` environment path
 expose the same setting. Fixed mode remains unchanged.
 
-## Adaptive swapchain-recreation recovery test build: `v2.0.0-dev28-experimental.13`
+### Adaptive swapchain-recreation recovery test build: `v2.0.0-dev28-experimental.13`
 
 SteamOS testing showed that the `.11`/`.12` history recovery substantially improved Game Mode transitions, but repeated
 Steam-menu cycles could still accumulate input latency. Capping Adaptive at 2x controlled interpolation artifacts but
@@ -219,7 +247,7 @@ Some games can mishandle a synthetic out-of-date result, so this remains a guard
 Set `LSFGVK_PRESENT_RECOVERY_RECREATE=0` to retain the three-frame Adaptive recovery warm-up without forcing the
 game-owned swapchain to be recreated.
 
-## Adaptive stabilization test build: `v2.0.0-dev28-experimental.14`
+### Adaptive stabilization test build: `v2.0.0-dev28-experimental.14`
 
 SteamOS testing of `.13` confirmed that swapchain recreation could clear accumulated presentation latency, but a
 recreated context could immediately request the maximum Adaptive load while the game and Gamescope were still
@@ -240,7 +268,7 @@ The `.14` candidate keeps Fixed mode unchanged and adds an Adaptive-only recover
 This policy deliberately prioritizes stable base-frame cadence and temporal quality over reaching the target at any
 cost. Adaptive may remain below the requested target when a higher multiplier would be counterproductive.
 
-## Adaptive bounded-bridge test build: `v2.0.0-dev28-experimental.15`
+### Adaptive bounded-bridge test build: `v2.0.0-dev28-experimental.15`
 
 SteamOS traces from `.14` showed a remaining recovery failure that looked like a permanent detach. At a real base rate
 near 60 FPS, testing one intermediate frame could move Gamescope to a roughly 30 FPS cadence. The scheduler then saw
@@ -264,14 +292,14 @@ The `.15` candidate keeps Fixed mode unchanged and makes Adaptive probing bounde
 The bridge can briefly increase interpolation load for its one-second evaluation window. It is intentionally attempted
 only once per recovery interval and is rolled back when it does not demonstrate a meaningful benefit.
 
-## Adaptive retained-level test build: `v2.0.0-dev28-experimental.16`
+### Adaptive retained-level test build: `v2.0.0-dev28-experimental.16`
 
 The `.16` candidate carries the last validated generated-frame level through Gamescope recovery. The replacement
 context still performs its real-frame stabilization and temporal-history warm-up, then resumes that proven level
 instead of always rebuilding Adaptive load from zero. Higher-level probes remain delayed so recovery does not
 immediately repeat the load that contributed to a disruption.
 
-## Adaptive cadence and retry test build: `v2.0.0-dev28-experimental.17`
+### Adaptive cadence and retry test build: `v2.0.0-dev28-experimental.17`
 
 The `.17` candidate adds bounded constant-cadence validation for suitable fractional targets, retains the validated
 level across a replacement swapchain, and progressively backs off repeatedly rejected higher-level probes. Adaptive
@@ -282,7 +310,7 @@ Profiles can set `adaptive_stable_cadence = true` to enable constant-cadence val
 after Steam Deck testing confirmed the expected trade-off: constant cadence looks smoother but can lower the real-frame
 presentation rate and feel less responsive. Strict target scheduling is used when it is disabled, while
 Adaptive recovery, load shedding, multiplier limits, and retry backoff remain active. The standalone configuration UI
-and `LSFGVK_ADAPTIVE_STABLE_CADENCE=0` environment path expose the same option. Fixed mode remains unchanged.
+and `LSFGVK_ADAPTIVE_STABLE_CADENCE=1` environment path expose the same opt-in. Fixed mode remains unchanged.
 
 Smooth Cadence now waits two seconds after a successful generation ramp and activates only when strict scheduling
 already requests at least 95% of the matching integer output cadence. If a validated cadence later loses at least 22%
@@ -343,6 +371,51 @@ unnecessarily probing 3x and risking the observed 40-FPS feedback state.
 
 Fixed mode is unchanged. The bounded recovery can intentionally show real-frame output for up to five seconds instead
 of applying interpolation against an unstable compositor cadence.
+
+### Adaptive target stability and DX12 burst filtering release: `v2.0.0-dev28-experimental.18`
+
+Follow-up SteamOS traces showed two remaining sources of Adaptive instability. First, a validated level close to the
+requested target could still trigger a more expensive probe for a small or momentary deficit. Second, Witcher 3 on a
+Heroic/DX12/VKD3D path produced transient presentation intervals corresponding to impossible 366–1,659 FPS estimates.
+Those samples contaminated cadence smoothing and repeatedly forced real-only stabilization even though normal gameplay
+remained near 59–63 FPS.
+
+The `.18` release:
+
+- Treats 95% of the target as satisfied instead of requiring 98%, reducing unnecessary higher-multiplier work near
+  the display target.
+- Requires a deficit below that threshold to remain present for one second before increasing the multiplier. A brief
+  scene or compositor fluctuation therefore cannot start a new load probe by itself.
+- Starts the delayed strict-load rescue when the accepted higher level retains less than 80% of the previous proven
+  level's base rate, rather than waiting for a 70% collapse. The existing one-second persistence check and one-second
+  real-only measurement remain in place so an isolated hitch is not mistaken for load-induced degradation.
+- Preserves the separate 70% threshold used while evaluating an active ramp step; the earlier rescue threshold applies
+  only after a higher level has already been accepted and later settles into a worse state.
+- Adds a process-unique `context=<ID>` field to every presentation diagnostic, including swapchain lifecycle records,
+  so concurrent windows and replacement contexts can be analysed independently.
+- Rejects transient presentation intervals faster than both three times the proven base cadence and twice the Adaptive
+  target before they enter cadence smoothing. This addresses a Witcher 3 DX12/VKD3D trace where a healthy 59–63 FPS
+  baseline was replaced by impossible 366–1,659 FPS estimates, repeatedly forcing real-only stabilization.
+- Pauses active ramp, Smooth Cadence, rescue, and stabilization evaluation windows while those invalid intervals are
+  ignored. Pending target-deficit and collapse evidence is cleared, so a burst cannot validate an untested multiplier
+  or trigger stale policy immediately afterward.
+- Aggregates fast-burst diagnostics to at most one progress record per second plus a completion record, avoiding test
+  distortion and excessive Steam log growth during a high-frequency burst.
+
+#### Validation status
+
+- The native 64-bit Linux archive compiled successfully and passed its packaging checks.
+- Flatpak extensions for Freedesktop 23.08, 24.08, and 25.08 compiled successfully and passed their manifest/library
+  layout checks.
+- Witcher 3 DX12 testing no longer lost its established FPS after menu transitions. A subsequent trace recorded a
+  569 FPS transient as `adaptive-fast-cadence-burst`, excluded it, and returned to normal cadence 17 ms later without
+  changing the proven Adaptive level.
+- Resident Evil testing captured genuine Gamescope acquisition stalls at the configured 50 ms bound. Real-frame
+  fallback, reacquisition, guarded swapchain recreation, history warm-up, and Adaptive ramp all completed; no context
+  remained detached or entered an endless recovery loop.
+
+Local `.18` host and Flatpak archives were produced and runtime-tested before publication. The immutable artifacts,
+checksums, tag, and GitHub prerelease are generated by `scripts/publish-package.sh` from the committed release source.
 
 ## Update procedure
 

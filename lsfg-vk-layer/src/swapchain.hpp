@@ -83,6 +83,10 @@ namespace lsfgvk::layer {
             VkQueue queue, VkSwapchainKHR swapchain,
             void* next_chain, uint32_t imageIdx,
             const std::vector<VkSemaphore>& semaphores);
+        /// stable identifier used to correlate this context's diagnostics
+        [[nodiscard]] uint64_t diagnosticsId() const {
+            return this->diagnosticsContextId;
+        }
     private:
         /// calculate generated-frame timestamps for the current real frame
         std::vector<float> generatedFrameTimestamps(
@@ -153,11 +157,18 @@ namespace lsfgvk::layer {
 
         std::optional<std::chrono::steady_clock::time_point> adaptiveLastRealFrame;
         std::optional<std::chrono::steady_clock::time_point> adaptiveLastDiagnostic;
+        std::optional<std::chrono::steady_clock::time_point>
+            adaptiveFastBurstStartedAt;
+        std::optional<std::chrono::steady_clock::time_point>
+            adaptiveLastFastBurstDiagnostic;
+        size_t adaptiveFastBurstFrames{0};
+        size_t adaptiveFastBurstFramesSinceDiagnostic{0};
         double adaptiveSmoothedIntervalSeconds{0.0};
         double adaptiveOutputCredit{0.0};
         std::optional<std::chrono::steady_clock::time_point> adaptiveStabilizationUntil;
         std::optional<std::chrono::steady_clock::time_point> adaptiveNextRampAt;
         std::optional<std::chrono::steady_clock::time_point> adaptiveRampEvaluationAt;
+        std::optional<std::chrono::steady_clock::time_point> adaptiveTargetDeficitSince;
         size_t adaptiveGenerationLimit{0};
         size_t adaptiveRampPreviousLimit{0};
         size_t adaptiveCadenceDropFrames{0};
@@ -204,6 +215,7 @@ namespace lsfgvk::layer {
         size_t adaptiveConsecutiveRampFailures{0};
         double adaptiveFailedRampBaselineBaseFps{0.0};
         AdaptiveRecoveryState* adaptiveRecoveryState{};
+        uint64_t diagnosticsContextId{0};
 
         ls::GameConf profile;
         SwapchainInfo info;

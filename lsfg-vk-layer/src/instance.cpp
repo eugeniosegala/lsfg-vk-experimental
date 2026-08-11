@@ -235,9 +235,15 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
             discontinuityBaselineBaseFps,
             discontinuityDeadline,
             discontinuitySoftRecoveryAttempted)).second;
+    const auto insertedContext = this->swapchains.find(swapchain);
+    const uint64_t diagnosticsContextId =
+        insertedContext != this->swapchains.end()
+        ? insertedContext->second.diagnosticsId()
+        : 0;
 
     if (presentDiagnosticsEnabled()) {
         std::cerr << "lsfg-vk: present diagnostics: operation=swapchain-context-create"
+                  << " context=" << diagnosticsContextId
                   << " swapchain=" << swapchain
                   << " active_contexts=" << this->swapchains.size()
                   << " inserted=" << inserted
@@ -250,9 +256,14 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
 }
 
 void Root::removeSwapchainContext(VkSwapchainKHR swapchain) {
+    const auto context = this->swapchains.find(swapchain);
+    const uint64_t diagnosticsContextId = context != this->swapchains.end()
+        ? context->second.diagnosticsId()
+        : 0;
     const size_t removed = this->swapchains.erase(swapchain);
     if (presentDiagnosticsEnabled()) {
         std::cerr << "lsfg-vk: present diagnostics: operation=swapchain-context-destroy"
+                  << " context=" << diagnosticsContextId
                   << " swapchain=" << swapchain
                   << " active_contexts=" << this->swapchains.size()
                   << " removed=" << removed << '\n';

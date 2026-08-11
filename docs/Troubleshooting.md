@@ -107,7 +107,7 @@ Clear the Steam log before reproducing the problem. After reproducing it, extrac
 with:
 
 ```bash
-grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-ramp|adaptive-ramp-accepted|adaptive-load-shed|adaptive-bridge|adaptive-bridge-accepted|adaptive-bridge-rejected|adaptive-probe-aborted|adaptive-rearm-scheduled|adaptive-rearm-ready|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
+grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-fast-cadence-burst|adaptive-stabilization|adaptive-ramp|adaptive-ramp-accepted|adaptive-load-shed|adaptive-bridge|adaptive-bridge-accepted|adaptive-bridge-rejected|adaptive-probe-aborted|adaptive-rearm-scheduled|adaptive-rearm-ready|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
 ```
 
 `adaptive-stabilization` and `adaptive-ramp` show the normal restart sequence. `adaptive-load-shed` means a tested
@@ -116,6 +116,11 @@ first generated-frame step may have encountered a Gamescope cadence divisor. Its
 measured result. `adaptive-rearm-scheduled` means another probe will wait at least 15 seconds and two stable seconds;
 `adaptive-rearm-ready` confirms those conditions were met. `swapchain-recreation-suppressed` confirms the separate
 swapchain-recreation cooldown prevented a repeated recreation request.
+`adaptive-fast-cadence-burst` means an implausibly short DX12/Vulkan presentation interval was excluded from the base
+rate. Its aggregated frame counts and matching completion record show how long policy evaluation remained paused.
+Every presentation-diagnostic record includes a `context=<ID>` field. Use it to separate concurrent or replacement
+swapchains before comparing ramp, recovery, and presentation events; records with different context IDs may describe
+different windows or an old context being destroyed while its replacement starts.
 
 Disable the diagnostic variables after collecting the trace. Remove the acquire-timeout and recreation variables too
 if you do not want to continue testing the recovery path.

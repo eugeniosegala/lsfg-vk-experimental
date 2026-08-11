@@ -82,130 +82,104 @@ cat > "$notes_file" <<EOF
 
 This is an experimental build of the lsfg-vk 2.x development line. Test it game by game and retain a known-good rollback path.
 
+## This release: Adaptive Frame Generation and SteamOS recovery
+
+Version \`v2.0.0-dev28-experimental.9\` introduced the initial target-driven Adaptive scheduler. This first public
+engine prerelease since \`.9\` consolidates the tested \`.10\` through \`.18\` revisions into a more configurable,
+load-aware implementation with reliable recovery from SteamOS/Game Mode presentation disruptions.
+
+### Highlights
+
+- Expands opt-in Adaptive Frame Generation with a 2x/3x/4x quality ceiling and optional Smooth Cadence. Fixed 2x, 3x,
+  and 4x remain available and unchanged.
+- Protects real-frame throughput by ramping generation gradually, retaining proven levels, measuring suspected
+  load-induced collapses, and backing off counterproductive probes.
+- Keeps temporal history current during Gamescope fallback, restores validated Adaptive state after recovery, and can
+  request one guarded swapchain rebuild when stale presentation state remains.
+- Preserves gameplay cadence across menu/focus transitions and excludes impossible DX12/VKD3D fast-present bursts from
+  Adaptive's feedback loop.
+- Adds process-unique context IDs and focused diagnostics for presentation stalls, recovery, and Adaptive policy.
+
 ### Important limitations
 
 - Adaptive Frame Generation is experimental and opt-in. This independent Vulkan-layer scheduler varies between zero
-  and three generated frames per real frame to approach the configured average target, but it cannot reduce a native
-  framerate already above that target, exceed 4x the current base rate, or provide the Windows Queue Target modes.
-  Fixed 2x, 3x, and 4x modes remain available and unchanged.
-- The 0x multiplier previously available in the 1.x line is not present in upstream lsfg-vk v2 and cannot be restored by this packaging layer.
-- Lossless Scaling and its \`Lossless.dll\` must already be installed through Steam; this archive does not include or modify it.
-- Flatpak runtime extensions for 23.08, 24.08, and 25.08 are included in \`$(basename "$flatpak_archive")\`. They use a dedicated experimental extension ID and can coexist with the public Flathub layer.
-- \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is a guarded Adaptive-mode recovery test. It asks the application to rebuild
-  its Vulkan swapchain only after an acquire timeout has recovered, but some games may pause, flicker, or mishandle the
-  synthetic out-of-date result. Recreation requests have a five-second cross-context cooldown. Leave it disabled
-  outside controlled testing.
+  and three generated frames per real frame toward the configured average target. It cannot reduce a native framerate
+  already above the target, exceed the selected 4x maximum, guarantee an unreachable target, or provide the Windows
+  Queue Target modes.
+- The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. Use \`DISABLE_LSFGVK=1\` or remove the launch
+  wrapper and restart the game when frame generation must be disabled.
+- Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can
+  improve motion consistency but may lower real-frame cadence and responsiveness, so it defaults to disabled.
+- Lossless Scaling and \`Lossless.dll\` must already be installed through Steam; neither release archive includes or
+  modifies it.
+- \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is an opt-in Adaptive recovery path for direct engine users. A swapchain
+  rebuild can briefly pause or flicker, and some games may mishandle it. The Decky experimental wrapper enables the
+  tested timeout and guarded rebuild automatically.
+- Flatpak extensions for 23.08, 24.08, and 25.08 are packaged separately in
+  \`$(basename "$flatpak_archive")\` under a dedicated experimental ID that can coexist with the public Flathub layer.
 
-### Included
+### Included files
 
 - Vulkan implicit layer: \`liblsfg-vk-layer.so\`
 - CLI and Qt configuration UI
 - Vulkan manifest and XDG desktop files
 
-### Added
+### Adaptive configuration
 
-- Adds opt-in Adaptive Frame Generation through \`adaptive = true\` and \`target_fps = <FPS>\` profile settings.
-- Adds \`adaptive_max_multiplier = 2|3|4\`, defaulting to 3x, so users can preserve image quality by allowing the
-  displayed rate to undershoot the target instead of using a higher interpolation ratio when the real framerate falls.
-- Uses a fractional output accumulator to vary the generated-frame count and uploads the corresponding interpolation
-  timestamps before each inference pass. This supports non-integer average ratios such as 30 -> 55 or 50 -> 120.
-- Skips interpolation below a 10 FPS base-rate safety floor and caps generation at the selected Adaptive limit, never
-  exceeding three intermediate frames per real frame. Existing Fixed mode continues through its original path.
-- Stabilizes on real frames for one second after startup, recovery, or a sustained cadence disruption, then ramps
-  generated-frame load one step at a time instead of immediately requesting the configured maximum.
-- Evaluates each Adaptive ramp step against base and estimated output throughput. Counterproductive steps are rolled
-  back, prioritizing stable real-frame cadence over reaching the target at any cost.
-- Adds one bounded bridge probe when Gamescope's cadence divisor makes the first generated-frame step look
-  counterproductive even though the target remains far away. The bridge is retained only when it demonstrates at
-  least a 15% estimated-output gain while staying within real-frame safety limits.
-- Rearms a probe interrupted by an overlay or cadence transition after two stable seconds without counting the
-  interruption as a failed load test. A genuinely rejected first-step or bridge probe retains the 15-second cooldown,
-  but may retry early after a 15% real-only base-rate improvement remains stable for two seconds.
-- Backs off repeated rejected higher-multiplier probes from 5 to 15, 30, and then 60 seconds. A measured base-rate
-  improvement of at least 15% permits an earlier retry, so a genuinely recovered scene is not held back.
-- Validates a bounded constant cadence for suitable fractional targets, avoiding alternating generated and real-only
-  frames when a stable integer cadence can meet the target without excessive work.
-- Adds `adaptive_stable_cadence = true|false` (default `false`) so smoother constant-cadence validation can be enabled
-  per profile without changing Adaptive recovery, multiplier limits, or load protection. Constant cadence can lower
-  the real-frame presentation rate and feel less responsive.
-- Lets strict Adaptive settle before constant-cadence validation. A severe sustained cadence collapse triggers one
-  bounded real-only measurement, then resumes fractional scheduling or probes one higher level only when the selected
-  maximum permits it. Rescue attempts never exceed the configured maximum and have a 15-second cooldown.
-- Monitors newly accepted strict-Adaptive load after the initial probe window. If the higher level later causes a
-  sustained base-rate collapse without a meaningful estimated-output gain, Adaptive measures real-only cadence for one
-  second. It restores the previous proven level only when removing generation load recovers cadence; otherwise it
-  retains the higher level for a genuinely heavier game scene. A confirmed load-induced collapse holds the failed
-  higher level for 15 seconds.
-- Stops probing higher multipliers when the current validated level can already supply at least 98% of the target,
-  avoiding unnecessary 3x or 4x inference load while retaining automatic reconsideration if the base rate later falls.
-- Preserves the validated generation level and healthy base-rate baseline across abrupt menu/focus cadence stalls.
-  Adaptive restores that level only after one second at least 90% of the previous real cadence; after five seconds it
-  discards the stale baseline and performs a clean ramp from zero.
-- Treats a sustained gameplay cadence drop as a new operating point after the normal one-second stabilization instead
-  of waiting five seconds for the previous rate to return.
-- Warms all three shared temporal-history slots with real frames before Adaptive generates its first output, avoiding
-  startup inference from partially initialized history.
-- Exposes Adaptive mode, target, maximum multiplier, and Smooth Cadence in the standalone Qt configuration UI. Switching modes should
-  be followed by a game restart so the swapchain is created with the intended capacity.
+Enable the new mode through the Qt UI or a profile:
+
+\`\`\`toml
+adaptive = true
+target_fps = 120
+adaptive_max_multiplier = 3
+adaptive_stable_cadence = false
+\`\`\`
+
+Restart the game after switching between Fixed and Adaptive modes so the swapchain has the intended generated-frame
+capacity. The target, maximum multiplier, Smooth Cadence, flow scale, and performance mode can then be hot-reloaded.
+
+### Improvements
+
+- Adds a configurable 2x/3x/4x Adaptive ceiling. When the target is unreachable at the selected quality limit, output
+  remains below target instead of silently using a higher interpolation ratio.
+- Stabilizes on real frames, ramps generated workload one level at a time, and accepts a step only when it improves
+  useful output without an unsafe real-rate collapse. A bounded bridge probe handles misleading Gamescope divisors.
+- Separates interrupted probes from genuine failures. Interrupted work rearms after two stable seconds; rejected probes
+  use progressive cooldowns and can retry early after a sustained 15% base-rate improvement.
+- Treats 95% of the target as satisfied and requires a smaller remaining deficit to persist for one second before
+  testing more expensive work.
+- Adds optional Smooth Cadence for suitable fractional targets, with strict target scheduling and all load protections
+  retained when the option is disabled.
+- Monitors a newly accepted higher level after its initial probe. If full load later collapses real-frame throughput,
+  Adaptive measures one second without generated work and restores the lower proven level only when cadence recovers.
+- Preserves the validated generation level and gameplay baseline across recovery and hard menu/focus stalls. Sustained
+  gameplay slowdowns instead rebase after normal one-second stabilization.
+- Warms all three shared temporal-history slots before Adaptive first generates output and keeps shared history current
+  while generated images are unavailable.
 
 ### Fixed
 
-- Prevents undefined behaviour in Vulkan command submission when a submission has no timeline semaphore. Previously,
-  lsfg-vk could access the end of an empty semaphore-value array.
-- Avoids scheduling per-output frame-generation GPU work while Gamescope has no generated-image slot available. A
-  shared history-only pre-pass still updates the model's temporal feature slots for every real frame, so counter-only
-  bypass does not leave older temporal slots untouched.
-- Resets Adaptive timing smoothing and fractional output credit when generated-image acquisition enters or leaves
-  Gamescope backoff, so a compositor discontinuity is not carried into later scheduling decisions.
-- Adds an opt-in Adaptive recovery policy that safely presents the reacquired image and original game image before
-  returning \`VK_ERROR_OUT_OF_DATE_KHR\`. This asks the game to rebuild its swapchain and create a fresh LSFG context
-  instead of carrying accumulated presentation latency across repeated Gamescope overlay transitions.
-- Avoids multi-second recovery delays caused by repeatedly missing the image-release window with zero-timeout probes.
-  After one second of fallback, the layer makes one bounded reacquisition attempt per second using the configured
-  acquire timeout. Swapchain recreation is requested only after one of those probes succeeds and only when
-  \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\`; Fixed mode is unchanged.
-- Prevents recovered Adaptive contexts from entering a recreate-and-retry loop by sharing a five-second recreation
-  cooldown across replacement swapchains.
-- Preserves the last validated Adaptive generation level across generated-image recovery and guarded swapchain
-  recreation. The existing real-frame warm-up still runs first; higher probes are then held for five seconds instead
-  of immediately rebuilding load from zero.
-- Uses temporal-history warm-up instead of an immediate swapchain rebuild for the first generated-image recovery in a
-  detected cadence discontinuity. A later stall can still use the guarded rebuild and carries the original recovery
-  baseline into the replacement context.
-- Freezes Adaptive multiplier evaluation while generated output is deliberately bypassed, preventing the cheaper
-  real-frame-only fallback from falsely validating a multiplier that was not actually running.
-- Tolerates ordinary Gamescope timing noise around the exact 80 -> 60 FPS divisor when validating a safe 2x constant
-  cadence, without accepting larger base-rate collapses.
-- Prevents a Steam-menu interruption during a ramp or bridge probe from imposing the same 15-second penalty as a
-  genuine throughput rejection, reducing extended real-frame-only periods after returning to the game.
-- Prevents strict Adaptive from remaining trapped at a higher multiplier that passed its initial probe but later
-  reduced real-frame throughput enough to perform worse than the previous validated level.
+- Prevents the existing Gamescope inference-bypass fallback from advancing temporal-history counters without refreshing
+  the shared feature slots used when generation resumes.
+- Prevents startup and post-recovery ghosting caused by partially initialized or stale shared temporal-history slots.
+- Prevents repeated menu transitions from accumulating stale Adaptive credit, validating a multiplier while generation
+  is bypassed, or immediately rebuilding the same harmful load after swapchain recovery.
+- Prevents a recovered context from entering a swapchain recreate-and-retry loop through a five-second cross-context
+  cooldown and a real-frame stabilization period.
+- Prevents strict Adaptive from remaining trapped at an accepted higher multiplier that later performs worse than the
+  previous proven level. Suspected delayed collapses are confirmed with one second of real-only measurement.
+- Starts delayed-load rescue below 80% base-rate retention while preserving persistence checks, so sustained
+  degradation is handled earlier without reacting to an isolated hitch.
+- Prevents Steam-menu interruptions from being counted as genuine probe failures or imposing unnecessary long
+  cooldowns.
+- Excludes implausibly fast DX12/VKD3D presentation bursts from cadence smoothing and pauses policy evaluation until
+  ordinary cadence returns.
 
-### Presentation diagnostics
+### Optional diagnostics
 
-- Adds opt-in timing diagnostics for frame scheduling, render-fence waits, swapchain image acquisition, GPU copy
-  submissions, and generated/original image presentation.
-- SteamOS traces identified generated-image acquisition as the operation dominating the observed Game Mode overlay
-  stalls, with the total presentation duration closely tracking that wait.
-- Diagnostics are disabled by default and do not perform timing or logging during normal runs.
-- Reports `phase=rearm-cooldown`, the rearm reason, remaining cooldown, baseline base rate, and whether rearming followed
-  interruption settling, a recovered real-only rate, or normal cooldown expiry.
-- Adds an opt-in \`LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS\` recovery path. When Gamescope cannot provide an extra image before the
-  configured timeout, lsfg-vk skips the remaining generated frames for that presentation, presents the original game
-  frame, and switches subsequent attempts to non-blocking probes before scheduling more inference. After one second of
-  fallback, it makes one bounded reacquisition attempt per second so it cannot remain phase-locked to an unavailable
-  point in the presentation cycle. The timeout remains disabled by default in the standalone engine; integrations can
-  opt in per launched game.
-- Aggregates expected non-blocking retry diagnostics. The first fallback reports \`backend_work=scheduled\`; subsequent
-  retries report \`backend_work=history-only\`. Periodic bounded attempts report
-  \`acquire_mode=bounded-retry\`. Adaptive recreation recovery emits \`generated-image-recovered
-  recovery_action=swapchain-recreate\`, followed by \`request-swapchain-recreation\`; the newly created context then
-  reports its normal startup history warm-up and stabilization. Recovery restoration emits
-  \`adaptive-recovery-resume-scheduled\`. Ramp/load decisions emit \`adaptive-ramp\`,
-  \`adaptive-ramp-accepted\`, or \`adaptive-load-shed\`. Bounded probing adds \`adaptive-bridge\`, bridge-result,
-  probe-abort, rearm, \`adaptive-ramp-backoff\`, and \`adaptive-ramp-early-retry\` diagnostics; cooldown suppression and
-  context lifecycles are logged separately. The recovery
-  entry reports the number of bypassed output frames without logging every retry.
+Presentation diagnostics remain disabled by default. When enabled, slow Vulkan operations, fallback/recovery state,
+Adaptive ramp decisions, fast-cadence bursts, and swapchain lifecycle events include a process-unique
+\`context=<ID>\` so concurrent or replacement contexts can be separated.
 
 With the isolated Decky LSFG-VK Experimental plugin, enable diagnostics with this Steam launch option:
 
@@ -216,8 +190,12 @@ LSFGVK_PRESENT_DIAGNOSTICS=1 LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local
 After reproducing the problem, extract the latest diagnostic entries with:
 
 \`\`\`bash
-grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-stabilization|adaptive-discontinuity|adaptive-recovery-resume-scheduled|adaptive-ramp|adaptive-ramp-accepted|adaptive-ramp-backoff|adaptive-ramp-early-retry|adaptive-load-shed|adaptive-bridge|adaptive-bridge-accepted|adaptive-bridge-rejected|adaptive-probe-aborted|adaptive-rearm-scheduled|adaptive-rearm-ready|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
+grep -aF "lsfg-vk: present diagnostics:" ~/.steam/steam/logs/console-linux.txt | tail -n 800
 \`\`\`
+
+See the
+[presentation-stall troubleshooting guide](https://github.com/eugeniosegala/lsfg-vk-experimental/blob/develop/docs/Troubleshooting.md#diagnosing-presentation-stalls)
+for recovery variables, event meanings, and focused filters. Disable diagnostics after collecting the trace.
 
 ### Install
 

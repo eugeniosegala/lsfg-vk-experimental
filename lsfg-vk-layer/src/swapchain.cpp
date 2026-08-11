@@ -11,6 +11,7 @@
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -28,6 +29,8 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include <unistd.h>
+
 using namespace lsfgvk;
 using namespace lsfgvk::layer;
 
@@ -40,10 +43,18 @@ namespace {
     constexpr double adaptiveIntervalSmoothing = 0.25;
     constexpr double adaptiveCadenceDropRatio = 2.0;
     constexpr size_t adaptiveCadenceDropFrameCount = 3;
+    // Steam/GameScope and some DX12 presentation paths can briefly submit a
+    // burst of images during an overlay, focus or display-mode transition.
+    // Those intervals are not useful gameplay cadence samples: accepting one
+    // would drag the smoothed base rate into the hundreds of FPS, causing the
+    // next ordinary frame to look like a false cadence drop.
+    constexpr double adaptiveTransientFastBurstCadenceRatio = 3.0;
+    constexpr double adaptiveTransientFastBurstTargetRatio = 2.0;
     constexpr double adaptiveRampThroughputTolerance = 0.95;
     constexpr double adaptiveRampBaseCollapseRatio = 0.70;
     constexpr double adaptiveRampMarginalGain = 1.15;
-    constexpr double adaptiveRampTargetSatisfiedRatio = 0.98;
+    constexpr double adaptiveRampTargetSatisfiedRatio = 0.95;
+    constexpr double adaptiveStrictLoadCollapseRatio = 0.80;
     constexpr double adaptiveBridgeMinimumOutputRetention = 0.85;
     constexpr double adaptiveBridgeMinimumBaseRetention = 0.40;
     constexpr double adaptiveBridgeTargetDeficitRatio = 0.90;
@@ -66,6 +77,7 @@ namespace {
     // cadence discontinuity to settle in Gamescope.
     constexpr auto adaptiveRecoveryStabilizationDuration = std::chrono::seconds(3);
     constexpr auto adaptiveRampEvaluationDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveTargetDeficitDuration = std::chrono::seconds(1);
     constexpr auto adaptiveRampStepDelay = std::chrono::milliseconds(250);
     constexpr auto adaptiveRampFirstRetryDelay = std::chrono::seconds(5);
     constexpr auto adaptiveRampSecondRetryDelay = std::chrono::seconds(15);
@@ -98,6 +110,37 @@ namespace {
     constexpr auto adaptiveInterruptedProbeCooldown = std::chrono::seconds(2);
     constexpr auto adaptiveStableRearmDuration = std::chrono::seconds(2);
     constexpr auto adaptiveRecreationCooldown = std::chrono::seconds(5);
+    constexpr auto adaptiveFastBurstDiagnosticInterval = std::chrono::seconds(1);
+
+    std::atomic<uint32_t> nextDiagnosticsContextSequence{1};
+    thread_local uint64_t activeDiagnosticsContextId{0};
+
+    uint64_t allocateDiagnosticsContextId() {
+        const auto processId = static_cast<uint64_t>(
+            static_cast<uint32_t>(::getpid())
+        );
+        const auto sequence = static_cast<uint64_t>(
+            nextDiagnosticsContextSequence.fetch_add(1, std::memory_order_relaxed)
+        );
+        return (processId << 32) | sequence;
+    }
+
+    class DiagnosticsContextScope {
+    public:
+        explicit DiagnosticsContextScope(const uint64_t contextId) :
+                previousContextId(activeDiagnosticsContextId) {
+            activeDiagnosticsContextId = contextId;
+        }
+
+        ~DiagnosticsContextScope() {
+            activeDiagnosticsContextId = this->previousContextId;
+        }
+
+        DiagnosticsContextScope(const DiagnosticsContextScope&) = delete;
+        DiagnosticsContextScope& operator=(const DiagnosticsContextScope&) = delete;
+    private:
+        uint64_t previousContextId;
+    };
 
     size_t generatedFrameCapacity(const ls::GameConf& profile) {
         const size_t multiplier = profile.adaptive
@@ -203,6 +246,7 @@ namespace {
 
         std::ostringstream message;
         message << "lsfg-vk: present diagnostics: operation=" << operation
+                << " context=" << activeDiagnosticsContextId
                 << " duration_ms=" << durationMs
                 << " frame=" << frameIndex
                 << " sequence=" << sequenceIndex;
@@ -222,6 +266,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=skip-generated-frames"
+                  << " context=" << activeDiagnosticsContextId
                   << " frame=" << frameIndex
                   << " sequence=" << sequenceIndex
                   << " pass=" << passIndex
@@ -243,6 +288,7 @@ namespace {
                   << ((warmupFrames || requestSwapchainRecreation)
                       ? "generated-image-recovered"
                       : "resume-generated-frames")
+                  << " context=" << activeDiagnosticsContextId
                   << " frame=" << frameIndex
                   << " sequence=" << sequenceIndex
                   << " pass=" << passIndex
@@ -262,6 +308,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=request-swapchain-recreation"
+                  << " context=" << activeDiagnosticsContextId
                   << " frame=" << frameIndex
                   << " sequence=" << sequenceIndex
                   << " reason=" << reason << '\n';
@@ -274,6 +321,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=history-warmup"
+                  << " context=" << activeDiagnosticsContextId
                   << " frame=" << frameIndex
                   << " sequence=" << sequenceIndex
                   << " reason=" << (recovery ? "recovery" : "startup")
@@ -289,6 +337,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-stabilization"
+                  << " context=" << activeDiagnosticsContextId
                   << " reason=" << reason
                   << " duration_ms="
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -302,6 +351,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-ramp"
+                  << " context=" << activeDiagnosticsContextId
                   << " previous_generated_limit=" << previousLimit
                   << " generated_limit=" << newLimit
                   << " base_fps=" << baseFps << '\n';
@@ -315,6 +365,7 @@ namespace {
 
         std::cerr << "lsfg-vk: present diagnostics: operation="
                   << (accepted ? "adaptive-ramp-accepted" : "adaptive-load-shed")
+                  << " context=" << activeDiagnosticsContextId
                   << " previous_generated_limit=" << previousLimit
                   << " tested_generated_limit=" << testedLimit
                   << " previous_base_fps=" << previousBaseFps
@@ -330,6 +381,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-bridge"
+                  << " context=" << activeDiagnosticsContextId
                   << " previous_generated_limit=" << previousLimit
                   << " tested_generated_limit=" << testedLimit
                   << " bridge_generated_limit=" << bridgeLimit
@@ -347,6 +399,7 @@ namespace {
 
         std::cerr << "lsfg-vk: present diagnostics: operation="
                   << (accepted ? "adaptive-bridge-accepted" : "adaptive-bridge-rejected")
+                  << " context=" << activeDiagnosticsContextId
                   << " baseline_generated_limit=" << baselineLimit
                   << " tested_generated_limit=" << testedLimit
                   << " baseline_base_fps=" << baselineBaseFps
@@ -360,6 +413,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-probe-aborted"
+                  << " context=" << activeDiagnosticsContextId
                   << " reason=" << reason
                   << " tested_generated_limit=" << testedLimit << '\n';
     }
@@ -373,6 +427,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=" << operation
+                  << " context=" << activeDiagnosticsContextId
                   << " reason=" << reason
                   << " consecutive_failures=" << failures;
         if (operation == "adaptive-rearm-scheduled") {
@@ -396,6 +451,44 @@ namespace {
         std::cerr << '\n';
     }
 
+    void logAdaptiveFastCadenceBurst(double baselineBaseFps,
+            double instantaneousBaseFps, double thresholdFps,
+            size_t ignoredFrames, size_t totalIgnoredFrames,
+            const DiagnosticsClock::duration duration) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << "adaptive-fast-cadence-burst"
+                  << " context=" << activeDiagnosticsContextId
+                  << " baseline_base_fps=" << baselineBaseFps
+                  << " instantaneous_base_fps=" << instantaneousBaseFps
+                  << " threshold_fps=" << thresholdFps
+                  << " ignored_frames=" << ignoredFrames
+                  << " total_ignored_frames=" << totalIgnoredFrames
+                  << " duration_ms="
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         duration
+                     ).count()
+                  << '\n';
+    }
+
+    void logAdaptiveFastCadenceBurstComplete(size_t totalIgnoredFrames,
+            const DiagnosticsClock::duration duration) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << "adaptive-fast-cadence-burst-complete"
+                  << " context=" << activeDiagnosticsContextId
+                  << " total_ignored_frames=" << totalIgnoredFrames
+                  << " duration_ms="
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                         duration
+                     ).count()
+                  << '\n';
+    }
+
     void logAdaptiveRampBackoff(size_t testedLimit, size_t failures,
             double baselineBaseFps,
             const std::chrono::steady_clock::duration delay) {
@@ -403,6 +496,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-ramp-backoff"
+                  << " context=" << activeDiagnosticsContextId
                   << " tested_generated_limit=" << testedLimit
                   << " consecutive_failures=" << failures
                   << " baseline_base_fps=" << baselineBaseFps
@@ -419,6 +513,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-ramp-early-retry"
+                  << " context=" << activeDiagnosticsContextId
                   << " tested_generated_limit=" << testedLimit
                   << " failed_base_fps=" << failedBaseFps
                   << " current_base_fps=" << currentBaseFps << '\n';
@@ -432,6 +527,7 @@ namespace {
 
         std::cerr << "lsfg-vk: present diagnostics: operation="
                   << "adaptive-recovery-resume-scheduled"
+                  << " context=" << activeDiagnosticsContextId
                   << " generated_limit=" << generationLimit
                   << " higher_probe_delay_ms="
                   << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -447,6 +543,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=" << operation
+                  << " context=" << activeDiagnosticsContextId
                   << " generated_limit=" << generatedLimit
                   << " baseline_base_fps=" << baselineBaseFps
                   << " current_base_fps=" << currentBaseFps
@@ -465,6 +562,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-rescue-start"
+                  << " context=" << activeDiagnosticsContextId
                   << " generated_limit=" << generatedLimit
                   << " baseline_base_fps=" << baselineBaseFps
                   << " current_base_fps=" << currentBaseFps
@@ -485,6 +583,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-rescue-complete"
+                  << " context=" << activeDiagnosticsContextId
                   << " previous_generated_limit=" << previousLimit
                   << " resumed_generated_limit=" << resumedLimit
                   << " requested_generated_limit=" << requestedLimit
@@ -507,6 +606,7 @@ namespace {
 
         std::cerr << "lsfg-vk: present diagnostics: operation="
                   << "adaptive-discontinuity-recovery-start"
+                  << " context=" << activeDiagnosticsContextId
                   << " generated_limit=" << generationLimit
                   << " baseline_base_fps=" << baselineBaseFps
                   << " reason=" << reason
@@ -525,6 +625,7 @@ namespace {
 
         std::cerr << "lsfg-vk: present diagnostics: operation="
                   << "adaptive-discontinuity-recovery-complete"
+                  << " context=" << activeDiagnosticsContextId
                   << " generated_limit=" << generationLimit
                   << " baseline_base_fps=" << baselineBaseFps
                   << " measured_base_fps=" << measuredBaseFps
@@ -537,6 +638,7 @@ namespace {
 
         std::cerr << "lsfg-vk: present diagnostics: operation="
                   << "adaptive-discontinuity-soft-recovery"
+                  << " context=" << activeDiagnosticsContextId
                   << " generated_limit=" << generationLimit
                   << " action=history-warmup"
                   << '\n';
@@ -547,6 +649,7 @@ namespace {
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=swapchain-recreation-suppressed"
+                  << " context=" << activeDiagnosticsContextId
                   << " reason=cooldown"
                   << " remaining_ms=" << remainingMs << '\n';
     }
@@ -604,6 +707,11 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
         instance(backend),
         adaptiveRecoveryState(recoveryState),
         profile(std::move(profile)), info(std::move(info)) {
+    this->diagnosticsContextId = allocateDiagnosticsContextId();
+    const DiagnosticsContextScope diagnosticsContext(
+        this->diagnosticsContextId
+    );
+
     if (this->profile.adaptive)
         this->adaptiveHistoryWarmupRemaining = adaptiveHistoryWarmupFrames;
 
@@ -665,7 +773,9 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     }
 
     if (presentDiagnosticsEnabled()) {
-        std::cerr << "lsfg-vk: present diagnostics enabled; slow operation threshold is "
+        std::cerr << "lsfg-vk: present diagnostics enabled; context="
+                  << activeDiagnosticsContextId
+                  << "; slow operation threshold is "
                   << presentDiagnosticsThresholdMs() << " ms\n";
     }
     if (const auto timeout = generatedImageAcquireTimeoutNs()) {
@@ -721,16 +831,92 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
         return {};
     }
 
+    const auto rawInterval = now - *this->adaptiveLastRealFrame;
     const double rawIntervalSeconds = std::chrono::duration<double>(
-        now - *this->adaptiveLastRealFrame
+        rawInterval
     ).count();
     this->adaptiveLastRealFrame = now;
+
+    const auto finishFastCadenceBurst = [&] {
+        if (!this->adaptiveFastBurstStartedAt)
+            return;
+
+        logAdaptiveFastCadenceBurstComplete(
+            this->adaptiveFastBurstFrames,
+            now - *this->adaptiveFastBurstStartedAt
+        );
+        this->adaptiveFastBurstStartedAt.reset();
+        this->adaptiveLastFastBurstDiagnostic.reset();
+        this->adaptiveFastBurstFrames = 0;
+        this->adaptiveFastBurstFramesSinceDiagnostic = 0;
+    };
 
     // Loading screens, suspension and base rates below 10 FPS do not provide
     // useful motion history. Present real frames until cadence has been stable
     // for a bounded interval instead of immediately reapplying model load.
-    if (rawIntervalSeconds <= 0.0 ||
-            rawIntervalSeconds > 1.0 / adaptiveMinimumBaseFps) {
+    if (rawIntervalSeconds <= 0.0) {
+        finishFastCadenceBurst();
+        this->beginAdaptiveStabilization(now, "cadence-stall");
+        return {};
+    }
+
+    const double baselineBaseFps = this->adaptiveSmoothedIntervalSeconds > 0.0
+        ? 1.0 / this->adaptiveSmoothedIntervalSeconds
+        : 0.0;
+    const double instantaneousBaseFps = 1.0 / rawIntervalSeconds;
+    const double fastBurstThresholdFps = std::max(
+        baselineBaseFps * adaptiveTransientFastBurstCadenceRatio,
+        static_cast<double>(this->profile.target_fps) *
+            adaptiveTransientFastBurstTargetRatio
+    );
+    if (instantaneousBaseFps > fastBurstThresholdFps) {
+        // Do not manufacture generated work for a transient that is already
+        // faster than the requested output. Preserve the proven gameplay
+        // baseline and pause evaluation windows which require real generated
+        // workload instead of letting wall-clock time validate an untested
+        // multiplier while DX12 is submitting the burst.
+        if (!this->adaptiveFastBurstStartedAt)
+            this->adaptiveFastBurstStartedAt = now;
+        this->adaptiveFastBurstFrames++;
+        this->adaptiveFastBurstFramesSinceDiagnostic++;
+
+        const auto pauseEvaluation = [&rawInterval](auto& deadline) {
+            if (deadline)
+                *deadline += rawInterval;
+        };
+        pauseEvaluation(this->adaptiveStabilizationUntil);
+        pauseEvaluation(this->adaptiveRampEvaluationAt);
+        pauseEvaluation(this->adaptiveStableCadenceEvaluationAt);
+        pauseEvaluation(this->adaptiveRescueUntil);
+
+        this->adaptiveOutputCredit = 0.0;
+        this->adaptiveCadenceDropFrames = 0;
+        this->adaptiveTargetDeficitSince.reset();
+        this->adaptiveStableRearmSince.reset();
+        this->adaptiveRearmImprovementSince.reset();
+        this->adaptiveStrictLoadCollapseSince.reset();
+        this->adaptiveStableCadenceOutsideRangeSince.reset();
+        this->adaptiveDiscontinuityStableSince.reset();
+
+        if (!this->adaptiveLastFastBurstDiagnostic ||
+                now - *this->adaptiveLastFastBurstDiagnostic >=
+                    adaptiveFastBurstDiagnosticInterval) {
+            logAdaptiveFastCadenceBurst(
+                baselineBaseFps,
+                instantaneousBaseFps,
+                fastBurstThresholdFps,
+                this->adaptiveFastBurstFramesSinceDiagnostic,
+                this->adaptiveFastBurstFrames,
+                now - *this->adaptiveFastBurstStartedAt
+            );
+            this->adaptiveLastFastBurstDiagnostic = now;
+            this->adaptiveFastBurstFramesSinceDiagnostic = 0;
+        }
+        return {};
+    }
+    finishFastCadenceBurst();
+
+    if (rawIntervalSeconds > 1.0 / adaptiveMinimumBaseFps) {
         this->beginAdaptiveStabilization(now, "cadence-stall");
         return {};
     }
@@ -815,6 +1001,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
             } else {
                 this->adaptiveGenerationLimit = 0;
                 this->adaptiveRampEvaluationAt.reset();
+                this->adaptiveTargetDeficitSince.reset();
                 this->adaptiveBridgeActive = false;
                 this->adaptiveBridgeBaselineLimit = 0;
                 this->adaptiveBridgeBaselineBaseFps = 0.0;
@@ -848,6 +1035,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
                  now - *this->adaptiveLastDiagnostic >= std::chrono::seconds(1))) {
             this->adaptiveLastDiagnostic = now;
             std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-plan"
+                      << " context=" << activeDiagnosticsContextId
                       << " base_fps=" << baseFps
                       << " target_fps=" << this->profile.target_fps
                       << " generated=0 max_generated=0"
@@ -866,6 +1054,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
                      now - *this->adaptiveLastDiagnostic >= std::chrono::seconds(1))) {
                 this->adaptiveLastDiagnostic = now;
                 std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-plan"
+                          << " context=" << activeDiagnosticsContextId
                           << " base_fps=" << baseFps
                           << " target_fps=" << this->profile.target_fps
                           << " generated=0 max_generated=0"
@@ -938,6 +1127,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
         this->adaptiveRescueBaselineBaseFps = 0.0;
         this->adaptiveRescueFromStrictLoad = false;
         this->adaptiveRescueStrictLoadLimit = 0;
+        this->adaptiveTargetDeficitSince.reset();
         this->adaptiveOutputCredit = 0.0;
         if (this->adaptiveRescueCooldownUntil)
             this->adaptiveStableCadenceRetryAt = this->adaptiveRescueCooldownUntil;
@@ -960,6 +1150,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
                  now - *this->adaptiveLastDiagnostic >= std::chrono::seconds(1))) {
             this->adaptiveLastDiagnostic = now;
             std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-plan"
+                      << " context=" << activeDiagnosticsContextId
                       << " base_fps=" << baseFps
                       << " target_fps=" << this->profile.target_fps
                       << " generated=0 max_generated=0"
@@ -1078,6 +1269,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
                         now + adaptiveRescueMeasurementDuration;
                     this->adaptiveRescueCooldownUntil =
                         now + adaptiveRescueCooldown;
+                    this->adaptiveTargetDeficitSince.reset();
                     this->adaptiveOutputCredit = 0.0;
                     logAdaptiveRescueStart(
                         generatedLimit,
@@ -1201,7 +1393,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
         this->adaptiveGenerationLimit > this->adaptiveStrictLoadBaselineLimit &&
         generatedFrameCount == this->adaptiveGenerationLimit &&
         baseFps < this->adaptiveStrictLoadBaselineBaseFps *
-            adaptiveRampBaseCollapseRatio &&
+            adaptiveStrictLoadCollapseRatio &&
         strictCurrentOutputFps < strictBaselineOutputFps *
             adaptiveRampMarginalGain &&
         (!this->adaptiveRescueCooldownUntil ||
@@ -1220,6 +1412,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
             this->adaptiveRescueStrictLoadLimit = collapsedLimit;
             this->adaptiveRescueUntil = now + adaptiveRescueMeasurementDuration;
             this->adaptiveRescueCooldownUntil = now + adaptiveRescueCooldown;
+            this->adaptiveTargetDeficitSince.reset();
             this->adaptiveStrictLoadBaselineLimit = 0;
             this->adaptiveStrictLoadBaselineBaseFps = 0.0;
             this->adaptiveStrictLoadCollapseSince.reset();
@@ -1247,6 +1440,7 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
             ? *this->adaptiveRearmNotBefore - now
             : DiagnosticsClock::duration::zero();
         std::cerr << "lsfg-vk: present diagnostics: operation=adaptive-plan"
+                  << " context=" << activeDiagnosticsContextId
                   << " base_fps=" << baseFps
                   << " target_fps=" << this->profile.target_fps
                   << " generated=" << generatedFrameCount
@@ -1283,6 +1477,17 @@ void Swapchain::resetAdaptiveScheduler(
 
     this->adaptiveLastRealFrame = now;
     this->adaptiveSmoothedIntervalSeconds = 0.0;
+    if (this->adaptiveFastBurstStartedAt) {
+        logAdaptiveFastCadenceBurstComplete(
+            this->adaptiveFastBurstFrames,
+            now - *this->adaptiveFastBurstStartedAt
+        );
+    }
+    this->adaptiveFastBurstStartedAt.reset();
+    this->adaptiveLastFastBurstDiagnostic.reset();
+    this->adaptiveFastBurstFrames = 0;
+    this->adaptiveFastBurstFramesSinceDiagnostic = 0;
+    this->adaptiveTargetDeficitSince.reset();
     this->adaptiveOutputCredit = 0.0;
 }
 
@@ -1321,6 +1526,7 @@ void Swapchain::restoreAdaptiveGenerationLimit(
     this->adaptiveGenerationLimit = restoredLimit;
     this->adaptiveRampPreviousLimit = restoredLimit;
     this->adaptiveRampEvaluationAt.reset();
+    this->adaptiveTargetDeficitSince.reset();
     this->adaptiveRampBaselineBaseFps = 0.0;
     this->adaptiveBridgeActive = false;
     this->adaptiveBridgeBaselineLimit = 0;
@@ -1377,6 +1583,7 @@ void Swapchain::beginAdaptiveDiscontinuityRecovery(
         : now + adaptiveDiscontinuityMaximumDuration;
     this->adaptiveDiscontinuityStableSince.reset();
     this->adaptiveDiscontinuitySoftRecoveryAttempted = softRecoveryAttempted;
+    this->adaptiveTargetDeficitSince.reset();
     this->adaptiveOutputCredit = 0.0;
 
     const auto remainingDuration =
@@ -1409,6 +1616,7 @@ void Swapchain::scheduleAdaptiveRearm(
     this->adaptiveRearmReason = reason;
     this->adaptiveRearmBaselineBaseFps = baselineBaseFps;
     this->adaptiveRearmFallbackLimit = fallbackLimit;
+    this->adaptiveTargetDeficitSince.reset();
     this->adaptiveNextRampAt = this->adaptiveRearmNotBefore;
     logAdaptiveRearm(
         "adaptive-rearm-scheduled",
@@ -1584,8 +1792,10 @@ void Swapchain::updateAdaptiveGenerationLimit(
 
     // A validated constant cadence already supplies the desired smoothness.
     // Do not probe a higher generated-frame level until it becomes unsuitable.
-    if (this->adaptiveStableCadenceLimit)
+    if (this->adaptiveStableCadenceLimit) {
+        this->adaptiveTargetDeficitSince.reset();
         return;
+    }
 
     if (this->adaptiveRampEvaluationAt) {
         if (now < *this->adaptiveRampEvaluationAt)
@@ -1760,13 +1970,26 @@ void Swapchain::updateAdaptiveGenerationLimit(
     // falls far enough that this capacity is no longer sufficient.
     const double validatedOutputFps = baseFps *
         static_cast<double>(this->adaptiveGenerationLimit + 1);
-    if (validatedOutputFps >=
-            static_cast<double>(this->profile.target_fps) *
-                adaptiveRampTargetSatisfiedRatio)
+    const bool targetSatisfied = validatedOutputFps >=
+        static_cast<double>(this->profile.target_fps) *
+            adaptiveRampTargetSatisfiedRatio;
+    if (targetSatisfied) {
+        this->adaptiveTargetDeficitSince.reset();
+        return;
+    }
+
+    if (this->adaptiveGenerationLimit >= configuredLimit) {
+        this->adaptiveTargetDeficitSince.reset();
+        return;
+    }
+    if (!this->adaptiveTargetDeficitSince) {
+        this->adaptiveTargetDeficitSince = now;
+        return;
+    }
+    if (now - *this->adaptiveTargetDeficitSince <
+            adaptiveTargetDeficitDuration)
         return;
 
-    if (this->adaptiveGenerationLimit >= configuredLimit)
-        return;
     if (this->adaptiveNextRampAt && now < *this->adaptiveNextRampAt) {
         const size_t nextLimit = this->adaptiveGenerationLimit + 1;
         const bool failedRampRecovered =
@@ -1790,6 +2013,7 @@ void Swapchain::updateAdaptiveGenerationLimit(
     this->adaptiveRampBaselineBaseFps = baseFps;
     this->adaptiveGenerationLimit++;
     this->adaptiveRampEvaluationAt = now + adaptiveRampEvaluationDuration;
+    this->adaptiveTargetDeficitSince.reset();
     this->adaptiveOutputCredit = 0.0;
     logAdaptiveRamp(
         this->adaptiveRampPreviousLimit,
@@ -1802,6 +2026,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         VkQueue queue, VkSwapchainKHR swapchain,
         void* next_chain, uint32_t imageIdx,
         const std::vector<VkSemaphore>& semaphores) {
+    const DiagnosticsContextScope diagnosticsContext(
+        this->diagnosticsContextId
+    );
+
     if (this->swapchainRecreationRequested) {
         logSwapchainRecreation(this->fidx, this->idx, "pending");
         return VK_ERROR_OUT_OF_DATE_KHR;

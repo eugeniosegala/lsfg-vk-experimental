@@ -28,8 +28,8 @@ Next is a list of all available **profile** configuration options:
   Every real frame is still presented. If the target would require a higher ratio, output remains below the target
   instead of adding the more artifact-prone generated frames. Adaptive also ramps toward this limit after startup or
   recovery and can temporarily reduce it when added generation load harms real-frame throughput. If the compositor's
-  cadence divisor makes the first step misleading, it can make one bounded bridge test at the next step. Rejected or
-  interrupted first-step probes wait 15 seconds and require two seconds of stable cadence before retrying. Repeated
+  cadence divisor makes the first step misleading, it can make one bounded bridge test at the next step. Rejected
+  first-step probes wait 15 seconds; interrupted probes can rearm after two seconds of stable cadence. Repeated
   failures at a higher multiplier back off progressively from 5 to 15, 30, and then 60 seconds, unless the measured
   base rate improves by at least 15%. After a generated-image recovery, Adaptive preserves the last validated level
   through the safety warm-up and waits five seconds before probing a higher level. Multiplier policy is frozen while
@@ -38,7 +38,9 @@ Next is a list of all available **profile** configuration options:
   real-only and generated frames; it falls back to strict target scheduling if the higher constant workload is not
   sustainable. An abrupt menu, focus, or display transition preserves the previous real-rate baseline and proven
   generation level. Adaptive restores that level only after one second at least 90% of the earlier base rate; after
-  five seconds without recovery it discards the stale baseline and ramps cleanly from zero. (Default: `3`)
+  five seconds without recovery it discards the stale baseline and ramps cleanly from zero. A validated level that
+  reaches at least 95% of the target is treated as sufficient, and a remaining deficit must persist for one second
+  before a higher multiplier is tested. (Default: `3`)
 - **Smooth Cadence / `adaptive_stable_cadence`**: When enabled, Adaptive may use the validated constant-cadence policy
   described above instead of alternating generated-frame counts to match a fractional target exactly. Strict scheduling
   settles first, and constant cadence is considered only when it already needs at least 95% of the corresponding integer
@@ -90,7 +92,7 @@ If you do not wish to use a configuration file, you can also set configuration o
 - `LSFGVK_ADAPTIVE`: Set to `1` to enable Adaptive Frame Generation.
 - `LSFGVK_TARGET_FPS`: Adaptive displayed-framerate target.
 - `LSFGVK_ADAPTIVE_MAX_MULTIPLIER`: Maximum Adaptive multiplier from `2` to `4`.
-- `LSFGVK_ADAPTIVE_STABLE_CADENCE`: Set to `0` to disable stable-cadence validation in Adaptive mode.
+- `LSFGVK_ADAPTIVE_STABLE_CADENCE`: Set to `1` to enable Smooth Cadence in Adaptive mode. It defaults to disabled.
 - `LSFGVK_FLOW_SCALE`: Flow scale value.
 - `LSFGVK_PERFORMANCE_MODE`: If set to `1`, performance mode will be enabled.
 - `LSFGVK_PACING`: Pacing mode to use.
