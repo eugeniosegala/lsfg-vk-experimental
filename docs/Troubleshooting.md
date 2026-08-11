@@ -72,6 +72,8 @@ the release window, the layer makes one bounded reacquisition attempt per second
 The real game frames continue updating the two source images. Fixed mode resumes automatically as soon as a probe
 succeeds. By default, Adaptive mode first presents three real frames while repopulating its deepest temporal-history
 ring, then attempts generated output again. The same three-frame warm-up runs when an Adaptive context first starts.
+When Adaptive is capped at 2x and has already validated that level, a short hard gameplay hitch of up to 250 ms uses
+the same three-frame history refresh while retaining 2x. Longer interruptions retain the full menu/focus recovery.
 For example:
 
 ```bash
@@ -107,7 +109,7 @@ Clear the Steam log before reproducing the problem. After reproducing it, extrac
 with:
 
 ```bash
-grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-fast-cadence-burst|adaptive-stabilization|adaptive-ramp|adaptive-ramp-accepted|adaptive-load-shed|adaptive-bridge|adaptive-bridge-accepted|adaptive-bridge-rejected|adaptive-probe-aborted|adaptive-rearm-scheduled|adaptive-rearm-ready|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
+grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-plan|adaptive-discontinuity|adaptive-stabilization|adaptive-gameplay-hitch|adaptive-fast-cadence-burst|adaptive-stable-cadence|adaptive-ramp|adaptive-recovery-resume-scheduled|adaptive-load-shed|adaptive-rescue|adaptive-bridge|adaptive-probe-aborted|adaptive-rearm|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
 ```
 
 `adaptive-stabilization` and `adaptive-ramp` show the normal restart sequence. `adaptive-load-shed` means a tested
@@ -118,6 +120,8 @@ measured result. `adaptive-rearm-scheduled` means another probe will wait at lea
 swapchain-recreation cooldown prevented a repeated recreation request.
 `adaptive-fast-cadence-burst` means an implausibly short DX12/Vulkan presentation interval was excluded from the base
 rate. Its aggregated frame counts and matching completion record show how long policy evaluation remained paused.
+`adaptive-gameplay-hitch-recovery` means a validated 2x Adaptive policy kept its level through a short gameplay hitch
+and refreshed temporal history instead of entering the longer menu/focus recovery path.
 Every presentation-diagnostic record includes a `context=<ID>` field. Use it to separate concurrent or replacement
 swapchains before comparing ramp, recovery, and presentation events; records with different context IDs may describe
 different windows or an old context being destroyed while its replacement starts.

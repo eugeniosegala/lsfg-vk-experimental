@@ -106,6 +106,12 @@ namespace {
     constexpr double adaptiveDiscontinuityRecoveredBaseRatio = 0.90;
     constexpr auto adaptiveDiscontinuityStableDuration = std::chrono::seconds(1);
     constexpr auto adaptiveDiscontinuityMaximumDuration = std::chrono::seconds(5);
+    // A brief gameplay hitch does not need the full menu/focus recovery when
+    // Adaptive has already proven its only available 2x generation level.
+    // Refresh temporal history and resume that level; longer interruptions
+    // retain the guarded discontinuity path below.
+    constexpr auto adaptiveTwoXGameplayHitchMaximumDuration =
+        std::chrono::milliseconds(250);
     constexpr auto adaptiveFailedProbeCooldown = std::chrono::seconds(15);
     constexpr auto adaptiveInterruptedProbeCooldown = std::chrono::seconds(2);
     constexpr auto adaptiveStableRearmDuration = std::chrono::seconds(2);
@@ -644,6 +650,25 @@ namespace {
                   << '\n';
     }
 
+    void logAdaptiveTwoXGameplayHitchRecovery(size_t generationLimit,
+            double baselineBaseFps,
+            const std::chrono::steady_clock::duration rawInterval) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << "adaptive-gameplay-hitch-recovery"
+                  << " context=" << activeDiagnosticsContextId
+                  << " generated_limit=" << generationLimit
+                  << " baseline_base_fps=" << baselineBaseFps
+                  << " raw_interval_ms="
+                  << std::chrono::duration<double, std::milli>(
+                         rawInterval
+                     ).count()
+                  << " history_warmup_frames=" << adaptiveHistoryWarmupFrames
+                  << '\n';
+    }
+
     void logSwapchainRecreationSuppressed(double remainingMs) {
         if (!presentDiagnosticsEnabled())
             return;
@@ -917,6 +942,33 @@ std::vector<float> Swapchain::generatedFrameTimestamps(
     finishFastCadenceBurst();
 
     if (rawIntervalSeconds > 1.0 / adaptiveMinimumBaseFps) {
+        const size_t configuredGenerationLimit = std::min(
+            this->destinationImages.size(),
+            this->profile.adaptive_max_multiplier - 1
+        );
+        const size_t validatedGenerationLimit =
+            this->validatedAdaptiveGenerationLimit();
+        const bool shortTwoXGameplayHitch =
+            configuredGenerationLimit == 1 &&
+            validatedGenerationLimit == 1 &&
+            rawInterval <= adaptiveTwoXGameplayHitchMaximumDuration;
+        if (shortTwoXGameplayHitch) {
+            // Keep the proven 2x policy, but feed the model fresh real-frame
+            // history before generating again. If Gamescope is actually
+            // withholding generated images, the existing bounded acquire and
+            // swapchain recovery path will still take over after this warmup.
+            this->adaptiveHistoryWarmupRemaining =
+                adaptiveHistoryWarmupFrames;
+            this->adaptiveHistoryWarmupIsRecovery = true;
+            logAdaptiveTwoXGameplayHitchRecovery(
+                validatedGenerationLimit,
+                baselineBaseFps,
+                rawInterval
+            );
+            this->resetAdaptiveScheduler(now);
+            return {};
+        }
+
         this->beginAdaptiveStabilization(now, "cadence-stall");
         return {};
     }

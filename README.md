@@ -108,10 +108,10 @@ update, launch-wrapper, and Heroic instructions instead of manually extracting t
 1. Purchase and install [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) through Steam.
 2. Download the versioned Linux archive from this fork's
    [GitHub Releases](https://github.com/eugeniosegala/lsfg-vk-experimental/releases).
-3. Extract it into your local prefix. For version `2.0.0-dev28-experimental.18`:
+3. Extract it into your local prefix. For version `2.0.0-dev28-experimental.19`:
 
    ```bash
-   tar -xJf lsfg-vk-2.0.0-dev28-experimental.18-linux.tar.xz -C ~/.local
+   tar -xJf lsfg-vk-2.0.0-dev28-experimental.19-linux.tar.xz -C ~/.local
    ```
 
 Keep track of the extracted files so the direct installation can be removed or rolled back later.
