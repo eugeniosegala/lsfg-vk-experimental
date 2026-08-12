@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(lsfg-vk LANGUAGES CXX)
 include(GNUInstallDirs)
+include(CTest)
 
 # === READ HERE FOR BUILD OPTIONS ===
 option(LSFGVK_BUILD_VK_LAYER     "Build the Vulkan layer"            ON)
@@ -47,9 +48,14 @@ if(LSFGVK_TESTING_RENDERDOC)
     add_compile_definitions(LSFGVK_TESTING_RENDERDOC)
 endif()
 
-add_subdirectory(lsfg-vk-common)
-add_subdirectory(lsfg-vk-backend)
-if(LSFGVK_BUILD_VK_LAYER)
+if(LSFGVK_BUILD_VK_LAYER OR LSFGVK_BUILD_UI OR LSFGVK_BUILD_CLI OR
+        LSFGVK_INSTALL_DEVELOP)
+    add_subdirectory(lsfg-vk-common)
+endif()
+if(LSFGVK_BUILD_VK_LAYER OR LSFGVK_INSTALL_DEVELOP)
+    add_subdirectory(lsfg-vk-backend)
+endif()
+if(LSFGVK_BUILD_VK_LAYER OR BUILD_TESTING)
     add_subdirectory(lsfg-vk-layer)
 endif()
 if(LSFGVK_BUILD_UI)

@@ -11,6 +11,7 @@
 #include "lsfg-vk-common/vulkan/semaphore.hpp"
 #include "lsfg-vk-common/vulkan/timeline_semaphore.hpp"
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
+#include "adaptive_scheduler.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -88,49 +89,6 @@ namespace lsfgvk::layer {
             return this->diagnosticsContextId;
         }
     private:
-        /// calculate generated-frame timestamps for the current real frame
-        std::vector<float> generatedFrameTimestamps(
-            std::chrono::steady_clock::time_point now
-        );
-        /// reset timing state after a compositor presentation discontinuity
-        void resetAdaptiveScheduler(
-            std::chrono::steady_clock::time_point now
-        );
-        /// run real frames only while game/compositor cadence settles
-        void beginAdaptiveStabilization(
-            std::chrono::steady_clock::time_point now,
-            std::string_view reason
-        );
-        /// rearm an interrupted or rejected probe once its recovery policy allows
-        void scheduleAdaptiveRearm(
-            std::chrono::steady_clock::time_point now,
-            std::string_view reason,
-            size_t fallbackLimit = 0,
-            double baselineBaseFps = 0.0
-        );
-        /// return the generation level that was proven before a transient probe
-        size_t validatedAdaptiveGenerationLimit() const;
-        /// retain a proven level after recovery while delaying higher probes
-        void restoreAdaptiveGenerationLimit(
-            std::chrono::steady_clock::time_point now,
-            size_t generationLimit,
-            std::string_view reason
-        );
-        /// retain a proven pre-overlay cadence until real presentation settles
-        void beginAdaptiveDiscontinuityRecovery(
-            std::chrono::steady_clock::time_point now,
-            size_t generationLimit,
-            double baselineBaseFps,
-            std::optional<std::chrono::steady_clock::time_point> deadline,
-            bool softRecoveryAttempted,
-            std::string_view reason
-        );
-        /// ramp generated-frame load and reject counterproductive steps
-        void updateAdaptiveGenerationLimit(
-            std::chrono::steady_clock::time_point now,
-            double baseFps
-        );
-
         std::vector<vk::Image> sourceImages;
         std::vector<vk::Image> destinationImages;
         ls::lazy<vk::TimelineSemaphore> syncSemaphore;
@@ -152,68 +110,7 @@ namespace lsfgvk::layer {
         size_t generatedImageAcquireBypassCount{0};
         std::optional<std::chrono::steady_clock::time_point> generatedImageAcquireLastBoundedProbe;
         bool swapchainRecreationRequested{false};
-        size_t adaptiveHistoryWarmupRemaining{0};
-        bool adaptiveHistoryWarmupIsRecovery{false};
-
-        std::optional<std::chrono::steady_clock::time_point> adaptiveLastRealFrame;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveLastDiagnostic;
-        std::optional<std::chrono::steady_clock::time_point>
-            adaptiveFastBurstStartedAt;
-        std::optional<std::chrono::steady_clock::time_point>
-            adaptiveLastFastBurstDiagnostic;
-        size_t adaptiveFastBurstFrames{0};
-        size_t adaptiveFastBurstFramesSinceDiagnostic{0};
-        double adaptiveSmoothedIntervalSeconds{0.0};
-        double adaptiveOutputCredit{0.0};
-        std::optional<std::chrono::steady_clock::time_point> adaptiveStabilizationUntil;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveNextRampAt;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveRampEvaluationAt;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveTargetDeficitSince;
-        size_t adaptiveGenerationLimit{0};
-        size_t adaptiveRampPreviousLimit{0};
-        size_t adaptiveCadenceDropFrames{0};
-        double adaptiveRampBaselineBaseFps{0.0};
-        bool adaptiveBridgeActive{false};
-        size_t adaptiveBridgeBaselineLimit{0};
-        double adaptiveBridgeBaselineBaseFps{0.0};
-        bool adaptiveRearmRequired{false};
-        std::optional<std::chrono::steady_clock::time_point> adaptiveRearmNotBefore;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveStableRearmSince;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveRearmImprovementSince;
-        std::string adaptiveRearmReason;
-        double adaptiveRearmBaselineBaseFps{0.0};
-        // The last validated generation level to retain while a higher adaptive
-        // probe settles after interruption or cools down after rejection.
-        size_t adaptiveRearmFallbackLimit{0};
-        // A bounded preference for a constant generated-frame cadence. This is
-        // used only when the strict target scheduler would otherwise alternate
-        // between frame counts (for example, 60 real FPS toward a 90 FPS target).
-        std::optional<size_t> adaptiveStableCadenceLimit;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveStableCadenceEvaluationAt;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveStableCadenceOutsideRangeSince;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveStableCadenceRetryAt;
-        double adaptiveStableCadenceBaselineBaseFps{0.0};
-        std::optional<std::chrono::steady_clock::time_point> adaptiveRescueUntil;
-        std::optional<std::chrono::steady_clock::time_point> adaptiveRescueCooldownUntil;
-        size_t adaptiveRescuePreviousLimit{0};
-        double adaptiveRescueBaselineBaseFps{0.0};
-        bool adaptiveRescueFromStrictLoad{false};
-        size_t adaptiveRescueStrictLoadLimit{0};
-        size_t adaptiveStrictLoadBaselineLimit{0};
-        double adaptiveStrictLoadBaselineBaseFps{0.0};
-        std::optional<std::chrono::steady_clock::time_point>
-            adaptiveStrictLoadCollapseSince;
-        std::optional<std::chrono::steady_clock::time_point>
-            adaptiveDiscontinuityRecoveryDeadline;
-        std::optional<std::chrono::steady_clock::time_point>
-            adaptiveDiscontinuityStableSince;
-        size_t adaptiveDiscontinuityGenerationLimit{0};
-        double adaptiveDiscontinuityBaselineBaseFps{0.0};
-        bool adaptiveDiscontinuitySoftRecoveryAttempted{false};
-        size_t adaptiveConsecutiveProbeFailures{0};
-        size_t adaptiveLastFailedRampLimit{0};
-        size_t adaptiveConsecutiveRampFailures{0};
-        double adaptiveFailedRampBaselineBaseFps{0.0};
+        std::optional<AdaptiveScheduler> adaptiveScheduler;
         AdaptiveRecoveryState* adaptiveRecoveryState{};
         uint64_t diagnosticsContextId{0};
 

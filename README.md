@@ -41,6 +41,8 @@ it does not introduce a separate frame-generation model. For the established 1.x
 
 See [Configuration](docs/Configuration.md) for the exact settings and controller limits, and
 [Troubleshooting](docs/Troubleshooting.md) for diagnostic and recovery commands.
+Developers can run the GPU-independent scheduler tests and use the runtime
+[Adaptive validation matrix](docs/Adaptive-Validation.md) before publishing a build.
 
 ### Adaptive Frame Generation quick start
 
