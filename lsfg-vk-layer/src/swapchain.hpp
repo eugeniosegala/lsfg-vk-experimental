@@ -43,10 +43,13 @@ namespace lsfgvk::layer {
 
     /// Recovery coordination that survives a game-owned swapchain recreation.
     struct AdaptiveRecoveryState {
-        std::optional<std::chrono::steady_clock::time_point> lastSwapchainRecreation;
+        AdaptivePresentationRecoveryPolicy presentationRecoveryPolicy;
         bool nextContextIsRecovery{false};
         size_t nextContextGenerationLimit{0};
+        size_t nextContextLoadFallbackGenerationLimit{0};
+        double nextContextLoadBaselineBaseFps{0.0};
         bool nextContextIsDiscontinuityRecovery{false};
+        size_t nextContextDiscontinuityFallbackGenerationLimit{0};
         double nextContextDiscontinuityBaselineBaseFps{0.0};
         std::optional<std::chrono::steady_clock::time_point>
             nextContextDiscontinuityDeadline;
@@ -67,7 +70,10 @@ namespace lsfgvk::layer {
             ls::GameConf profile, SwapchainInfo info,
             AdaptiveRecoveryState* recoveryState, bool recoveryContext,
             size_t recoveryGenerationLimit,
+            size_t recoveryLoadFallbackGenerationLimit,
+            double recoveryLoadBaselineBaseFps,
             bool discontinuityRecoveryContext,
+            size_t discontinuityFallbackGenerationLimit,
             double discontinuityBaselineBaseFps,
             std::optional<std::chrono::steady_clock::time_point>
                 discontinuityDeadline,

@@ -751,13 +751,14 @@ namespace {
 
     SwapchainAdaptiveSchedulerDiagnostics adaptiveSchedulerDiagnostics;
 
-    void logSwapchainRecreationSuppressed(double remainingMs) {
+    void logSwapchainRecreationSuppressed(const std::string_view reason,
+            const double remainingMs) {
         if (!presentDiagnosticsEnabled())
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation=swapchain-recreation-suppressed"
                   << " context=" << activeDiagnosticsContextId
-                  << " reason=cooldown"
+                  << " reason=" << reason
                   << " remaining_ms=" << remainingMs << '\n';
     }
 
@@ -837,7 +838,10 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
             AdaptiveRecoveryState* recoveryState, bool recoveryContext,
             const size_t recoveryGenerationLimit,
+            const size_t recoveryLoadFallbackGenerationLimit,
+            const double recoveryLoadBaselineBaseFps,
             const bool discontinuityRecoveryContext,
+            const size_t discontinuityFallbackGenerationLimit,
             const double discontinuityBaselineBaseFps,
             const std::optional<std::chrono::steady_clock::time_point>
                 discontinuityDeadline,
@@ -956,6 +960,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
                 this->adaptiveScheduler->beginDiscontinuityRecovery(
                     schedulerNow,
                     recoveryGenerationLimit,
+                    discontinuityFallbackGenerationLimit,
                     discontinuityBaselineBaseFps,
                     discontinuityDeadline,
                     discontinuitySoftRecoveryAttempted,
@@ -965,7 +970,9 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
                 this->adaptiveScheduler->restoreGenerationLimit(
                     schedulerNow,
                     recoveryGenerationLimit,
-                    "swapchain-recreation"
+                    "swapchain-recreation",
+                    recoveryLoadFallbackGenerationLimit,
+                    recoveryLoadBaselineBaseFps
                 );
             }
         }
@@ -1095,10 +1102,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 this->profile.adaptive &&
                 this->adaptiveScheduler->discontinuityRecoveryActive();
             size_t recoveryGenerationLimit = 0;
+            AdaptiveGenerationLoadBaseline recoveryLoadBaseline;
             if (this->profile.adaptive) {
                 recoveryGenerationLimit = discontinuityRecoveryActive
                     ? this->adaptiveScheduler->discontinuityGenerationLimit()
                     : this->adaptiveScheduler->validatedGenerationLimit();
+                recoveryLoadBaseline =
+                    this->adaptiveScheduler->generationLoadBaseline();
             }
             const bool useSoftDiscontinuityRecovery =
                 discontinuityRecoveryActive &&
@@ -1107,39 +1117,53 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 this->adaptiveScheduler->markDiscontinuitySoftRecoveryAttempted();
                 logAdaptiveDiscontinuitySoftRecovery(recoveryGenerationLimit);
             }
-            if (this->profile.adaptive && presentRecoveryRecreateEnabled() &&
-                    !useSoftDiscontinuityRecovery) {
+            if (this->profile.adaptive && presentRecoveryRecreateEnabled()) {
                 const auto recoveryNow = DiagnosticsClock::now();
-                if (!this->adaptiveRecoveryState ||
-                        !this->adaptiveRecoveryState->lastSwapchainRecreation ||
-                        recoveryNow -
-                            *this->adaptiveRecoveryState->lastSwapchainRecreation >=
-                            AdaptiveScheduler::recreationCooldown()) {
-                    requestSwapchainRecreation = true;
-                    if (this->adaptiveRecoveryState) {
-                        this->adaptiveRecoveryState->lastSwapchainRecreation = recoveryNow;
-                        this->adaptiveRecoveryState->nextContextIsRecovery = true;
-                        this->adaptiveRecoveryState->nextContextGenerationLimit =
-                            recoveryGenerationLimit;
-                        this->adaptiveRecoveryState->nextContextIsDiscontinuityRecovery =
-                            discontinuityRecoveryActive;
-                        this->adaptiveRecoveryState->
-                            nextContextDiscontinuityBaselineBaseFps =
-                                this->adaptiveScheduler->
-                                    discontinuityBaselineBaseFps();
-                        this->adaptiveRecoveryState->nextContextDiscontinuityDeadline =
-                            this->adaptiveScheduler->discontinuityDeadline();
-                        this->adaptiveRecoveryState->
-                            nextContextDiscontinuitySoftRecoveryAttempted =
-                                this->adaptiveScheduler->
-                                    discontinuitySoftRecoveryAttempted();
-                    }
-                } else {
-                    const auto elapsed = recoveryNow -
-                        *this->adaptiveRecoveryState->lastSwapchainRecreation;
+                const auto recoveryDecision = this->adaptiveRecoveryState
+                    ? this->adaptiveRecoveryState->presentationRecoveryPolicy.
+                        recover(recoveryNow, true)
+                    : AdaptivePresentationRecoveryDecision{};
+                requestSwapchainRecreation = recoveryDecision.action ==
+                    AdaptivePresentationRecoveryAction::RecreateSwapchain;
+                if (requestSwapchainRecreation && this->adaptiveRecoveryState) {
+                    this->adaptiveRecoveryState->nextContextIsRecovery = true;
+                    this->adaptiveRecoveryState->nextContextGenerationLimit =
+                        recoveryGenerationLimit;
+                    this->adaptiveRecoveryState->
+                        nextContextLoadFallbackGenerationLimit =
+                            recoveryLoadBaseline.fallbackGenerationLimit;
+                    this->adaptiveRecoveryState->nextContextLoadBaselineBaseFps =
+                        recoveryLoadBaseline.baseFps;
+                    this->adaptiveRecoveryState->nextContextIsDiscontinuityRecovery =
+                        discontinuityRecoveryActive;
+                    this->adaptiveRecoveryState->
+                        nextContextDiscontinuityFallbackGenerationLimit =
+                            this->adaptiveScheduler->
+                                discontinuityFallbackGenerationLimit();
+                    this->adaptiveRecoveryState->
+                        nextContextDiscontinuityBaselineBaseFps =
+                            this->adaptiveScheduler->
+                                discontinuityBaselineBaseFps();
+                    this->adaptiveRecoveryState->nextContextDiscontinuityDeadline =
+                        this->adaptiveScheduler->discontinuityDeadline();
+                    this->adaptiveRecoveryState->
+                        nextContextDiscontinuitySoftRecoveryAttempted =
+                            this->adaptiveScheduler->
+                                discontinuitySoftRecoveryAttempted();
+                } else if (recoveryDecision.action ==
+                        AdaptivePresentationRecoveryAction::InPlaceCooldown) {
                     logSwapchainRecreationSuppressed(
+                        "cooldown",
                         std::chrono::duration<double, std::milli>(
-                            AdaptiveScheduler::recreationCooldown() - elapsed
+                            recoveryDecision.recreationCooldownRemaining
+                        ).count()
+                    );
+                } else if (!useSoftDiscontinuityRecovery) {
+                    logSwapchainRecreationSuppressed(
+                        "first-recovery",
+                        std::chrono::duration<double, std::milli>(
+                            AdaptivePresentationRecoveryPolicy::
+                                repeatedRecoveryWindow()
                         ).count()
                     );
                 }
@@ -1165,7 +1189,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                     this->adaptiveScheduler->restoreGenerationLimit(
                         recoveryNow,
                         recoveryGenerationLimit,
-                        "generated-image-recovery"
+                        "generated-image-recovery",
+                        recoveryLoadBaseline.fallbackGenerationLimit,
+                        recoveryLoadBaseline.baseFps
                     );
                 }
             } else {

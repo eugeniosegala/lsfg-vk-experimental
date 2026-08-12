@@ -228,8 +228,15 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     const bool recoveryContext = this->adaptiveRecoveryState.nextContextIsRecovery;
     const size_t recoveryGenerationLimit =
         this->adaptiveRecoveryState.nextContextGenerationLimit;
+    const size_t recoveryLoadFallbackGenerationLimit =
+        this->adaptiveRecoveryState.nextContextLoadFallbackGenerationLimit;
+    const double recoveryLoadBaselineBaseFps =
+        this->adaptiveRecoveryState.nextContextLoadBaselineBaseFps;
     const bool discontinuityRecoveryContext =
         this->adaptiveRecoveryState.nextContextIsDiscontinuityRecovery;
+    const size_t discontinuityFallbackGenerationLimit =
+        this->adaptiveRecoveryState
+            .nextContextDiscontinuityFallbackGenerationLimit;
     const double discontinuityBaselineBaseFps =
         this->adaptiveRecoveryState.nextContextDiscontinuityBaselineBaseFps;
     const auto discontinuityDeadline =
@@ -238,7 +245,11 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         this->adaptiveRecoveryState.nextContextDiscontinuitySoftRecoveryAttempted;
     this->adaptiveRecoveryState.nextContextIsRecovery = false;
     this->adaptiveRecoveryState.nextContextGenerationLimit = 0;
+    this->adaptiveRecoveryState.nextContextLoadFallbackGenerationLimit = 0;
+    this->adaptiveRecoveryState.nextContextLoadBaselineBaseFps = 0.0;
     this->adaptiveRecoveryState.nextContextIsDiscontinuityRecovery = false;
+    this->adaptiveRecoveryState
+        .nextContextDiscontinuityFallbackGenerationLimit = 0;
     this->adaptiveRecoveryState.nextContextDiscontinuityBaselineBaseFps = 0.0;
     this->adaptiveRecoveryState.nextContextDiscontinuityDeadline.reset();
     this->adaptiveRecoveryState.nextContextDiscontinuitySoftRecoveryAttempted = false;
@@ -246,7 +257,10 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         Swapchain(vk, this->backend.mut(), profile, info,
             &this->adaptiveRecoveryState, recoveryContext,
             recoveryGenerationLimit,
+            recoveryLoadFallbackGenerationLimit,
+            recoveryLoadBaselineBaseFps,
             discontinuityRecoveryContext,
+            discontinuityFallbackGenerationLimit,
             discontinuityBaselineBaseFps,
             discontinuityDeadline,
             discontinuitySoftRecoveryAttempted)).second;

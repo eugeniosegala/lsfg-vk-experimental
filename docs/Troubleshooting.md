@@ -95,13 +95,15 @@ the game to rebuild its Vulkan swapchain after Gamescope releases an image:
 LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=1 ~/.local/bin/lsfg-vk-experimental %command%
 ```
 
-This request is made only after a real acquire timeout and a later successful recovery probe. The acquired image is
-safely presented before lsfg-vk returns `VK_ERROR_OUT_OF_DATE_KHR`, the standard signal applications use to recreate
-their swapchain. Diagnostics report `generated-image-recovered recovery_action=swapchain-recreate`, followed by
-`request-swapchain-recreation`. The replacement context stabilizes on real frames before generated-frame load is
-ramped one step at a time. A five-second cross-context cooldown suppresses immediate recreation loops. A short pause
-or flicker can occur while the game rebuilds its swapchain. Some games may mishandle a forced recreation; set
-`LSFGVK_PRESENT_RECOVERY_RECREATE=0` for that game to return to the history-only recovery. Fixed mode is unaffected.
+The first successful recovery probe after an isolated timeout stays in the current swapchain and performs the normal
+three-frame history warm-up. Diagnostics report `swapchain-recreation-suppressed reason=first-recovery`. If another
+generated-image recovery occurs within 15 seconds, the acquired image is safely presented before lsfg-vk may return
+`VK_ERROR_OUT_OF_DATE_KHR`, the standard signal applications use to recreate their swapchain. Diagnostics then report
+`generated-image-recovered recovery_action=swapchain-recreate`, followed by `request-swapchain-recreation`. The
+replacement context stabilizes on real frames before generated-frame load is ramped one step at a time. A five-second
+cross-context cooldown suppresses immediate recreation loops. A short pause or flicker can occur while the game
+rebuilds its swapchain. Some games may mishandle a forced recreation; set `LSFGVK_PRESENT_RECOVERY_RECREATE=0` for that
+game to keep all recovery in-place. Fixed mode is unaffected.
 
 For a normal non-isolated installation, place the same environment variables before its usual launch command.
 
@@ -116,8 +118,9 @@ grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-plan|adaptive-discon
 multiplier reduced useful throughput and was rolled back. `adaptive-bridge` is the single bounded test used when the
 first generated-frame step may have encountered a Gamescope cadence divisor. Its accepted/rejected record gives the
 measured result. `adaptive-rearm-scheduled` means another probe will wait at least 15 seconds and two stable seconds;
-`adaptive-rearm-ready` confirms those conditions were met. `swapchain-recreation-suppressed` confirms the separate
-swapchain-recreation cooldown prevented a repeated recreation request.
+`adaptive-rearm-ready` confirms those conditions were met. `swapchain-recreation-suppressed reason=first-recovery`
+confirms an isolated recovery remained in-place; `reason=cooldown` confirms the separate cross-context guard prevented
+a repeated recreation request.
 `adaptive-fast-cadence-burst` means an implausibly short DX12/Vulkan presentation interval was excluded from the base
 rate. Its aggregated frame counts and matching completion record show how long policy evaluation remained paused.
 `adaptive-gameplay-hitch-recovery` means a validated 2x Adaptive policy kept its level through a short gameplay hitch

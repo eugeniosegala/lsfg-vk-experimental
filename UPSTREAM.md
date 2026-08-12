@@ -8,19 +8,19 @@ baseline so a future update can distinguish upstream work from experimental-fork
 
 | Item                       | Value                                                                                  |
 |----------------------------|----------------------------------------------------------------------------------------|
-| Release version            | `2.0.0-dev28-experimental.21`                                                          |
-| Release basis              | Known-good `aeae16f` runtime after local Deck hardware validation                      |
-| Pre-publication validation | Deterministic suite, 120-case matrix, native/Flatpak packaging, and hardware testing   |
-| Included change range      | `.21`: scheduler extraction, Smooth Cadence ceiling, and UI/docs corrections           |
+| Release version            | `2.0.0-dev28-experimental.22`                                                          |
+| Release basis              | `.21` deterministic runtime plus diagnostics-derived recovery corrections              |
+| Pre-publication validation | Deterministic suite, 120-case matrix, native/Flatpak packaging, and log-path replay     |
+| Included change range      | `.22`: post-menu load guard and isolated presentation recovery                         |
 | Retired local experiment   | `ab4f790` hot-path changes removed after intermittent generation flinches              |
 | Fixed-mode impact          | Fixed 2x, 3x, and 4x scheduling remains on its existing path                          |
 | Ledger reconciled          | 2026-08-12                                                                             |
 
 The sections below are chronological. Versions through `.9` document the original published prereleases; `.10` through
 `.17` record the successive local test builds consolidated into the `.18` release; `.19` records the follow-up 2x
-gameplay-hitch refinement; `.20` adds the live frame-generation switch; and `.21` extracts and validates the Adaptive
-policy state machine. The detailed history is intentionally retained here so the public README and release notes can
-remain concise.
+gameplay-hitch refinement; `.20` adds the live frame-generation switch; `.21` extracts and validates the Adaptive
+policy state machine; and `.22` corrects two pre-existing recovery edge cases identified from SteamOS traces. The
+detailed history is intentionally retained here so the public README and release notes can remain concise.
 
 ## Reviewed baseline
 
@@ -486,7 +486,25 @@ The unpushed `ab4f790` hot-path experiment is deliberately excluded. It combined
 inline submit-time semaphore storage, and global compute barriers; local hardware testing reported intermittent
 generation flinches that were absent from `aeae16f`. Because those changes were bundled, the report does not prove which
 one caused the regression. Any old local Decky package pinned to `ab4f790` is retired and must not be published. Future
-performance work must be isolated and compared against `.21`; see `docs/Remaining-Improvements.md`.
+performance work must be isolated and compared against `.22`; see `docs/Remaining-Improvements.md`.
+
+### Recovery-stability release: `v2.0.0-dev28-experimental.22`
+
+Two SteamOS traces exposed recovery edge cases that predated the `.21` state-machine extraction. History inspection
+confirmed that `.21` moved these policies without introducing either behavior.
+
+- After a Steam-menu cadence interruption, the old restoration path cleared the delayed-load baseline while restoring
+  the prior generation level. If that restored level then reduced the real cadence, the scheduler could remain trapped
+  there. `.22` carries the recovered real-only rate and lower proven level through discontinuity recovery, including
+  replacement contexts, and reuses the existing one-second real-only confirmation before rolling back harmful load.
+- After a generated-image acquire timeout recovered, the old optional recovery path immediately requested a game-owned
+  swapchain recreation. The trace showed this directly before the reported one-second freeze. `.22` keeps the first
+  isolated recovery in-place with the existing three-frame history warm-up. Only another recovery within 15 seconds
+  may request the guarded rebuild; the existing five-second cross-context cooldown remains intact.
+- Deterministic coverage now includes restored-load collapse, first/repeated presentation recovery, isolated recovery,
+  and cooldown behavior. The full 120-case scheduler matrix and Linux integration/package build remain green.
+- Fixed scheduling, shaders, model selection, interpolation timestamps, generated-frame capacity, acquire-timeout
+  fallback, temporal-history refresh, and the retired `ab4f790` hot-path experiment are unchanged.
 
 ## Update procedure
 

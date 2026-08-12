@@ -53,6 +53,10 @@ namespace {
     constexpr double adaptiveDiscontinuityRecoveredBaseRatio = 0.90;
     constexpr auto adaptiveDiscontinuityStableDuration = std::chrono::seconds(1);
     constexpr auto adaptiveDiscontinuityMaximumDuration = std::chrono::seconds(5);
+    constexpr auto adaptivePresentationRecreationCooldown =
+        std::chrono::seconds(5);
+    constexpr auto adaptivePresentationRepeatedRecoveryWindow =
+        std::chrono::seconds(15);
     constexpr auto adaptiveTwoXGameplayHitchMaximumDuration =
         std::chrono::milliseconds(250);
     constexpr auto adaptiveFailedProbeCooldown = std::chrono::seconds(15);
@@ -72,6 +76,54 @@ namespace {
             return adaptiveRampThirdRetryDelay;
         return adaptiveRampMaximumRetryDelay;
     }
+}
+
+AdaptivePresentationRecoveryDecision
+AdaptivePresentationRecoveryPolicy::recover(
+        const TimePoint now,
+        const bool swapchainRecreationEnabled) {
+    if (!swapchainRecreationEnabled) {
+        return {
+            .action = AdaptivePresentationRecoveryAction::InPlaceWarmup,
+        };
+    }
+
+    const bool repeatedRecovery = this->lastInPlaceRecovery &&
+        now >= *this->lastInPlaceRecovery &&
+        now - *this->lastInPlaceRecovery <= repeatedRecoveryWindow();
+    this->lastInPlaceRecovery = now;
+    if (!repeatedRecovery) {
+        return {
+            .action = AdaptivePresentationRecoveryAction::InPlaceWarmup,
+        };
+    }
+
+    if (this->lastSwapchainRecreation &&
+            now >= *this->lastSwapchainRecreation) {
+        const auto elapsed = now - *this->lastSwapchainRecreation;
+        if (elapsed < recreationCooldown()) {
+            return {
+                .action = AdaptivePresentationRecoveryAction::InPlaceCooldown,
+                .recreationCooldownRemaining = recreationCooldown() - elapsed,
+            };
+        }
+    }
+
+    this->lastSwapchainRecreation = now;
+    this->lastInPlaceRecovery.reset();
+    return {
+        .action = AdaptivePresentationRecoveryAction::RecreateSwapchain,
+    };
+}
+
+AdaptivePresentationRecoveryPolicy::Clock::duration
+AdaptivePresentationRecoveryPolicy::recreationCooldown() {
+    return adaptivePresentationRecreationCooldown;
+}
+
+AdaptivePresentationRecoveryPolicy::Clock::duration
+AdaptivePresentationRecoveryPolicy::repeatedRecoveryWindow() {
+    return adaptivePresentationRepeatedRecoveryWindow;
 }
 
 AdaptiveScheduler::AdaptiveScheduler(AdaptiveSchedulerConfig config,
@@ -328,6 +380,8 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
     const double baseFps = 1.0 / this->adaptiveSmoothedIntervalSeconds;
     if (this->adaptiveDiscontinuityRecoveryDeadline) {
         const size_t recoveryLimit = this->adaptiveDiscontinuityGenerationLimit;
+        const size_t recoveryFallbackLimit =
+            this->adaptiveDiscontinuityFallbackGenerationLimit;
         const double recoveryBaselineBaseFps =
             this->adaptiveDiscontinuityBaselineBaseFps;
         const bool initialStabilizationComplete =
@@ -358,13 +412,18 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
             this->adaptiveDiscontinuityRecoveryDeadline.reset();
             this->adaptiveDiscontinuityStableSince.reset();
             this->adaptiveDiscontinuityGenerationLimit = 0;
+            this->adaptiveDiscontinuityFallbackGenerationLimit = 0;
             this->adaptiveDiscontinuityBaselineBaseFps = 0.0;
             this->adaptiveDiscontinuitySoftRecoveryAttempted = false;
             this->adaptiveStabilizationUntil.reset();
             this->adaptiveOutputCredit = 0.0;
             if (recoveredCadenceStable) {
                 this->restoreGenerationLimit(
-                    now, recoveryLimit, "cadence-discontinuity"
+                    now,
+                    recoveryLimit,
+                    "cadence-discontinuity",
+                    recoveryFallbackLimit,
+                    baseFps
                 );
                 if (this->config.stableCadence) {
                     this->adaptiveStableCadenceRetryAt =
@@ -846,7 +905,7 @@ size_t AdaptiveScheduler::historyWarmupFrameCount() {
 }
 
 AdaptiveScheduler::Clock::duration AdaptiveScheduler::recreationCooldown() {
-    return std::chrono::seconds(5);
+    return AdaptivePresentationRecoveryPolicy::recreationCooldown();
 }
 
 AdaptiveScheduler::Clock::duration
@@ -899,7 +958,9 @@ size_t AdaptiveScheduler::validatedGenerationLimit() const {
 void AdaptiveScheduler::restoreGenerationLimit(
         const std::chrono::steady_clock::time_point now,
         const size_t generationLimit,
-        const std::string_view reason) {
+        const std::string_view reason,
+        const std::optional<size_t> monitoredFallbackLimit,
+        const double monitoredBaselineBaseFps) {
     const size_t configuredLimit = std::min(
         this->config.generatedFrameCapacity,
         this->config.maximumMultiplier - 1
@@ -925,8 +986,17 @@ void AdaptiveScheduler::restoreGenerationLimit(
     this->adaptiveLastFailedRampLimit = 0;
     this->adaptiveConsecutiveRampFailures = 0;
     this->adaptiveFailedRampBaselineBaseFps = 0.0;
-    this->adaptiveStrictLoadBaselineLimit = 0;
-    this->adaptiveStrictLoadBaselineBaseFps = 0.0;
+    const size_t fallbackLimit = std::min(
+        monitoredFallbackLimit.value_or(restoredLimit), configuredLimit
+    );
+    const bool monitorRestoredLoad = restoredLimit > fallbackLimit &&
+        monitoredBaselineBaseFps > 0.0;
+    this->adaptiveStrictLoadBaselineLimit = monitorRestoredLoad
+        ? fallbackLimit
+        : 0;
+    this->adaptiveStrictLoadBaselineBaseFps = monitorRestoredLoad
+        ? monitoredBaselineBaseFps
+        : 0.0;
     this->adaptiveStrictLoadCollapseSince.reset();
     this->adaptiveOutputCredit = 0.0;
 
@@ -941,6 +1011,7 @@ void AdaptiveScheduler::restoreGenerationLimit(
 void AdaptiveScheduler::beginDiscontinuityRecovery(
         const std::chrono::steady_clock::time_point now,
         const size_t generationLimit,
+        const size_t fallbackGenerationLimit,
         const double baselineBaseFps,
         const std::optional<std::chrono::steady_clock::time_point> deadline,
         const bool softRecoveryAttempted,
@@ -958,6 +1029,10 @@ void AdaptiveScheduler::beginDiscontinuityRecovery(
     if (this->adaptiveDiscontinuityGenerationLimit == 0)
         return;
 
+    this->adaptiveDiscontinuityFallbackGenerationLimit = std::min(
+        fallbackGenerationLimit,
+        this->adaptiveDiscontinuityGenerationLimit
+    );
     this->adaptiveDiscontinuityBaselineBaseFps = baselineBaseFps;
     const auto minimumDeadline = now + adaptiveDiscontinuityStableDuration;
     this->adaptiveDiscontinuityRecoveryDeadline = deadline
@@ -1027,9 +1102,17 @@ void AdaptiveScheduler::beginStabilization(
                 recoveryLimit, *this->adaptiveStableCadenceLimit
             );
         }
+        size_t recoveryFallbackLimit = recoveryLimit > 0
+            ? recoveryLimit - 1
+            : 0;
+        if (this->adaptiveStrictLoadBaselineBaseFps > 0.0 &&
+                this->adaptiveStrictLoadBaselineLimit < recoveryLimit) {
+            recoveryFallbackLimit = this->adaptiveStrictLoadBaselineLimit;
+        }
         this->beginDiscontinuityRecovery(
             now,
             recoveryLimit,
+            recoveryFallbackLimit,
             1.0 / this->adaptiveSmoothedIntervalSeconds,
             std::nullopt,
             false,

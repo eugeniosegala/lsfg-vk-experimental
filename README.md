@@ -30,8 +30,8 @@ it does not introduce a separate frame-generation model. For the established 1.x
 - **Optional Smooth Cadence:** Suitable fractional targets can prefer a validated constant interpolation cadence.
   This can look smoother but may lower real-frame cadence and responsiveness, so it is disabled by default.
 - **SteamOS/Gamescope recovery:** Generated-image stalls fall back to real frames, keep temporal history current, and
-  recover without repeatedly spending the full acquire timeout. An optional guarded swapchain rebuild can clear stale
-  presentation state after recovery.
+  recover without repeatedly spending the full acquire timeout. Isolated recoveries warm history in-place; only a
+  repeated recovery within 15 seconds may use the guarded swapchain rebuild to clear stale presentation state.
 - **Menu and DX12 transition protection:** Adaptive preserves its proven gameplay state across hard cadence stalls and
   ignores implausibly fast DX12/VKD3D presentation bursts instead of treating them as a new game framerate.
 - **Diagnostic tooling:** Opt-in, per-swapchain presentation records expose timing, recovery, ramp, rescue, and
@@ -92,9 +92,10 @@ Direct lsfg-vk users can opt in before their normal game command:
 LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=1 your-game-command
 ```
 
-The rebuild is requested only after a genuine acquire timeout later recovers. A game may briefly pause or flicker while
-recreating its swapchain, and a small number of games may mishandle the request. Keep the bounded real-frame fallback
-but disable forced recreation for those games:
+The first successful probe after an isolated acquire timeout keeps the current game swapchain and warms temporal
+history in-place. A second recovery within 15 seconds may request the guarded rebuild. A game may briefly pause or
+flicker while recreating its swapchain, and a small number of games may mishandle the request. Keep the bounded
+real-frame fallback but disable forced recreation for those games:
 
 ```bash
 LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=0 your-game-command
@@ -117,10 +118,10 @@ update, launch-wrapper, and Heroic instructions instead of manually extracting t
 1. Purchase and install [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) through Steam.
 2. Download the versioned Linux archive from this fork's
    [GitHub Releases](https://github.com/eugeniosegala/lsfg-vk-experimental/releases).
-3. Extract it into your local prefix. For version `2.0.0-dev28-experimental.21`:
+3. Extract it into your local prefix. For version `2.0.0-dev28-experimental.22`:
 
    ```bash
-   tar -xJf lsfg-vk-2.0.0-dev28-experimental.21-linux.tar.xz -C ~/.local
+   tar -xJf lsfg-vk-2.0.0-dev28-experimental.22-linux.tar.xz -C ~/.local
    ```
 
 Keep track of the extracted files so the direct installation can be removed or rolled back later.

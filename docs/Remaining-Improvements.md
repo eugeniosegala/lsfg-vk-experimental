@@ -1,7 +1,8 @@
 # Remaining improvements
 
-This is the short working backlog following the `.21` release based on the known-good `aeae16f` runtime checkpoint. It
-is intentionally narrower than the historical ledger in `UPSTREAM.md`.
+This is the short working backlog following the `.22` recovery release, which retains the `.21` deterministic
+scheduler foundation and the known-good `aeae16f` runtime checkpoint. It is intentionally narrower than the historical
+ledger in `UPSTREAM.md`.
 
 ## Retired hot-path experiment
 
@@ -45,8 +46,8 @@ artifacts and are not publication candidates.
 
 ## A/B measurement before publication
 
-- Compare every future single-change candidate with the known-good `aeae16f` package in the same repeatable scene and
-  power profile. Keep a rollback package installed and available.
+- Compare every future single-change candidate with the `.22` package in the same repeatable scene and power profile.
+  Keep the `aeae16f`/`.21` package as a second rollback reference when synchronization work is involved.
 - Record generation Off, Fixed 2x/3x/4x, and Adaptive 2x/3x/4x. Include both full-quality and Performance Mode where
   practical.
 - Use at least three runs per case after warm-up. Record real FPS, displayed FPS, CPU and GPU frametime, p95/p99 or
@@ -69,7 +70,7 @@ artifacts and are not publication candidates.
   potential configuration data race and makes lifecycle behavior testable.
 - Add native UI tests for profile creation/deletion, Active In editing, parser-range round trips, and empty-profile
   defaults.
-- Before the next public build, bump `VERSION`, replace the `.21`-specific generated release notes, update the Decky
+- Before the next public build, bump `VERSION`, replace the `.22`-specific generated release notes, update the Decky
   immutable engine pin and integration ledger, and produce a fresh rollback package.
 
 ## Constraints to preserve

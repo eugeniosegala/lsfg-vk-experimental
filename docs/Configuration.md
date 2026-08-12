@@ -42,7 +42,9 @@ Next is a list of all available **profile** configuration options:
   real-only and generated frames; it returns to strict target scheduling if the higher constant workload is not
   sustainable. An abrupt menu, focus, or display transition preserves the previous real-rate baseline and proven
   generation level. Adaptive restores that level only after one second at least 90% of the earlier base rate; after
-  five seconds without recovery it discards the stale baseline and ramps cleanly from zero. A validated level that
+  five seconds without recovery it discards the stale baseline and ramps cleanly from zero. After restoration, the
+  recovered real-only rate remains the delayed-load baseline; if the restored level then collapses throughput,
+  Adaptive measures one second without generated work and returns to the lower proven level. A validated level that
   reaches at least 95% of the target is treated as sufficient, and a remaining deficit must persist for one second
   before a higher multiplier is tested. (Default: `3`)
 - **Smooth Cadence / `adaptive_stable_cadence`**: When enabled, Adaptive may use the validated constant-cadence policy
@@ -82,10 +84,9 @@ The following environment variables affect lsfg-vk:
 - `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS`: Optional timeout for generated-image acquisition. A timeout enters the
   Gamescope presentation fallback; unset or `0` keeps the normal unbounded acquisition path.
 - `LSFGVK_PRESENT_RECOVERY_RECREATE`: Set to `1` to ask the game to recreate its swapchain after Adaptive recovers
-  from that fallback. During a detected menu/focus discontinuity, the first recovery uses history warm-up without a
-  rebuild; a later recovery can still request one. Recreation requests have a five-second cooldown shared across
-  replacement contexts. This experimental option has no effect without the acquire timeout and does not affect Fixed
-  mode.
+  from that fallback. The first isolated recovery uses history warm-up without a rebuild; a repeated recovery within
+  15 seconds can request one. Recreation requests have a five-second cooldown shared across replacement contexts.
+  This experimental option has no effect without the acquire timeout and does not affect Fixed mode.
 - `LSFGVK_PRESENT_DIAGNOSTICS`: Set to `1` to log slow presentation operations.
 - `LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS`: Minimum duration in milliseconds reported by presentation diagnostics.
 

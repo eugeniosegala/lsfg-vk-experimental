@@ -719,6 +719,125 @@ namespace {
             "Smooth Cadence rescue generated during real-only measurement");
     }
 
+    void testRestoredDiscontinuityLoadRetainsCollapseGuard() {
+        Harness harness(110, 3);
+        harness.start();
+        harness.runAtFps(50.0, 10s);
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 2,
+            "precondition failed: 3x was not validated before interruption");
+
+        harness.frame(400ms);
+        require(harness.scheduler.discontinuityRecoveryActive(),
+            "precondition failed: menu-like interruption did not start recovery");
+        harness.runAtFps(64.0, 3s);
+        require(!harness.scheduler.discontinuityRecoveryActive() &&
+                harness.scheduler.snapshot().validatedGenerationLimit == 2,
+            "healthy real-only cadence did not restore the validated 3x level");
+
+        for (size_t frame = 0;
+                frame < 160 && !harness.diagnostics.contains("rescue-start");
+                ++frame) {
+            harness.frameAtFps(35.0);
+        }
+        const auto* rescueStart = harness.diagnostics.last("rescue-start");
+        require(rescueStart && rescueStart->reason == "strict-load-collapse",
+            "restored 3x load lost its delayed-collapse guard");
+
+        harness.runAtFps(64.0, 2s);
+        const auto* rescueComplete = harness.diagnostics.last("rescue-complete");
+        require(rescueComplete &&
+                rescueComplete->reason == "strict-load-restored",
+            "real-only recovery did not back off the harmful restored level");
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 1,
+            "harmful restored 3x load did not fall back to proven 2x");
+    }
+
+    void testGeneratedImageRecoveryRetainsCollapseGuard() {
+        Harness harness(110, 3);
+        harness.start();
+        harness.runAtFps(50.0, 10s);
+        const size_t recoveredLimit =
+            harness.scheduler.snapshot().validatedGenerationLimit;
+        const auto loadBaseline =
+            harness.scheduler.generationLoadBaseline();
+        require(recoveredLimit == 2 &&
+                loadBaseline.fallbackGenerationLimit == 1 &&
+                loadBaseline.baseFps > 0.0,
+            "precondition failed: higher load had no lower-level baseline");
+
+        harness.scheduler.beginStabilization(
+            harness.now, "generated-image-recovery"
+        );
+        harness.scheduler.restoreGenerationLimit(
+            harness.now,
+            recoveredLimit,
+            "generated-image-recovery",
+            loadBaseline.fallbackGenerationLimit,
+            loadBaseline.baseFps
+        );
+
+        for (size_t frame = 0;
+                frame < 160 && !harness.diagnostics.contains("rescue-start");
+                ++frame) {
+            harness.frameAtFps(35.0);
+        }
+        const auto* rescueStart = harness.diagnostics.last("rescue-start");
+        require(rescueStart && rescueStart->reason == "strict-load-collapse",
+            "in-place image recovery cleared the delayed-collapse guard");
+
+        harness.runAtFps(64.0, 2s);
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 1,
+            "image recovery did not return harmful 3x load to proven 2x");
+    }
+
+    void testPresentationRecoveryRecreatesOnlyAfterRepeatedStall() {
+        AdaptivePresentationRecoveryPolicy policy;
+        TimePoint now{};
+
+        const auto first = policy.recover(now, true);
+        require(first.action ==
+                AdaptivePresentationRecoveryAction::InPlaceWarmup,
+            "first generated-image recovery requested a swapchain rebuild");
+
+        now += 2s;
+        const auto repeated = policy.recover(now, true);
+        require(repeated.action ==
+                AdaptivePresentationRecoveryAction::RecreateSwapchain,
+            "repeated generated-image recovery did not retain guarded rebuild");
+
+        now += 1s;
+        const auto firstAfterRecreation = policy.recover(now, true);
+        require(firstAfterRecreation.action ==
+                AdaptivePresentationRecoveryAction::InPlaceWarmup,
+            "fresh replacement context did not receive an in-place first recovery");
+
+        now += 1s;
+        const auto duringCooldown = policy.recover(now, true);
+        require(duringCooldown.action ==
+                AdaptivePresentationRecoveryAction::InPlaceCooldown &&
+                duringCooldown.recreationCooldownRemaining >
+                    AdaptivePresentationRecoveryPolicy::Clock::duration::zero(),
+            "repeated recovery bypassed the cross-context recreation cooldown");
+    }
+
+    void testIsolatedPresentationRecoveriesRemainInPlace() {
+        AdaptivePresentationRecoveryPolicy policy;
+        TimePoint now{};
+        require(policy.recover(now, true).action ==
+                AdaptivePresentationRecoveryAction::InPlaceWarmup,
+            "first isolated recovery was not in-place");
+
+        now += AdaptivePresentationRecoveryPolicy::repeatedRecoveryWindow() + 1s;
+        require(policy.recover(now, true).action ==
+                AdaptivePresentationRecoveryAction::InPlaceWarmup,
+            "isolated recovery outside the repeat window rebuilt the swapchain");
+
+        now += 1s;
+        require(policy.recover(now, false).action ==
+                AdaptivePresentationRecoveryAction::InPlaceWarmup,
+            "disabled rebuild policy did not remain in-place");
+    }
+
     void testDeterministicReplay() {
         Harness first(120, 4, true);
         Harness second(120, 4, true);
@@ -779,6 +898,10 @@ int main() {
         {"Smooth Cadence exits after native recovery", testSmoothCadenceReturnsToTargetAfterBaseRecovery},
         {"strict load collapse restores lower level", testStrictLoadCollapseRestoresCheaperProvenLevel},
         {"Smooth Cadence collapse measures real-only", testSmoothCadenceCollapseUsesRealOnlyMeasurement},
+        {"restored load keeps collapse guard", testRestoredDiscontinuityLoadRetainsCollapseGuard},
+        {"image recovery keeps collapse guard", testGeneratedImageRecoveryRetainsCollapseGuard},
+        {"repeated presentation recovery rebuilds", testPresentationRecoveryRecreatesOnlyAfterRepeatedStall},
+        {"isolated presentation recovery stays in-place", testIsolatedPresentationRecoveriesRemainInPlace},
         {"cadence replay is deterministic", testDeterministicReplay},
     };
 

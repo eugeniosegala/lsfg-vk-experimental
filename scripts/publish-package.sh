@@ -11,7 +11,7 @@ flatpak_archive="out/lsfg-vk-$version-flatpaks.tar.xz"
 release_branch="$(git branch --show-current)"
 source_commit="$(git rev-parse HEAD)"
 release_remote="${LSFGVK_RELEASE_REMOTE:-experimental}"
-notes_version="2.0.0-dev28-experimental.21"
+notes_version="2.0.0-dev28-experimental.22"
 
 if [[ "$version" != "$notes_version" ]]; then
     echo "Release notes still describe $notes_version. Update scripts/publish-package.sh for $version before publishing." >&2
@@ -88,20 +88,19 @@ cat > "$notes_file" <<EOF
 
 This is an experimental build of the lsfg-vk 2.x development line. Test it game by game and retain a known-good rollback path.
 
-## This release: deterministic Adaptive policy and a validated stability baseline
+## This release: recovery stability after menus and presentation stalls
 
-This \`.21\` release packages the locally hardware-validated \`aeae16f\` runtime. It extracts Adaptive policy from Vulkan presentation code into a clock-driven state machine, adds deterministic regression coverage, and fixes Smooth Cadence retaining a generated-frame level above its configured maximum.
+This \`.22\` release fixes two recovery edge cases found in SteamOS diagnostics while retaining the deterministic \`.21\` scheduler foundation. After a menu interruption, restored generation keeps its delayed-load guard; after an isolated generated-image stall, recovery stays in-place instead of immediately rebuilding the game's swapchain.
 
 The later local-only \`ab4f790\` hot-path experiment is deliberately excluded. It combined compute-barrier, mapped-buffer, and submission-storage changes and showed intermittent generation flinches during testing. No part of that experiment is included in this release.
 
 ### Highlights
 
-- Moves Adaptive decisions into an independently testable state machine driven by an explicit monotonic clock. Vulkan, Gamescope fallback, and presentation code consume its frame plans without changing their established guards.
-- Adds deterministic scheduler tests, a 120-case policy matrix, a same-host microbenchmark, and packaging gates that run the policy suite before an archive is produced.
-- Prevents Smooth Cadence from retaining more generated frames than the selected maximum after restoration, rescue, or recovery.
-- Fixes the native Active In dialog accidentally invoking profile creation through an unrelated confirmation callback.
-- Makes the native UI report Smooth Cadence's actual disabled default when no profile is selected.
-- Clarifies private interpolation-context hot reloads and the cases where game-owned swapchain capacity still requires a restart.
+- Preserves the recovered real-only cadence and lower proven generation level when Adaptive restores after a hard menu or focus discontinuity.
+- Reuses the existing delayed-load rescue if the restored level later collapses throughput: one second of real-only measurement confirms recovery before the lower proven level is restored.
+- Keeps the first isolated generated-image recovery inside the current swapchain with the existing three-frame temporal-history warm-up. Only a repeated recovery within 15 seconds may request the guarded rebuild.
+- Retains the five-second cross-context recreation cooldown, acquire-timeout fallback, temporal-history updates, and one-step Adaptive ramp.
+- Adds deterministic regressions for both field reports while keeping the 120-case policy matrix and full Linux packaging gates green.
 
 ### Important limitations
 
@@ -110,7 +109,7 @@ The later local-only \`ab4f790\` hot-path experiment is deliberately excluded. I
 - Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so it defaults to disabled.
 - This release does not claim lower GPU cost, higher image quality, or reduced ghosting. Shaders, model selection, interpolation timestamps, generated-frame counts, and Fixed 2x/3x/4x scheduling are unchanged from the known-good runtime path.
 - Lossless Scaling and \`Lossless.dll\` must already be installed through Steam; neither release archive includes or modifies it.
-- \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is an opt-in Adaptive recovery path for direct engine users. A swapchain rebuild can briefly pause or flicker, and some games may mishandle it. The Decky experimental wrapper enables the tested timeout and guarded rebuild automatically.
+- \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is an opt-in Adaptive recovery path for direct engine users. The first isolated recovery stays in-place; a repeated recovery may rebuild the swapchain and can briefly pause or flicker. The Decky experimental wrapper enables the tested timeout and guarded policy automatically.
 - Flatpak extensions for 23.08, 24.08, and 25.08 are packaged separately in \`$(basename "$flatpak_archive")\` under a dedicated experimental ID that can coexist with the public Flathub layer.
 
 ### Included files
@@ -133,7 +132,10 @@ frame_generation_enabled = true
 
 Restart the game after switching between Fixed and Adaptive modes, or before increasing a Fixed multiplier beyond the capacity used when the game created its swapchain. Target, maximum multiplier, Smooth Cadence, flow scale, and performance mode can then rebuild the private interpolation context through hot reload.
 
-### Included foundation and .21 improvements
+### Included foundation and .22 improvements
+
+- Prevents post-menu restoration from clearing the lower proven level and recovered real-only baseline needed by delayed-load collapse detection.
+- Prevents an isolated generated-image recovery from immediately requesting a game-owned swapchain rebuild; repeated recovery and cooldown decisions are now a deterministic policy.
 
 - Extracts the existing Adaptive controller from swapchain presentation into a testable state machine without changing the intended policy.
 - Adds deterministic timing tests, a compatibility-oriented 120-case policy matrix, and a scheduler microbenchmark.
@@ -150,7 +152,7 @@ Restart the game after switching between Fixed and Adaptive modes, or before inc
 - Preserves the validated generation level and gameplay baseline across recovery and hard menu/focus stalls. Sustained gameplay slowdowns instead rebase after normal one-second stabilization.
 - Warms all three shared temporal-history slots before Adaptive first generates output and keeps shared history current while generated images are unavailable.
 
-### Stability carried forward and corrected in .21
+### Stability carried forward and corrected through .22
 
 - Prevents Smooth Cadence restoration and rescue paths from retaining a generated-frame level above the configured maximum.
 

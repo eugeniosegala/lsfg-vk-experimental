@@ -13,6 +13,46 @@
 
 namespace lsfgvk::layer {
 
+    enum class AdaptivePresentationRecoveryAction : uint8_t {
+        InPlaceWarmup,
+        RecreateSwapchain,
+        InPlaceCooldown,
+    };
+
+    struct AdaptivePresentationRecoveryDecision {
+        AdaptivePresentationRecoveryAction action{
+            AdaptivePresentationRecoveryAction::InPlaceWarmup
+        };
+        std::chrono::steady_clock::duration recreationCooldownRemaining{};
+    };
+
+    struct AdaptiveGenerationLoadBaseline {
+        size_t fallbackGenerationLimit{0};
+        double baseFps{0.0};
+    };
+
+    /// Deterministic policy for generated-image presentation recovery.
+    ///
+    /// The first recovered stall is handled inside the existing swapchain so
+    /// an isolated compositor interruption cannot force a game-visible
+    /// rebuild. A second recovery inside a bounded window may request the
+    /// guarded rebuild that clears accumulated presentation latency.
+    class AdaptivePresentationRecoveryPolicy {
+    public:
+        using Clock = std::chrono::steady_clock;
+        using TimePoint = Clock::time_point;
+
+        [[nodiscard]] AdaptivePresentationRecoveryDecision recover(
+            TimePoint now, bool swapchainRecreationEnabled);
+
+        static Clock::duration recreationCooldown();
+        static Clock::duration repeatedRecoveryWindow();
+
+    private:
+        std::optional<TimePoint> lastInPlaceRecovery;
+        std::optional<TimePoint> lastSwapchainRecreation;
+    };
+
     struct AdaptiveSchedulerConfig {
         uint32_t targetFps{120};
         size_t maximumMultiplier{3};
@@ -155,9 +195,12 @@ namespace lsfgvk::layer {
         void resetTiming(TimePoint now);
         void beginStabilization(TimePoint now, std::string_view reason);
         void restoreGenerationLimit(TimePoint now, size_t generationLimit,
-            std::string_view reason);
+            std::string_view reason,
+            std::optional<size_t> monitoredFallbackLimit = std::nullopt,
+            double monitoredBaselineBaseFps = 0.0);
         void beginDiscontinuityRecovery(TimePoint now, size_t generationLimit,
-            double baselineBaseFps, std::optional<TimePoint> deadline,
+            size_t fallbackGenerationLimit, double baselineBaseFps,
+            std::optional<TimePoint> deadline,
             bool softRecoveryAttempted, std::string_view reason);
 
         [[nodiscard]] size_t validatedGenerationLimit() const;
@@ -184,6 +227,22 @@ namespace lsfgvk::layer {
         }
         [[nodiscard]] double discontinuityBaselineBaseFps() const {
             return this->adaptiveDiscontinuityBaselineBaseFps;
+        }
+        [[nodiscard]] size_t discontinuityFallbackGenerationLimit() const {
+            return this->adaptiveDiscontinuityFallbackGenerationLimit;
+        }
+        [[nodiscard]] AdaptiveGenerationLoadBaseline generationLoadBaseline()
+                const {
+            if (this->adaptiveStrictLoadBaselineBaseFps <= 0.0 ||
+                    this->validatedGenerationLimit() <=
+                        this->adaptiveStrictLoadBaselineLimit) {
+                return {};
+            }
+            return {
+                .fallbackGenerationLimit =
+                    this->adaptiveStrictLoadBaselineLimit,
+                .baseFps = this->adaptiveStrictLoadBaselineBaseFps,
+            };
         }
         [[nodiscard]] std::optional<TimePoint> discontinuityDeadline() const {
             return this->adaptiveDiscontinuityRecoveryDeadline;
@@ -256,6 +315,7 @@ namespace lsfgvk::layer {
         std::optional<TimePoint> adaptiveDiscontinuityRecoveryDeadline;
         std::optional<TimePoint> adaptiveDiscontinuityStableSince;
         size_t adaptiveDiscontinuityGenerationLimit{0};
+        size_t adaptiveDiscontinuityFallbackGenerationLimit{0};
         double adaptiveDiscontinuityBaselineBaseFps{0.0};
         bool adaptiveDiscontinuitySoftRecoveryAttempted{false};
         size_t adaptiveConsecutiveProbeFailures{0};
