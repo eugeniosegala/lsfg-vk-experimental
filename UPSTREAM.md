@@ -8,17 +8,19 @@ baseline so a future update can distinguish upstream work from experimental-fork
 
 | Item                       | Value                                                                                  |
 |----------------------------|----------------------------------------------------------------------------------------|
-| Release version            | `2.0.0-dev28-experimental.20`                                                          |
-| Release basis              | Follow-up prerelease after `.19` Adaptive gameplay-hitch recovery                      |
-| Pre-publication validation | Native and Flatpak archives built and verified locally                                 |
-| Included change range      | `.20`: live frame-generation switch with Fixed/Adaptive state preservation             |
+| Release version            | `2.0.0-dev28-experimental.21`                                                          |
+| Release basis              | Known-good `aeae16f` runtime after local Deck hardware validation                      |
+| Pre-publication validation | Deterministic suite, 120-case matrix, native/Flatpak packaging, and hardware testing   |
+| Included change range      | `.21`: scheduler extraction, Smooth Cadence ceiling, and UI/docs corrections           |
+| Retired local experiment   | `ab4f790` hot-path changes removed after intermittent generation flinches              |
 | Fixed-mode impact          | Fixed 2x, 3x, and 4x scheduling remains on its existing path                          |
 | Ledger reconciled          | 2026-08-12                                                                             |
 
 The sections below are chronological. Versions through `.9` document the original published prereleases; `.10` through
 `.17` record the successive local test builds consolidated into the `.18` release; `.19` records the follow-up 2x
-gameplay-hitch refinement; and `.20` adds the live frame-generation switch. The detailed history is intentionally
-retained here so the public README and release notes can remain concise.
+gameplay-hitch refinement; `.20` adds the live frame-generation switch; and `.21` extracts and validates the Adaptive
+policy state machine. The detailed history is intentionally retained here so the public README and release notes can
+remain concise.
 
 ## Reviewed baseline
 
@@ -465,6 +467,26 @@ as an independent `frame_generation_enabled` switch instead of changing multipli
 
 The original feature commit remains authored by Jonathan Gallegos/PacificSilent. Compatibility, documentation, and UI
 integration are layered separately so the contribution remains visible in the merged history.
+
+### Deterministic Adaptive scheduler release: `v2.0.0-dev28-experimental.21`
+
+The `.21` runtime is based on the locally validated `aeae16f` checkpoint. It preserves the `.20` Vulkan and recovery
+paths while making Adaptive policy independently testable.
+
+- `93323a4` extracts Adaptive policy into a clock-driven state machine with deterministic tests, a 120-case policy
+  matrix, and a same-host scheduler microbenchmark.
+- `aeae16f` prevents Smooth Cadence restoration and rescue from retaining a generated-frame level above the configured
+  maximum.
+- The native UI's Active In dialog no longer invokes profile creation through an unrelated confirmation callback, and
+  a missing profile now reports Smooth Cadence's real default of disabled.
+- Configuration documentation now distinguishes private interpolation-context hot reloads from game-owned swapchain
+  capacity changes, especially after switching mode or increasing a Fixed multiplier.
+
+The unpushed `ab4f790` hot-path experiment is deliberately excluded. It combined persistent coherent-buffer mappings,
+inline submit-time semaphore storage, and global compute barriers; local hardware testing reported intermittent
+generation flinches that were absent from `aeae16f`. Because those changes were bundled, the report does not prove which
+one caused the regression. Any old local Decky package pinned to `ab4f790` is retired and must not be published. Future
+performance work must be isolated and compared against `.21`; see `docs/Remaining-Improvements.md`.
 
 ## Update procedure
 

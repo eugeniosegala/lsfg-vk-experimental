@@ -54,7 +54,7 @@ ApplicationWindow {
 
     LargeDialog {
         id: active_in_dialog
-        onConfirm: backend.createProfile(create_name.text)
+        name: "Active In"
 
         List {
             Layout.fillWidth: true

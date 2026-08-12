@@ -97,7 +97,7 @@ namespace lsfgvk::ui {
             return conf.adaptive_max_multiplier;
         }
         [[nodiscard]] bool getAdaptiveStableCadence() const {
-            VALIDATE_AND_GET_PROFILE(true)
+            VALIDATE_AND_GET_PROFILE(false)
             return conf.adaptive_stable_cadence;
         }
         [[nodiscard]] float getFlowScale() const {

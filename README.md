@@ -43,6 +43,8 @@ See [Configuration](docs/Configuration.md) for the exact settings and controller
 [Troubleshooting](docs/Troubleshooting.md) for diagnostic and recovery commands.
 Developers can run the GPU-independent scheduler tests and use the runtime
 [Adaptive validation matrix](docs/Adaptive-Validation.md) before publishing a build.
+The current priorities, validation gates, and record of retired experiments are in
+[Remaining improvements](docs/Remaining-Improvements.md).
 
 ### Adaptive Frame Generation quick start
 
@@ -115,10 +117,10 @@ update, launch-wrapper, and Heroic instructions instead of manually extracting t
 1. Purchase and install [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) through Steam.
 2. Download the versioned Linux archive from this fork's
    [GitHub Releases](https://github.com/eugeniosegala/lsfg-vk-experimental/releases).
-3. Extract it into your local prefix. For version `2.0.0-dev28-experimental.20`:
+3. Extract it into your local prefix. For version `2.0.0-dev28-experimental.21`:
 
    ```bash
-   tar -xJf lsfg-vk-2.0.0-dev28-experimental.20-linux.tar.xz -C ~/.local
+   tar -xJf lsfg-vk-2.0.0-dev28-experimental.21-linux.tar.xz -C ~/.local
    ```
 
 Keep track of the extracted files so the direct installation can be removed or rolled back later.

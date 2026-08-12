@@ -11,6 +11,12 @@ flatpak_archive="out/lsfg-vk-$version-flatpaks.tar.xz"
 release_branch="$(git branch --show-current)"
 source_commit="$(git rev-parse HEAD)"
 release_remote="${LSFGVK_RELEASE_REMOTE:-experimental}"
+notes_version="2.0.0-dev28-experimental.21"
+
+if [[ "$version" != "$notes_version" ]]; then
+    echo "Release notes still describe $notes_version. Update scripts/publish-package.sh for $version before publishing." >&2
+    exit 1
+fi
 
 if [[ "$release_branch" != "develop" ]]; then
     echo "Publish from develop; current branch is $release_branch." >&2
@@ -82,25 +88,27 @@ cat > "$notes_file" <<EOF
 
 This is an experimental build of the lsfg-vk 2.x development line. Test it game by game and retain a known-good rollback path.
 
-## This release: live frame-generation switching with Adaptive stability retained
+## This release: deterministic Adaptive policy and a validated stability baseline
 
-Version \`v2.0.0-dev28-experimental.9\` introduced the target-driven Adaptive scheduler; \`.18\` consolidated the tested recovery and stability revisions; and \`.19\` refined short 2x Adaptive gameplay-hitch handling. This \`.20\` release adds a dedicated live frame-generation switch without changing valid Fixed or Adaptive multiplier semantics.
+This \`.21\` release packages the locally hardware-validated \`aeae16f\` runtime. It extracts Adaptive policy from Vulkan presentation code into a clock-driven state machine, adds deterministic regression coverage, and fixes Smooth Cadence retaining a generated-frame level above its configured maximum.
+
+The later local-only \`ab4f790\` hot-path experiment is deliberately excluded. It combined compute-barrier, mapped-buffer, and submission-storage changes and showed intermittent generation flinches during testing. No part of that experiment is included in this release.
 
 ### Highlights
 
-- Adds \`frame_generation_enabled\`: turn synthesis off and back on while a game is running, retaining the selected Fixed multiplier or Adaptive target, ceiling, and Smooth Cadence settings. Off mode presents real game frames without generation resources; enabling it creates a fresh interpolation context without a game restart.
-- Expands opt-in Adaptive Frame Generation with a 2x/3x/4x quality ceiling and optional Smooth Cadence. Fixed 2x, 3x, and 4x remain available and unchanged.
-- Keeps a validated 2x Adaptive level through a short 100–250 ms gameplay hitch, refreshes three real temporal-history frames, and resumes instead of entering the longer menu/focus recovery path. Longer interruptions retain the guarded recovery path.
-- Protects real-frame throughput by ramping generation gradually, retaining proven levels, measuring suspected load-induced collapses, and backing off counterproductive probes.
-- Keeps temporal history current during Gamescope fallback, restores validated Adaptive state after recovery, and can request one guarded swapchain rebuild when stale presentation state remains.
-- Preserves gameplay cadence across menu/focus transitions and excludes impossible DX12/VKD3D fast-present bursts from Adaptive's feedback loop.
-- Adds process-unique context IDs and focused diagnostics for presentation stalls, recovery, and Adaptive policy.
+- Moves Adaptive decisions into an independently testable state machine driven by an explicit monotonic clock. Vulkan, Gamescope fallback, and presentation code consume its frame plans without changing their established guards.
+- Adds deterministic scheduler tests, a 120-case policy matrix, a same-host microbenchmark, and packaging gates that run the policy suite before an archive is produced.
+- Prevents Smooth Cadence from retaining more generated frames than the selected maximum after restoration, rescue, or recovery.
+- Fixes the native Active In dialog accidentally invoking profile creation through an unrelated confirmation callback.
+- Makes the native UI report Smooth Cadence's actual disabled default when no profile is selected.
+- Clarifies private interpolation-context hot reloads and the cases where game-owned swapchain capacity still requires a restart.
 
 ### Important limitations
 
 - Adaptive Frame Generation is experimental and opt-in. This independent Vulkan-layer scheduler varies between zero and three generated frames per real frame toward the configured average target. It cannot reduce a native framerate already above the target, exceed the selected 4x maximum, guarantee an unreachable target, or provide the Windows Queue Target modes.
 - The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. This fork provides a separate live synthesis switch that preserves the selected Fixed or Adaptive mode. Use \`DISABLE_LSFGVK=1\` or remove the launch wrapper and restart the game when the layer itself must be disabled.
 - Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so it defaults to disabled.
+- This release does not claim lower GPU cost, higher image quality, or reduced ghosting. Shaders, model selection, interpolation timestamps, generated-frame counts, and Fixed 2x/3x/4x scheduling are unchanged from the known-good runtime path.
 - Lossless Scaling and \`Lossless.dll\` must already be installed through Steam; neither release archive includes or modifies it.
 - \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is an opt-in Adaptive recovery path for direct engine users. A swapchain rebuild can briefly pause or flicker, and some games may mishandle it. The Decky experimental wrapper enables the tested timeout and guarded rebuild automatically.
 - Flatpak extensions for 23.08, 24.08, and 25.08 are packaged separately in \`$(basename "$flatpak_archive")\` under a dedicated experimental ID that can coexist with the public Flathub layer.
@@ -113,7 +121,7 @@ Version \`v2.0.0-dev28-experimental.9\` introduced the target-driven Adaptive sc
 
 ### Adaptive configuration
 
-Enable the new mode through the Qt UI or a profile:
+Enable Adaptive mode through the Qt UI or a profile:
 
 \`\`\`toml
 adaptive = true
@@ -123,9 +131,13 @@ adaptive_stable_cadence = false
 frame_generation_enabled = true
 \`\`\`
 
-Restart the game after switching between Fixed and Adaptive modes so the swapchain has the intended generated-frame capacity. The target, maximum multiplier, Smooth Cadence, flow scale, and performance mode can then be hot-reloaded.
+Restart the game after switching between Fixed and Adaptive modes, or before increasing a Fixed multiplier beyond the capacity used when the game created its swapchain. Target, maximum multiplier, Smooth Cadence, flow scale, and performance mode can then rebuild the private interpolation context through hot reload.
 
-### Improvements
+### Included foundation and .21 improvements
+
+- Extracts the existing Adaptive controller from swapchain presentation into a testable state machine without changing the intended policy.
+- Adds deterministic timing tests, a compatibility-oriented 120-case policy matrix, and a scheduler microbenchmark.
+- Corrects native UI defaults and Active In dialog wiring.
 
 - Adds a live frame-generation switch contributed by PacificSilent and adapted to preserve both Fixed and Adaptive mode state. Off mode directly presents real game frames without per-swapchain interpolation resources; re-enabling creates a fresh context without restarting the game.
 - Adds a narrow 2x Adaptive gameplay-hitch recovery path. It applies only after 2x is validated and does not alter Fixed mode, Adaptive 3x/4x, bounded generated-image acquisition, or guarded swapchain recreation.
@@ -138,7 +150,9 @@ Restart the game after switching between Fixed and Adaptive modes so the swapcha
 - Preserves the validated generation level and gameplay baseline across recovery and hard menu/focus stalls. Sustained gameplay slowdowns instead rebase after normal one-second stabilization.
 - Warms all three shared temporal-history slots before Adaptive first generates output and keeps shared history current while generated images are unavailable.
 
-### Fixed
+### Stability carried forward and corrected in .21
+
+- Prevents Smooth Cadence restoration and rescue paths from retaining a generated-frame level above the configured maximum.
 
 - Prevents an isolated short gameplay hitch at an already validated 2x ceiling from unnecessarily disabling generation for the full one-to-five-second menu/focus recovery window.
 - Prevents the existing Gamescope inference-bypass fallback from advancing temporal-history counters without refreshing the shared feature slots used when generation resumes.

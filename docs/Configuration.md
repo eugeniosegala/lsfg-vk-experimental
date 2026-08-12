@@ -37,9 +37,9 @@ Next is a list of all available **profile** configuration options:
   failures at a higher multiplier back off progressively from 5 to 15, 30, and then 60 seconds, unless the measured
   base rate improves by at least 15%. After a generated-image recovery, Adaptive preserves the last validated level
   through the safety warm-up and waits five seconds before probing a higher level. Multiplier policy is frozen while
-  generated output is bypassed, so recovery cannot falsely accept a level that was not actually running. For a modest
-  fractional target such as 60 -> 90, Adaptive can automatically validate a constant cadence to avoid alternating
-  real-only and generated frames; it falls back to strict target scheduling if the higher constant workload is not
+  generated output is bypassed, so recovery cannot falsely accept a level that was not actually running. When Smooth
+  Cadence is enabled, a modest fractional target such as 60 -> 90 can validate a constant cadence to avoid alternating
+  real-only and generated frames; it returns to strict target scheduling if the higher constant workload is not
   sustainable. An abrupt menu, focus, or display transition preserves the previous real-rate baseline and proven
   generation level. Adaptive restores that level only after one second at least 90% of the earlier base rate; after
   five seconds without recovery it discards the stale baseline and ramps cleanly from zero. A validated level that
@@ -59,7 +59,7 @@ Next is a list of all available **profile** configuration options:
 - **Pacing Mode / `pacing`**: This option is explained in greater detail below. Supported values are **None / `none`**.
 - **GPU / `gpu`**: The GPU to use for frame generation. This MUST be the **same GPU** as the one being used by the application. **Dual GPU is NOT supported**. You can identify a GPU through its name (e.g. `NVIDIA GeForce RTX 3080`), uppercase-only ID (e.g. `0x10DE:0x2C02`) or PCI bus ID (e.g. `3:0.0`). If not specified, the primary GPU will be used, which may lead to issues.
 
-The "Frame Generation", "Multiplier", "Adaptive Target", "Maximum Adaptive Multiplier", "Smooth Cadence", "Flow Scale" and "Performance Mode" options can be **hot-reloaded**, meaning that changes to these options will take effect immediately without needing to restart the application. Frame Generation Off preserves the selected mode and the game-owned swapchain capacity needed to resume it. Restart the application after switching between Fixed and Adaptive modes so the swapchain has the intended generated-frame capacity. Options such as "Pacing Mode" or removal of the profile require a swapchain recreation, which usually means resizing or restarting the application. Any other change requires an application restart.
+The "Frame Generation", "Multiplier", "Adaptive Target", "Maximum Adaptive Multiplier", "Smooth Cadence", "Flow Scale" and "Performance Mode" options can be **hot-reloaded**, meaning that the layer rebuilds its private interpolation context without requiring the game to restart. Frame Generation Off preserves the selected mode and the game-owned swapchain capacity needed to resume it. Restart the application after switching between Fixed and Adaptive modes, or before increasing a Fixed multiplier beyond the value used when the game created its swapchain, so the game-owned swapchain has the intended generated-frame capacity. Options such as "Pacing Mode" or removal of the profile require a game-owned swapchain recreation, which usually means resizing or restarting the application. Any other change requires an application restart.
 
 ### Pacing Modes
 
