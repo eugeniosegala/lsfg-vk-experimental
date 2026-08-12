@@ -82,12 +82,13 @@ cat > "$notes_file" <<EOF
 
 This is an experimental build of the lsfg-vk 2.x development line. Test it game by game and retain a known-good rollback path.
 
-## This release: Adaptive Frame Generation, SteamOS recovery, and 2x gameplay-hitch handling
+## This release: live frame-generation switching with Adaptive stability retained
 
-Version \`v2.0.0-dev28-experimental.9\` introduced the initial target-driven Adaptive scheduler, and \`.18\` consolidated the tested \`.10\` through \`.18\` revisions into a configurable, load-aware implementation with SteamOS/Game Mode recovery. This \`.19\` follow-up keeps that policy and refines the specific short-hitch case observed with a validated 2x Adaptive ceiling on Steam Deck hardware.
+Version \`v2.0.0-dev28-experimental.9\` introduced the target-driven Adaptive scheduler; \`.18\` consolidated the tested recovery and stability revisions; and \`.19\` refined short 2x Adaptive gameplay-hitch handling. This \`.20\` release adds a dedicated live frame-generation switch without changing valid Fixed or Adaptive multiplier semantics.
 
 ### Highlights
 
+- Adds \`frame_generation_enabled\`: turn synthesis off and back on while a game is running, retaining the selected Fixed multiplier or Adaptive target, ceiling, and Smooth Cadence settings. Off mode presents real game frames without generation resources; enabling it creates a fresh interpolation context without a game restart.
 - Expands opt-in Adaptive Frame Generation with a 2x/3x/4x quality ceiling and optional Smooth Cadence. Fixed 2x, 3x, and 4x remain available and unchanged.
 - Keeps a validated 2x Adaptive level through a short 100–250 ms gameplay hitch, refreshes three real temporal-history frames, and resumes instead of entering the longer menu/focus recovery path. Longer interruptions retain the guarded recovery path.
 - Protects real-frame throughput by ramping generation gradually, retaining proven levels, measuring suspected load-induced collapses, and backing off counterproductive probes.

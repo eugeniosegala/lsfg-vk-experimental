@@ -8,17 +8,17 @@ baseline so a future update can distinguish upstream work from experimental-fork
 
 | Item                       | Value                                                                                  |
 |----------------------------|----------------------------------------------------------------------------------------|
-| Release version            | `2.0.0-dev28-experimental.19`                                                          |
-| Release basis              | Follow-up prerelease after the cumulative `.18` engine release                         |
+| Release version            | `2.0.0-dev28-experimental.20`                                                          |
+| Release basis              | Follow-up prerelease after `.19` Adaptive gameplay-hitch recovery                      |
 | Pre-publication validation | Native and Flatpak archives built and verified locally                                 |
-| Included change range      | `.19`: short 2x Adaptive gameplay-hitch recovery and focused diagnostics              |
+| Included change range      | `.20`: live frame-generation switch with Fixed/Adaptive state preservation             |
 | Fixed-mode impact          | Fixed 2x, 3x, and 4x scheduling remains on its existing path                          |
-| Ledger reconciled          | 2026-08-11                                                                             |
+| Ledger reconciled          | 2026-08-12                                                                             |
 
 The sections below are chronological. Versions through `.9` document the original published prereleases; `.10` through
 `.17` record the successive local test builds consolidated into the `.18` release; `.19` records the follow-up 2x
-gameplay-hitch refinement. The detailed history is intentionally retained here so the public README and release notes
-can remain concise.
+gameplay-hitch refinement; and `.20` adds the live frame-generation switch. The detailed history is intentionally
+retained here so the public README and release notes can remain concise.
 
 ## Reviewed baseline
 
@@ -442,12 +442,12 @@ The `.19` release adds a narrow recovery path with these boundaries:
 The native Linux and Flatpak archives are rebuilt through the release scripts. Runtime testing remains game- and
 hardware-dependent, so this remains an experimental prerelease rather than a guarantee of a locked target FPS.
 
-### Live frame-generation toggle: pending next release
+### Live frame-generation toggle release: `v2.0.0-dev28-experimental.20`
 
 [PacificSilent](https://github.com/PacificSilent) proposed restoring v1's live Off behaviour in
 [PR #1](https://github.com/eugeniosegala/lsfg-vk-experimental/pull/1). The original contribution represented Off as
-`multiplier = 1`. The experimental engine now has separate Fixed and Adaptive controllers, so the contribution is
-adapted as an independent `frame_generation_enabled` switch instead of changing multiplier semantics.
+`multiplier = 1`. The experimental engine has separate Fixed and Adaptive controllers, so `.20` adapts the contribution
+as an independent `frame_generation_enabled` switch instead of changing multiplier semantics.
 
 - `frame_generation_enabled = false` directly presents the game's real swapchain images and performs no model
   scheduling, image copies, generated-image acquisition, or per-swapchain interpolation allocation.
