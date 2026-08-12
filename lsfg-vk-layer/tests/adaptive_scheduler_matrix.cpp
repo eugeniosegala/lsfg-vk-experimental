@@ -88,7 +88,7 @@ namespace {
 
 int main() {
     constexpr std::array<double, 5> baseRates{30.0, 45.0, 47.0, 60.0, 90.0};
-    constexpr std::array<uint32_t, 3> targets{60, 90, 120};
+    constexpr std::array<uint32_t, 4> targets{60, 90, 100, 120};
     constexpr std::array<size_t, 3> maximumMultipliers{2, 3, 4};
     constexpr std::array<bool, 2> stableCadenceOptions{false, true};
 
@@ -120,7 +120,7 @@ int main() {
                         const double maximumUsefulOutputFps = stableCadence
                             ? std::min(
                                 baseFps * static_cast<double>(maximumMultiplier),
-                                static_cast<double>(targetFps) * 1.5
+                                static_cast<double>(targetFps) / 0.95
                             )
                             : achievableOutputFps + 1.0;
                         valid = valid &&

@@ -31,7 +31,7 @@ The suite currently locks down:
 - Smooth Cadence validation near an integer output ratio;
 - timestamp ordering, capacity bounds, and deterministic trace replay.
 
-`adaptive-scheduler-matrix` also runs 90 combinations of base cadence, target,
+`adaptive-scheduler-matrix` also runs 120 combinations of base cadence, target,
 multiplier ceiling, and Smooth Cadence. It checks output bounds and emits CSV
 when run directly:
 

@@ -160,10 +160,10 @@ namespace {
         }
 
         void stableCadence(const std::string_view operation, size_t, double,
-                double, std::string_view) override {
+                double, const std::string_view reason) override {
             this->events.push_back({
                 .operation = std::string(operation),
-                .reason = {},
+                .reason = std::string(reason),
             });
         }
 
@@ -639,6 +639,34 @@ namespace {
             "Smooth Cadence acceptance was not observable");
     }
 
+    void testSmoothCadenceReturnsToTargetAfterBaseRecovery() {
+        Harness harness(100, 2, true);
+        harness.start();
+        harness.runAtFps(50.0, 10s);
+        require(harness.scheduler.snapshot().phase ==
+                AdaptiveSchedulerPhase::StableCadence,
+            "precondition failed: 50 FPS did not settle on 2x for a 100 FPS target");
+
+        harness.runAtFps(60.0, 3s);
+        require(harness.scheduler.snapshot().phase !=
+                AdaptiveSchedulerPhase::StableCadence,
+            "Smooth Cadence retained stale 2x output after native cadence recovered");
+        const auto* disabled = harness.diagnostics.last(
+            "adaptive-stable-cadence-disabled"
+        );
+        require(disabled && disabled->reason == "outside-useful-range",
+            "native cadence recovery did not report a bounded Smooth Cadence exit");
+
+        size_t outputs = 0;
+        constexpr size_t sampleFrames = 600;
+        for (size_t frame = 0; frame < sampleFrames; ++frame)
+            outputs += 1 + harness.frameAtFps(60.0).size();
+        const double estimatedOutputFps =
+            static_cast<double>(outputs) / 10.0;
+        require(std::abs(estimatedOutputFps - 100.0) <= 0.2,
+            "strict scheduling did not return recovered cadence to the 100 FPS target");
+    }
+
     void testStrictLoadCollapseRestoresCheaperProvenLevel() {
         Harness harness(180, 3);
         harness.start();
@@ -748,6 +776,7 @@ int main() {
         {"bridge probe handles misleading first step", testBridgeProbeCanRecoverMisleadingFirstStep},
         {"rejected higher level backs off", testRejectedHigherLevelRetainsProvenLoadAndBacksOff},
         {"Smooth Cadence settles near integer demand", testSmoothCadenceSettlesNearIntegerDemand},
+        {"Smooth Cadence exits after native recovery", testSmoothCadenceReturnsToTargetAfterBaseRecovery},
         {"strict load collapse restores lower level", testStrictLoadCollapseRestoresCheaperProvenLevel},
         {"Smooth Cadence collapse measures real-only", testSmoothCadenceCollapseUsesRealOnlyMeasurement},
         {"cadence replay is deterministic", testDeterministicReplay},

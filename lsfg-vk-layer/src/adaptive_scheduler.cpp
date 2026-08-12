@@ -578,10 +578,14 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
         const double targetFps = static_cast<double>(this->config.targetFps);
         const double projectedOutputFps = baseFps *
             static_cast<double>(generatedLimit + 1);
+        const double cadenceDemandRatio =
+            desiredOutputsPerRealFrame /
+            static_cast<double>(generatedLimit + 1);
         const bool capacityAvailable =
             generatedLimit <= maximumGeneratedFrameCount;
         const bool cadenceStillUseful =
             desiredOutputsPerRealFrame > 1.0 &&
+            cadenceDemandRatio >= adaptiveStableCadenceMinimumDemandRatio &&
             projectedOutputFps >=
                 targetFps * adaptiveStableCadenceMinimumTargetRatio &&
             projectedOutputFps <=
@@ -658,7 +662,12 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
                 *this->adaptiveStableCadenceLimit;
             const double evaluatedProjectedOutputFps = baseFps *
                 static_cast<double>(evaluatedGeneratedLimit + 1);
+            const double evaluatedDemandRatio =
+                desiredOutputsPerRealFrame /
+                static_cast<double>(evaluatedGeneratedLimit + 1);
             const bool accepted =
+                evaluatedDemandRatio >=
+                    adaptiveStableCadenceMinimumDemandRatio &&
                 evaluatedProjectedOutputFps >=
                     targetFps * adaptiveStableCadenceMinimumTargetRatio &&
                 evaluatedProjectedOutputFps <=
