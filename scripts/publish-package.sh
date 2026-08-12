@@ -11,7 +11,7 @@ flatpak_archive="out/lsfg-vk-$version-flatpaks.tar.xz"
 release_branch="$(git branch --show-current)"
 source_commit="$(git rev-parse HEAD)"
 release_remote="${LSFGVK_RELEASE_REMOTE:-experimental}"
-notes_version="2.0.0-dev28-experimental.22"
+notes_version="2.0.0-dev28-experimental.23"
 
 if [[ "$version" != "$notes_version" ]]; then
     echo "Release notes still describe $notes_version. Update scripts/publish-package.sh for $version before publishing." >&2
@@ -88,26 +88,25 @@ cat > "$notes_file" <<EOF
 
 This is an experimental build of the lsfg-vk 2.x development line. Test it game by game and retain a known-good rollback path.
 
-## This release: recovery stability after menus and presentation stalls
+## This release: lower-overhead Vulkan submission bookkeeping
 
-This \`.22\` release fixes two recovery edge cases found in SteamOS diagnostics while retaining the deterministic \`.21\` scheduler foundation. After a menu interruption, restored generation keeps its delayed-load guard; after an isolated generated-image stall, recovery stays in-place instead of immediately rebuilding the game's swapchain.
+This \`.23\` release isolates a low-risk host-side optimization: normal Vulkan queue submissions now use inline metadata storage instead of repeatedly allocating and copying short semaphore, timeline-value, and stage-mask vectors. Applications that provide longer present-wait lists retain the existing dynamic fallback.
 
-The later local-only \`ab4f790\` hot-path experiment is deliberately excluded. It combined compute-barrier, mapped-buffer, and submission-storage changes and showed intermittent generation flinches during testing. No part of that experiment is included in this release.
+The earlier local-only \`ab4f790\` combined experiment remains excluded. This release does not include its global compute-barrier or persistent-mapping changes; it preserves the `.22` rendering, synchronization, timing, scheduler, and recovery behavior.
 
 ### Highlights
 
-- Preserves the recovered real-only cadence and lower proven generation level when Adaptive restores after a hard menu or focus discontinuity.
-- Reuses the existing delayed-load rescue if the restored level later collapses throughput: one second of real-only measurement confirms recovery before the lower proven level is restored.
-- Keeps the first isolated generated-image recovery inside the current swapchain with the existing three-frame temporal-history warm-up. Only a repeated recovery within 15 seconds may request the guarded rebuild.
-- Retains the five-second cross-context recreation cooldown, acquire-timeout fallback, temporal-history updates, and one-step Adaptive ramp.
-- Adds deterministic regressions for both field reports while keeping the 120-case policy matrix and full Linux packaging gates green.
+- Keeps the usual one-to-three-semaphore submission path allocation-free while preserving semaphore order, timeline values, wait stages, command-buffer association, fences, and queue-submission ordering.
+- Keeps a dynamic fallback for application-provided present waits beyond the inline capacity, so compatibility is not bounded by the optimization.
+- Adds focused regression coverage for timeline-only, mixed binary/timeline, and overflow submissions; the deterministic Adaptive suite and compatibility matrix remain green.
+- Retains the `.22` menu/focus recovery baseline, bounded generated-image recovery, history warm-up, cooldown, and all Fixed 2x/3x/4x behavior.
 
 ### Important limitations
 
 - Adaptive Frame Generation is experimental and opt-in. This independent Vulkan-layer scheduler varies between zero and three generated frames per real frame toward the configured average target. It cannot reduce a native framerate already above the target, exceed the selected 4x maximum, guarantee an unreachable target, or provide the Windows Queue Target modes.
 - The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. This fork provides a separate live synthesis switch that preserves the selected Fixed or Adaptive mode. Use \`DISABLE_LSFGVK=1\` or remove the launch wrapper and restart the game when the layer itself must be disabled.
 - Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so it defaults to disabled.
-- This release does not claim lower GPU cost, higher image quality, or reduced ghosting. Shaders, model selection, interpolation timestamps, generated-frame counts, and Fixed 2x/3x/4x scheduling are unchanged from the known-good runtime path.
+- This release does not claim a universal GPU gain, higher image quality, or reduced ghosting. Shaders, model selection, interpolation timestamps, generated-frame counts, and Fixed 2x/3x/4x scheduling are unchanged from the known-good runtime path.
 - Lossless Scaling and \`Lossless.dll\` must already be installed through Steam; neither release archive includes or modifies it.
 - \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is an opt-in Adaptive recovery path for direct engine users. The first isolated recovery stays in-place; a repeated recovery may rebuild the swapchain and can briefly pause or flicker. The Decky experimental wrapper enables the tested timeout and guarded policy automatically.
 - Flatpak extensions for 23.08, 24.08, and 25.08 are packaged separately in \`$(basename "$flatpak_archive")\` under a dedicated experimental ID that can coexist with the public Flathub layer.
