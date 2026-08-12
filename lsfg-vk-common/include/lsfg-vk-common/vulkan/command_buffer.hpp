@@ -10,7 +10,6 @@
 #include "vulkan.hpp"
 
 #include <cstdint>
-#include <span>
 #include <utility>
 #include <vector>
 
@@ -87,9 +86,9 @@ namespace vk {
         /// @param fence optional fence to signal on completion
         /// @throws ls::vulkan_error on failure
         void submit(const vk::Vulkan& vk,
-            std::span<const VkSemaphore> waitSemaphores,
+            std::vector<VkSemaphore> waitSemaphores,
             VkSemaphore waitTimelineSemaphore, uint64_t waitValue,
-            std::span<const VkSemaphore> signalSemaphores,
+            std::vector<VkSemaphore> signalSemaphores,
             VkSemaphore signalTimelineSemaphore, uint64_t signalValue,
             VkFence fence = VK_NULL_HANDLE) const;
 

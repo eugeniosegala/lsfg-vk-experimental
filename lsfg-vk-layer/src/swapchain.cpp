@@ -12,7 +12,6 @@
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -24,7 +23,6 @@
 #include <iostream>
 #include <limits>
 #include <optional>
-#include <span>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -1350,21 +1348,17 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
         }
         fallbackCommandBuffer.end(vk);
-        const std::array<VkSemaphore, 1> fallbackWaitSemaphores{
-            fallbackPass.acquireSemaphore.handle()
-        };
-        const std::array<VkSemaphore, 2> fallbackSignalSemaphores{
-            fallbackSemaphores.first.handle(), fallbackSemaphore.handle()
-        };
-        const std::span<const VkSemaphore> fallbackWaits = recoveryWarmupImage
-            ? std::span<const VkSemaphore>{fallbackWaitSemaphores}
-            : std::span<const VkSemaphore>{};
-        const std::span<const VkSemaphore> fallbackSignals = recoveryWarmupImage
-            ? std::span<const VkSemaphore>{fallbackSignalSemaphores}
-            : std::span<const VkSemaphore>{fallbackSignalSemaphores.data(), 1};
+        const std::vector<VkSemaphore> fallbackWaitSemaphores = recoveryWarmupImage
+            ? std::vector<VkSemaphore>{fallbackPass.acquireSemaphore.handle()}
+            : std::vector<VkSemaphore>{};
+        const std::vector<VkSemaphore> fallbackSignalSemaphores = recoveryWarmupImage
+            ? std::vector<VkSemaphore>{
+                fallbackSemaphores.first.handle(), fallbackSemaphore.handle()
+            }
+            : std::vector<VkSemaphore>{fallbackSemaphore.handle()};
         fallbackCommandBuffer.submit(vk,
-            fallbackWaits, this->syncSemaphore->handle(), sourceTimelineValue,
-            fallbackSignals, VK_NULL_HANDLE, 0,
+            fallbackWaitSemaphores, this->syncSemaphore->handle(), sourceTimelineValue,
+            fallbackSignalSemaphores, VK_NULL_HANDLE, 0,
             this->renderFence->handle()
         );
 
@@ -1487,10 +1481,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             auto& fallbackCommandBuffer = pass.commandBuffer;
             fallbackCommandBuffer.begin(vk);
             fallbackCommandBuffer.end(vk);
-            const std::array<VkSemaphore, 1> fallbackSignals{fallbackSemaphore.handle()};
             fallbackCommandBuffer.submit(vk,
                 {}, this->syncSemaphore->handle(), finalGeneratedTimelineValue,
-                fallbackSignals, VK_NULL_HANDLE, 0,
+                { fallbackSemaphore.handle() }, VK_NULL_HANDLE, 0,
                 this->renderFence->handle()
             );
 
@@ -1548,14 +1541,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             }
         );
 
-        std::array<VkSemaphore, 2> waitSemaphores{pass.acquireSemaphore.handle()};
-        size_t waitSemaphoreCount{1};
+        std::vector<VkSemaphore> waitSemaphores{ pass.acquireSemaphore.handle() };
         if (i) { // non-first pass
             const auto& prevPCS = this->postCopySemaphores.at((this->idx - 1) % this->postCopySemaphores.size());
-            waitSemaphores.at(waitSemaphoreCount++) = prevPCS.second.handle();
+            waitSemaphores.push_back(prevPCS.second.handle());
         }
 
-        const std::array<VkSemaphore, 2> signalSemaphores{
+        const std::vector<VkSemaphore> signalSemaphores{
             pcs.first.handle(),
             pcs.second.handle()
         };
@@ -1563,8 +1555,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         cmdbuf.end(vk);
         const auto generatedSubmitStarted = startPresentDiagnostic();
         cmdbuf.submit(vk,
-            std::span<const VkSemaphore>{waitSemaphores.data(), waitSemaphoreCount},
-            this->syncSemaphore->handle(), this->idx,
+            waitSemaphores, this->syncSemaphore->handle(), this->idx,
             signalSemaphores, VK_NULL_HANDLE, 0,
             i == generatedFrameCount - 1 ? this->renderFence->handle() : VK_NULL_HANDLE
         );

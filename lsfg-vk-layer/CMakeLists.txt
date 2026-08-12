@@ -46,13 +46,6 @@ if(BUILD_TESTING)
         "tests/adaptive_scheduler_benchmark.cpp")
     target_link_libraries(lsfg-vk-adaptive-benchmark
         PRIVATE lsfg-vk-adaptive)
-
-    add_executable(lsfg-vk-submission-info-tests
-        "tests/submission_info_tests.cpp")
-    target_link_libraries(lsfg-vk-submission-info-tests
-        PRIVATE lsfg-vk-common)
-    add_test(NAME submission-info
-        COMMAND lsfg-vk-submission-info-tests)
 endif()
 
 if(LSFGVK_BUILD_VK_LAYER)

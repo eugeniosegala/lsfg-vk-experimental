@@ -8,12 +8,10 @@
 #include "lsfg-vk-common/vulkan/fence.hpp"
 #include "lsfg-vk-common/vulkan/image.hpp"
 #include "lsfg-vk-common/vulkan/shader.hpp"
-#include "lsfg-vk-common/vulkan/submission_info.hpp"
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <utility>
 #include <vector>
 
@@ -202,16 +200,47 @@ void CommandBuffer::end(const vk::Vulkan& vk) const {
 }
 
 void CommandBuffer::submit(const vk::Vulkan& vk,
-        const std::span<const VkSemaphore> waitSemaphores,
+        std::vector<VkSemaphore> waitSemaphores,
         VkSemaphore waitTimelineSemaphore, uint64_t waitValue,
-        const std::span<const VkSemaphore> signalSemaphores,
+        std::vector<VkSemaphore> signalSemaphores,
         VkSemaphore signalTimelineSemaphore, uint64_t signalValue,
         VkFence fence) const {
-    const vk::SubmissionInfo submission{waitSemaphores,
-        waitTimelineSemaphore, waitValue,
-        signalSemaphores, signalTimelineSemaphore, signalValue,
-        *this->commandBuffer};
-    const VkSubmitInfo submitInfo = submission.makeSubmitInfo();
+    // create arrays of semaphores and values
+    if (waitTimelineSemaphore)
+        waitSemaphores.push_back(waitTimelineSemaphore);
+
+    std::vector<uint64_t> waitValues(waitSemaphores.size(), 0);
+    if (waitTimelineSemaphore)
+        waitValues.back() = waitValue;
+
+    if (signalTimelineSemaphore)
+        signalSemaphores.push_back(signalTimelineSemaphore);
+
+    std::vector<uint64_t> signalValues(signalSemaphores.size(), 0);
+    if (signalTimelineSemaphore)
+        signalValues.back() = signalValue;
+
+    // create submit info
+    const VkTimelineSemaphoreSubmitInfo timelineInfo{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .waitSemaphoreValueCount = static_cast<uint32_t>(waitValues.size()),
+        .pWaitSemaphoreValues = waitValues.data(),
+        .signalSemaphoreValueCount = static_cast<uint32_t>(signalValues.size()),
+        .pSignalSemaphoreValues = signalValues.data()
+    };
+    std::vector<VkPipelineStageFlags> stages(waitSemaphores.size(),
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+    const VkSubmitInfo submitInfo{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = &timelineInfo,
+        .waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size()),
+        .pWaitSemaphores = waitSemaphores.data(),
+        .pWaitDstStageMask = stages.data(),
+        .commandBufferCount = 1,
+        .pCommandBuffers = &*this->commandBuffer,
+        .signalSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size()),
+        .pSignalSemaphores = signalSemaphores.data()
+    };
     auto res = vk.df().QueueSubmit(vk.queue(), 1, &submitInfo, fence);
     if (res != VK_SUCCESS)
         throw ls::vulkan_error(res, "vkQueueSubmit() failed");

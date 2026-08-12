@@ -6,19 +6,14 @@ experiments. Every performance candidate must be measured against that
 checkpoint, tested in isolation, and rejected for any reproducible quality,
 stability, or recovery regression.
 
-## Current local tester: submission bookkeeping
+## Withdrawn experiment: submission bookkeeping
 
-- Keep Vulkan submission metadata in inline storage for the normal one-to-three
-  semaphore path, while retaining a dynamic fallback for an application that
-  supplies more present-wait semaphores.
-- Preserve semaphore order, timeline values, wait-stage masks, fences, command
-  buffers, and all queue-submission ordering exactly. This is a CPU/driver
-  overhead reduction only; it intentionally does not alter shaders, barriers,
-  interpolation timestamps, generated-frame counts, or Adaptive policy.
-- Validate this candidate with the focused submission-layout tests, the
-  deterministic Adaptive tests and matrix, then a real-device A/B run. Expect
-  a modest frametime-consistency improvement where submission overhead matters,
-  not an unqualified ten-percent GPU gain.
+- The `experimental.23` inline submission-storage experiment produced launch
+  black screens on real hardware despite passing its structural unit tests.
+  It is withdrawn and must not be restored or used as a baseline.
+- The corrective runtime returns to the known-good allocation-backed Vulkan
+  submission path. Any future submission optimization requires real-device
+  smoke tests across the supported driver stack before release.
 
 ## Measurement before more optimization
 
@@ -38,8 +33,9 @@ stability, or recovery regression.
 ## Low-risk performance work
 
 - Evaluate persistent mapping for frequently updated coherent buffers as a
-  separate, guarded candidate after the submission build is proven. Confirm
-  every host write is fenced from the prior GPU read on AMD, Intel, and NVIDIA.
+  separate, guarded candidate only after explicit real-device smoke tests.
+  Confirm every host write is fenced from the prior GPU read on AMD, Intel, and
+  NVIDIA.
 - Reduce avoidable temporary allocations and repeated host-side setup in
   presentation and scheduling paths only after a profiler identifies them.
 - Reuse scratch images or buffers only when lifetime analysis proves that no

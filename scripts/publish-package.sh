@@ -11,7 +11,7 @@ flatpak_archive="out/lsfg-vk-$version-flatpaks.tar.xz"
 release_branch="$(git branch --show-current)"
 source_commit="$(git rev-parse HEAD)"
 release_remote="${LSFGVK_RELEASE_REMOTE:-experimental}"
-notes_version="2.0.0-dev28-experimental.23"
+notes_version="2.0.0-dev28-experimental.24"
 
 if [[ "$version" != "$notes_version" ]]; then
     echo "Release notes still describe $notes_version. Update scripts/publish-package.sh for $version before publishing." >&2
@@ -88,18 +88,18 @@ cat > "$notes_file" <<EOF
 
 This is an experimental build of the lsfg-vk 2.x development line. Test it game by game and retain a known-good rollback path.
 
-## This release: lower-overhead Vulkan submission bookkeeping
+## This release: corrective rollback of experimental.23
 
-This \`.23\` release isolates a low-risk host-side optimization: normal Vulkan queue submissions now use inline metadata storage instead of repeatedly allocating and copying short semaphore, timeline-value, and stage-mask vectors. Applications that provide longer present-wait lists retain the existing dynamic fallback.
+This \`.24\` corrective release withdraws the \`.23\` inline Vulkan submission-storage experiment after real-device reports of black screens at game launch. The affected experiment is fully removed; the runtime submission and presentation paths are restored to the known-good \`.22\` implementation.
 
-The earlier local-only \`ab4f790\` combined experiment remains excluded. This release does not include its global compute-barrier or persistent-mapping changes; it preserves the `.22` rendering, synchronization, timing, scheduler, and recovery behavior.
+The earlier local-only \`ab4f790\` combined experiment also remains excluded. This release contains no global compute-barrier, persistent-mapping, or submission-storage optimization; it preserves the \`.22\` rendering, synchronization, timing, scheduler, and recovery behavior.
 
 ### Highlights
 
-- Keeps the usual one-to-three-semaphore submission path allocation-free while preserving semaphore order, timeline values, wait stages, command-buffer association, fences, and queue-submission ordering.
-- Keeps a dynamic fallback for application-provided present waits beyond the inline capacity, so compatibility is not bounded by the optimization.
-- Adds focused regression coverage for timeline-only, mixed binary/timeline, and overflow submissions; the deterministic Adaptive suite and compatibility matrix remain green.
-- Retains the `.22` menu/focus recovery baseline, bounded generated-image recovery, history warm-up, cooldown, and all Fixed 2x/3x/4x behavior.
+- Restores the allocation-backed semaphore, timeline-value, and wait-stage arrays used by \`.22\` for every Vulkan queue submission.
+- Restores the \`.22\` presentation call sites exactly, including their normal vector-backed semaphore construction.
+- Retains the deterministic Adaptive suite and compatibility matrix; no Adaptive policy, shader, interpolation timestamp, generated-frame count, or recovery guard was changed.
+- Keep \`.22\` as a rollback reference only; upgrade directly to this corrective release rather than using \`.23\`.
 
 ### Important limitations
 
