@@ -442,6 +442,30 @@ The `.19` release adds a narrow recovery path with these boundaries:
 The native Linux and Flatpak archives are rebuilt through the release scripts. Runtime testing remains game- and
 hardware-dependent, so this remains an experimental prerelease rather than a guarantee of a locked target FPS.
 
+### Live frame-generation toggle: pending next release
+
+[PacificSilent](https://github.com/PacificSilent) proposed restoring v1's live Off behaviour in
+[PR #1](https://github.com/eugeniosegala/lsfg-vk-experimental/pull/1). The original contribution represented Off as
+`multiplier = 1`. The experimental engine now has separate Fixed and Adaptive controllers, so the contribution is
+adapted as an independent `frame_generation_enabled` switch instead of changing multiplier semantics.
+
+- `frame_generation_enabled = false` directly presents the game's real swapchain images and performs no model
+  scheduling, image copies, generated-image acquisition, or per-swapchain interpolation allocation.
+- The selected Fixed multiplier or Adaptive target, maximum multiplier, and Smooth Cadence settings remain intact and
+  are restored when the switch returns to `true`.
+- The Vulkan layer and shared backend instance remain loaded. This is intentional: the watched configuration can
+  recreate a fresh per-swapchain interpolation context and resume generation without restarting the game.
+- The game-owned swapchain retains the capacity selected when it was created. This costs the same swapchain capacity
+  as the selected enabled mode while live generation is off, but avoids a forced game restart or unsafe swapchain
+  rebuild during re-enable.
+- Off/on transitions clear cross-context Adaptive recovery state before the fresh context is created, preventing a
+  stale recreation request, cooldown, or cadence baseline from leaking across the explicit user action.
+- Fixed and Adaptive enabled paths retain their existing generated-frame capacity, model calls, recovery policy, and
+  presentation sequence. Their only steady-state addition is the live-enabled boolean branch at the start of present.
+
+The original feature commit remains authored by Jonathan Gallegos/PacificSilent. Compatibility, documentation, and UI
+integration are layered separately so the contribution remains visible in the merged history.
+
 ## Update procedure
 
 1. Fetch the upstream branch and inspect what changed since the reviewed baseline:

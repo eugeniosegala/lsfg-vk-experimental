@@ -176,6 +176,18 @@ ApplicationWindow {
                 enabled: backend.available
 
                 GroupEntry {
+                    title: "Frame Generation"
+                    description: "Stop or resume frame synthesis live while preserving the selected mode"
+
+                    CheckBox {
+                        Layout.alignment: Qt.AlignRight
+
+                        checked: backend.frame_generation_enabled
+                        onToggled: backend.frame_generation_enabled = checked
+                    }
+                }
+
+                GroupEntry {
                     title: "Active In"
                     description: "Specify which applications this profile is active in"
 

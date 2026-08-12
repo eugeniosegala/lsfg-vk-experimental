@@ -78,11 +78,26 @@ bool Root::update() {
     if (!this->config.update())
         return false;
 
+    const std::optional<bool> previousFrameGenerationEnabled =
+        this->active_profile
+        ? std::optional<bool>(this->active_profile->frame_generation_enabled)
+        : std::nullopt;
     const auto& profile = findProfile(this->config.get(), ls::identify());
     if (profile.has_value())
         this->active_profile = profile->second;
     else
         this->active_profile = std::nullopt;
+
+    const std::optional<bool> currentFrameGenerationEnabled =
+        this->active_profile
+        ? std::optional<bool>(this->active_profile->frame_generation_enabled)
+        : std::nullopt;
+    if (previousFrameGenerationEnabled != currentFrameGenerationEnabled) {
+        // A live off/on transition creates a fresh swapchain context. Do not
+        // let a pending Adaptive recovery or recreation cooldown from the old
+        // context leak into the newly selected state.
+        this->adaptiveRecoveryState = {};
+    }
 
     return true;
 }

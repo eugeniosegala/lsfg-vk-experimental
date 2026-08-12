@@ -19,6 +19,9 @@ it does not introduce a separate frame-generation model. For the established 1.x
 
 ## What this experimental build adds
 
+- **Live Frame Generation toggle:** Stop and resume frame synthesis while a game is running without replacing the
+  selected Fixed or Adaptive settings. Off mode directly presents the game's real frames and creates no per-swapchain
+  interpolation context or images; the Vulkan layer and shared backend remain loaded so generation can resume live.
 - **Adaptive Frame Generation:** Set a displayed-FPS target and let the Vulkan layer schedule between zero and three
   generated frames per real frame, up to a configurable 2x, 3x, or 4x ceiling. Fixed 2x, 3x, and 4x remain available
   and unchanged.
@@ -51,6 +54,7 @@ adaptive = true
 target_fps = 120
 adaptive_max_multiplier = 3
 adaptive_stable_cadence = false
+frame_generation_enabled = true
 ```
 
 Restart the game after switching between Fixed and Adaptive modes so its swapchain is created with the correct output
@@ -66,8 +70,9 @@ The target is an objective, not a guaranteed lock:
 - Higher ratios and wider gaps between real frames can increase ghosting and input latency.
 - Smooth Cadence may improve motion consistency on constrained hardware, but strict scheduling is usually more
   responsive. Leave it disabled unless a game benefits from the trade-off.
-- lsfg-vk v2 has no 0x multiplier. Set `DISABLE_LSFGVK=1`, or remove the launch wrapper and restart the game, when
-  frame generation must be disabled completely.
+- lsfg-vk v2 has no 0x multiplier. Set `frame_generation_enabled = false` for live real-frame passthrough. This stops
+  synthesis but keeps the Vulkan layer and shared backend loaded. Set `DISABLE_LSFGVK=1`, or remove the launch wrapper
+  and restart the game, when the layer itself must be disabled completely.
 
 This scheduler is an independent Vulkan-layer implementation inspired by Lossless Scaling's
 [Adaptive Frame Generation](https://store.steampowered.com/news/app/993090/view/518581441632666732). It is not a port of

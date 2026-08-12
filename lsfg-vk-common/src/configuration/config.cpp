@@ -41,6 +41,7 @@ active_in = [ # see the wiki for more info
 ]
 # gpu = 'NVIDIA GeForce RTX 5080' # see the wiki for more info
 multiplier = 4
+frame_generation_enabled = true
 adaptive = false
 target_fps = 120
 adaptive_max_multiplier = 3
@@ -72,6 +73,7 @@ ConfigFile::ConfigFile() {
             "vkcubepp"
         },
         .multiplier = 4,
+        .frame_generation_enabled = true,
         .adaptive = false,
         .target_fps = 120,
         .adaptive_max_multiplier = 3,
@@ -133,6 +135,7 @@ namespace {
             .active_in = activityFromString(tbl["active_in"]),
             .gpu = tbl["gpu"].value<std::string>(),
             .multiplier = tbl["multiplier"].value_or(2U),
+            .frame_generation_enabled = tbl["frame_generation_enabled"].value_or(true),
             .adaptive = tbl["adaptive"].value_or(false),
             .target_fps = tbl["target_fps"].value_or(120U),
             .adaptive_max_multiplier = tbl["adaptive_max_multiplier"].value_or(3U),
@@ -180,6 +183,7 @@ namespace {
             .gpu = std::nullopt,
 
             .multiplier = 2,
+            .frame_generation_enabled = true,
             .adaptive = false,
             .target_fps = 120,
             .adaptive_max_multiplier = 3,
@@ -193,6 +197,9 @@ namespace {
         if (gpu) conf.gpu = std::string(gpu);
         const char* multiplier = std::getenv("LSFGVK_MULTIPLIER");
         if (multiplier) conf.multiplier = static_cast<size_t>(std::stoul(multiplier));
+        const char* frame_generation_enabled = std::getenv("LSFGVK_FRAME_GENERATION_ENABLED");
+        if (frame_generation_enabled)
+            conf.frame_generation_enabled = std::string(frame_generation_enabled) != "0";
         const char* adaptive = std::getenv("LSFGVK_ADAPTIVE");
         if (adaptive) conf.adaptive = std::string(adaptive) == "1";
         const char* target_fps = std::getenv("LSFGVK_TARGET_FPS");
@@ -274,6 +281,7 @@ void ConfigFile::write(const std::filesystem::path& path) const {
         if (conf.gpu)
             profile.insert("gpu", conf.gpu.value_or(""));
         profile.insert("multiplier", static_cast<int64_t>(conf.multiplier));
+        profile.insert("frame_generation_enabled", conf.frame_generation_enabled);
         profile.insert("adaptive", conf.adaptive);
         profile.insert("target_fps", static_cast<int64_t>(conf.target_fps));
         profile.insert("adaptive_max_multiplier", static_cast<int64_t>(conf.adaptive_max_multiplier));

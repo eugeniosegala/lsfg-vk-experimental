@@ -98,7 +98,7 @@ Version \`v2.0.0-dev28-experimental.9\` introduced the initial target-driven Ada
 ### Important limitations
 
 - Adaptive Frame Generation is experimental and opt-in. This independent Vulkan-layer scheduler varies between zero and three generated frames per real frame toward the configured average target. It cannot reduce a native framerate already above the target, exceed the selected 4x maximum, guarantee an unreachable target, or provide the Windows Queue Target modes.
-- The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. Use \`DISABLE_LSFGVK=1\` or remove the launch wrapper and restart the game when frame generation must be disabled.
+- The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. This fork provides a separate live synthesis switch that preserves the selected Fixed or Adaptive mode. Use \`DISABLE_LSFGVK=1\` or remove the launch wrapper and restart the game when the layer itself must be disabled.
 - Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so it defaults to disabled.
 - Lossless Scaling and \`Lossless.dll\` must already be installed through Steam; neither release archive includes or modifies it.
 - \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is an opt-in Adaptive recovery path for direct engine users. A swapchain rebuild can briefly pause or flicker, and some games may mishandle it. The Decky experimental wrapper enables the tested timeout and guarded rebuild automatically.
@@ -119,12 +119,14 @@ adaptive = true
 target_fps = 120
 adaptive_max_multiplier = 3
 adaptive_stable_cadence = false
+frame_generation_enabled = true
 \`\`\`
 
 Restart the game after switching between Fixed and Adaptive modes so the swapchain has the intended generated-frame capacity. The target, maximum multiplier, Smooth Cadence, flow scale, and performance mode can then be hot-reloaded.
 
 ### Improvements
 
+- Adds a live frame-generation switch contributed by PacificSilent and adapted to preserve both Fixed and Adaptive mode state. Off mode directly presents real game frames without per-swapchain interpolation resources; re-enabling creates a fresh context without restarting the game.
 - Adds a narrow 2x Adaptive gameplay-hitch recovery path. It applies only after 2x is validated and does not alter Fixed mode, Adaptive 3x/4x, bounded generated-image acquisition, or guarded swapchain recreation.
 - Adds a configurable 2x/3x/4x Adaptive ceiling. When the target is unreachable at the selected quality limit, output remains below target instead of silently using a higher interpolation ratio.
 - Stabilizes on real frames, ramps generated workload one level at a time, and accepts a step only when it improves useful output without an unsafe real-rate collapse. A bounded bridge probe handles misleading Gamescope divisors.

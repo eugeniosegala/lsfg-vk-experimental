@@ -31,6 +31,7 @@ namespace lsfgvk::ui {
         Q_PROPERTY(QStringListModel* active_in READ calculateActiveInModel NOTIFY refreshUI)
         Q_PROPERTY(int active_in_index READ getActiveInIndex WRITE activeInSelected NOTIFY refreshUI)
         Q_PROPERTY(size_t multiplier READ getMultiplier WRITE multiplierUpdated NOTIFY refreshUI)
+        Q_PROPERTY(bool frame_generation_enabled READ getFrameGenerationEnabled WRITE frameGenerationEnabledUpdated NOTIFY refreshUI)
         Q_PROPERTY(bool adaptive READ getAdaptive WRITE adaptiveUpdated NOTIFY refreshUI)
         Q_PROPERTY(uint target_fps READ getTargetFPS WRITE targetFPSUpdated NOTIFY refreshUI)
         Q_PROPERTY(size_t adaptive_max_multiplier READ getAdaptiveMaxMultiplier WRITE adaptiveMaxMultiplierUpdated NOTIFY refreshUI)
@@ -78,6 +79,10 @@ namespace lsfgvk::ui {
         [[nodiscard]] size_t getMultiplier() const {
             VALIDATE_AND_GET_PROFILE(2)
             return conf.multiplier;
+        }
+        [[nodiscard]] bool getFrameGenerationEnabled() const {
+            VALIDATE_AND_GET_PROFILE(true)
+            return conf.frame_generation_enabled;
         }
         [[nodiscard]] bool getAdaptive() const {
             VALIDATE_AND_GET_PROFILE(false)
@@ -157,6 +162,11 @@ namespace lsfgvk::ui {
         void multiplierUpdated(size_t multiplier) {
             VALIDATE_AND_GET_PROFILE()
             conf.multiplier = multiplier;
+            MARK_DIRTY()
+        }
+        void frameGenerationEnabledUpdated(bool frame_generation_enabled) {
+            VALIDATE_AND_GET_PROFILE()
+            conf.frame_generation_enabled = frame_generation_enabled;
             MARK_DIRTY()
         }
         void adaptiveUpdated(bool adaptive) {

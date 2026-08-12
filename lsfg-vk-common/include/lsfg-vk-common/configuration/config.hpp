@@ -35,6 +35,8 @@ namespace ls {
         std::optional<std::string> gpu;
         /// multiplier for frame generation
         size_t multiplier{2};
+        /// allow frame synthesis to be toggled live without changing its mode
+        bool frame_generation_enabled{true};
         /// dynamically vary the generated-frame count toward a target framerate
         bool adaptive{false};
         /// desired displayed framerate when adaptive mode is enabled
