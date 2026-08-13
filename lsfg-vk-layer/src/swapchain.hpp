@@ -12,6 +12,7 @@
 #include "lsfg-vk-common/vulkan/timeline_semaphore.hpp"
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 #include "adaptive_scheduler.hpp"
+#include "color_pipeline.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -120,6 +121,7 @@ namespace lsfgvk::layer {
         AdaptiveRecoveryState* adaptiveRecoveryState{};
         uint64_t diagnosticsContextId{0};
 
+        SwapchainColorPipeline colorPipeline;
         ls::GameConf profile;
         SwapchainInfo info;
     };

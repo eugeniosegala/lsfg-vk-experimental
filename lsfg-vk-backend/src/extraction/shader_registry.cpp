@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "shader_registry.hpp"
+#include "../shaders/color_conversion_spirv.hpp"
 #include "lsfg-vk-common/helpers/errors.hpp"
 #include "lsfg-vk-common/vulkan/shader.hpp"
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
@@ -93,6 +94,12 @@ ShaderRegistry backend::buildShaderRegistry(const vk::Vulkan& vk, bool fp16,
         .mipmaps = SHADER(255, 1, 7, 1, 1),
         .generate = vk::Shader(vk, generate_data, 5, 1, 1, 2),
         .generate_hdr = vk::Shader(vk, generate_data_hdr, 5, 1, 1, 2),
+        .hdr10_pq_to_scrgb = vk::Shader(
+            vk, embedded::hdr10PqToScRgbSpirv, 1, 1, 0, 1
+        ),
+        .scrgb_to_hdr10_pq = vk::Shader(
+            vk, embedded::scRgbToHdr10PqSpirv, 1, 1, 0, 1
+        ),
         .quality = {
             .alpha = {
                 SHADER(267, 1, 2, 0, 1),

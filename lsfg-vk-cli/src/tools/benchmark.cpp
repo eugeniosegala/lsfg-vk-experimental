@@ -128,7 +128,8 @@ int benchmark::run(const Options& opts) {
         lsfgvk::backend::Context& lsfgvk_ctx = lsfgvk.openContext(
             srcfds, destfds,
             syncfd, extent.width, extent.height,
-            false, 1.0F / opts.flow, opts.performance_mode
+            lsfgvk::backend::FrameEncoding::Sdr8,
+            1.0F / opts.flow, opts.performance_mode
         );
 
         // run the benchmark

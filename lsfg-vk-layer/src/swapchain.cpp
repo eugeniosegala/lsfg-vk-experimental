@@ -816,6 +816,12 @@ namespace {
 
 void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo) {
+    const auto colorPipeline = classifySwapchainColor(
+        createInfo.imageFormat, createInfo.imageColorSpace
+    );
+    if (!colorPipeline.generationSupported)
+        return;
+
     createInfo.imageUsage |=
         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
@@ -848,6 +854,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             const bool discontinuitySoftRecoveryAttempted) :
         instance(backend),
         adaptiveRecoveryState(recoveryState),
+        colorPipeline(classifySwapchainColor(info.format, info.colorSpace)),
         profile(std::move(profile)), info(std::move(info)) {
     this->diagnosticsContextId = allocateDiagnosticsContextId();
     const DiagnosticsContextScope diagnosticsContext(
@@ -855,7 +862,20 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     );
 
     const VkExtent2D extent = this->info.extent;
-    const bool hdr = this->info.format > 57;
+
+    std::cerr << "lsfg-vk: swapchain colour pipeline: format="
+              << static_cast<int>(this->info.format)
+              << "; color-space=" << static_cast<int>(this->info.colorSpace)
+              << "; mode=" << this->colorPipeline.name
+              << "; frame-generation="
+              << (this->colorPipeline.generationSupported ? "supported" : "passthrough")
+              << '\n';
+
+    if (!this->colorPipeline.generationSupported) {
+        std::cerr << "lsfg-vk: frame generation disabled for this swapchain: "
+                  << this->colorPipeline.reason << '\n';
+        return;
+    }
 
     // Live-off is passthrough. Keep the backend instance loaded so the watched
     // configuration can turn the selected Fixed or Adaptive mode back on, but
@@ -865,117 +885,140 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
         return;
     }
 
-    std::vector<int> sourceFds(2);
-    std::vector<int> destinationFds(generatedFrameCapacity(this->profile));
-
-    this->sourceImages.reserve(sourceFds.size());
-    for (int& fd : sourceFds)
-        this->sourceImages.emplace_back(vk,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            std::nullopt, &fd);
-
-    this->destinationImages.reserve(destinationFds.size());
-    for (int& fd : destinationFds)
-        this->destinationImages.emplace_back(vk,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            std::nullopt, &fd);
-
-    if (this->profile.adaptive) {
-        this->adaptiveScheduler.emplace(
-            AdaptiveSchedulerConfig{
-                .targetFps = this->profile.target_fps,
-                .maximumMultiplier = this->profile.adaptive_max_multiplier,
-                .generatedFrameCapacity = this->destinationImages.size(),
-                .stableCadence = this->profile.adaptive_stable_cadence,
-            },
-            &adaptiveSchedulerDiagnostics
-        );
-    }
-
-    int syncFd{};
-    this->syncSemaphore.emplace(vk, 0, std::nullopt, &syncFd);
-
     try {
-        this->ctx = ls::owned_ptr<ls::R<backend::Context>>(
-            new ls::R<backend::Context>(backend.openContext(
-                { sourceFds.at(0), sourceFds.at(1) }, destinationFds, syncFd,
-                extent.width, extent.height,
-                hdr, 1.0F / this->profile.flow_scale, this->profile.performance_mode
-            )),
-            [backend = &backend](ls::R<backend::Context>& ctx) {
-                backend->closeContext(ctx);
-            }
+        std::vector<int> sourceFds(2);
+        std::vector<int> destinationFds(generatedFrameCapacity(this->profile));
+
+        this->sourceImages.reserve(sourceFds.size());
+        for (int& fd : sourceFds)
+            this->sourceImages.emplace_back(vk,
+                extent, this->colorPipeline.exchangeFormat,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                std::nullopt, &fd);
+
+        this->destinationImages.reserve(destinationFds.size());
+        for (int& fd : destinationFds)
+            this->destinationImages.emplace_back(vk,
+                extent, this->colorPipeline.exchangeFormat,
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                std::nullopt, &fd);
+
+        if (this->profile.adaptive) {
+            this->adaptiveScheduler.emplace(
+                AdaptiveSchedulerConfig{
+                    .targetFps = this->profile.target_fps,
+                    .maximumMultiplier = this->profile.adaptive_max_multiplier,
+                    .generatedFrameCapacity = this->destinationImages.size(),
+                    .stableCadence = this->profile.adaptive_stable_cadence,
+                },
+                &adaptiveSchedulerDiagnostics
+            );
+        }
+
+        int syncFd{};
+        this->syncSemaphore.emplace(vk, 0, std::nullopt, &syncFd);
+
+        try {
+            this->ctx = ls::owned_ptr<ls::R<backend::Context>>(
+                new ls::R<backend::Context>(backend.openContext(
+                    { sourceFds.at(0), sourceFds.at(1) }, destinationFds, syncFd,
+                    extent.width, extent.height,
+                    this->colorPipeline.encoding,
+                    1.0F / this->profile.flow_scale, this->profile.performance_mode
+                )),
+                [backend = &backend](ls::R<backend::Context>& ctx) {
+                    backend->closeContext(ctx);
+                }
+            );
+
+            backend::makeLeaking(); // don't worry about it :3
+        } catch (const std::exception& e) {
+            throw ls::error("failed to create swapchain context", e);
+        }
+
+        this->renderCommandBuffer.emplace(vk);
+        this->renderFence.emplace(vk);
+        for (size_t i = 0; i < this->destinationImages.size(); i++) {
+            this->passes.emplace_back(RenderPass {
+                .commandBuffer = vk::CommandBuffer(vk),
+                .acquireSemaphore = vk::Semaphore(vk)
+            });
+        }
+
+        const size_t frames = std::max(
+            this->info.images.size(), this->destinationImages.size() + 2
         );
+        for (size_t i = 0; i < frames; i++) {
+            this->postCopySemaphores.emplace_back(
+                vk::Semaphore(vk),
+                vk::Semaphore(vk)
+            );
+        }
 
-        backend::makeLeaking(); // don't worry about it :3
-    } catch (const std::exception& e) {
-        throw ls::error("failed to create swapchain context", e);
-    }
-
-    this->renderCommandBuffer.emplace(vk);
-    this->renderFence.emplace(vk);
-    for (size_t i = 0; i < this->destinationImages.size(); i++) {
-        this->passes.emplace_back(RenderPass {
-            .commandBuffer = vk::CommandBuffer(vk),
-            .acquireSemaphore = vk::Semaphore(vk)
-        });
-    }
-
-    const size_t frames = std::max(this->info.images.size(), this->destinationImages.size() + 2);
-    for (size_t i = 0; i < frames; i++) {
-        this->postCopySemaphores.emplace_back(
-            vk::Semaphore(vk),
-            vk::Semaphore(vk)
-        );
-    }
-
-    if (presentDiagnosticsEnabled()) {
-        std::cerr << "lsfg-vk: present diagnostics enabled; context="
-                  << activeDiagnosticsContextId
-                  << "; slow operation threshold is "
-                  << presentDiagnosticsThresholdMs() << " ms\n";
-    }
-    if (const auto timeout = generatedImageAcquireTimeoutNs()) {
-        std::cerr << "lsfg-vk: generated-image acquire timeout enabled at "
-                  << static_cast<double>(*timeout) / 1'000'000.0
-                  << " ms; stalled generated frames will be skipped\n";
-    }
-    if (this->profile.adaptive) {
-        std::cerr << "lsfg-vk: adaptive frame generation enabled; target="
-                  << this->profile.target_fps
-                  << " fps, maximum multiplier="
-                  << this->profile.adaptive_max_multiplier
-                  << "x, stable cadence="
-                  << (this->profile.adaptive_stable_cadence ? "enabled" : "disabled")
-                  << '\n';
-        const auto schedulerNow = DiagnosticsClock::now();
-        this->adaptiveScheduler->beginStabilization(
-            schedulerNow,
-            recoveryContext ? "swapchain-recreation" : "startup"
-        );
-        if (recoveryContext) {
-            if (discontinuityRecoveryContext) {
-                this->adaptiveScheduler->beginDiscontinuityRecovery(
-                    schedulerNow,
-                    recoveryGenerationLimit,
-                    discontinuityFallbackGenerationLimit,
-                    discontinuityBaselineBaseFps,
-                    discontinuityDeadline,
-                    discontinuitySoftRecoveryAttempted,
-                    "swapchain-recreation"
-                );
-            } else {
-                this->adaptiveScheduler->restoreGenerationLimit(
-                    schedulerNow,
-                    recoveryGenerationLimit,
-                    "swapchain-recreation",
-                    recoveryLoadFallbackGenerationLimit,
-                    recoveryLoadBaselineBaseFps
-                );
+        if (presentDiagnosticsEnabled()) {
+            std::cerr << "lsfg-vk: present diagnostics enabled; context="
+                      << activeDiagnosticsContextId
+                      << "; slow operation threshold is "
+                      << presentDiagnosticsThresholdMs() << " ms\n";
+        }
+        if (const auto timeout = generatedImageAcquireTimeoutNs()) {
+            std::cerr << "lsfg-vk: generated-image acquire timeout enabled at "
+                      << static_cast<double>(*timeout) / 1'000'000.0
+                      << " ms; stalled generated frames will be skipped\n";
+        }
+        if (this->profile.adaptive) {
+            std::cerr << "lsfg-vk: adaptive frame generation enabled; target="
+                      << this->profile.target_fps
+                      << " fps, maximum multiplier="
+                      << this->profile.adaptive_max_multiplier
+                      << "x, stable cadence="
+                      << (this->profile.adaptive_stable_cadence ? "enabled" : "disabled")
+                      << '\n';
+            const auto schedulerNow = DiagnosticsClock::now();
+            this->adaptiveScheduler->beginStabilization(
+                schedulerNow,
+                recoveryContext ? "swapchain-recreation" : "startup"
+            );
+            if (recoveryContext) {
+                if (discontinuityRecoveryContext) {
+                    this->adaptiveScheduler->beginDiscontinuityRecovery(
+                        schedulerNow,
+                        recoveryGenerationLimit,
+                        discontinuityFallbackGenerationLimit,
+                        discontinuityBaselineBaseFps,
+                        discontinuityDeadline,
+                        discontinuitySoftRecoveryAttempted,
+                        "swapchain-recreation"
+                    );
+                } else {
+                    this->adaptiveScheduler->restoreGenerationLimit(
+                        schedulerNow,
+                        recoveryGenerationLimit,
+                        "swapchain-recreation",
+                        recoveryLoadFallbackGenerationLimit,
+                        recoveryLoadBaselineBaseFps
+                    );
+                }
             }
         }
+    } catch (const std::exception& e) {
+        // Swapchain creation belongs to the game. A failure in LSFG's optional
+        // interpolation resources must not turn a valid game swapchain into a
+        // startup failure, especially when a driver exposes an HDR format that
+        // cannot be initialized on this device. Keep the native swapchain and
+        // present its real frames until the game recreates it.
+        this->ctx = {};
+        this->sourceImages.clear();
+        this->destinationImages.clear();
+        this->passes.clear();
+        this->postCopySemaphores.clear();
+        this->adaptiveScheduler.reset();
+        this->colorPipeline.generationSupported = false;
+        this->colorPipeline.name = "initialization-fallback";
+        this->colorPipeline.reason =
+            "LSFG frame-generation initialization failed; native presentation retained";
+        std::cerr << "lsfg-vk: " << this->colorPipeline.reason
+                  << ": " << e.what() << '\n';
     }
 }
 
@@ -996,8 +1039,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
     // Frame generation is live-disabled; hand the game's own image directly to
     // the driver without copies, model scheduling, fences or generated images.
-    if (!this->profile.frame_generation_enabled) {
-        if (this->profile.pacing == ls::Pacing::None)
+    if (!this->profile.frame_generation_enabled ||
+            !this->colorPipeline.generationSupported) {
+        if (this->colorPipeline.generationSupported &&
+                this->profile.pacing == ls::Pacing::None)
             forceFifoPresentModes(next_chain);
 
         const VkPresentInfoKHR presentInfo{

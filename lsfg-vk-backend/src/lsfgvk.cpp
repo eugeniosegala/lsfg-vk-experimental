@@ -17,6 +17,7 @@
 #include "shaderchains/alpha1.hpp"
 #include "shaderchains/beta0.hpp"
 #include "shaderchains/beta1.hpp"
+#include "shaderchains/color_conversion.hpp"
 #include "shaderchains/delta0.hpp"
 #include "shaderchains/delta1.hpp"
 #include "shaderchains/gamma0.hpp"
@@ -101,7 +102,7 @@ namespace lsfgvk::backend {
         /// (see lsfg-vk documentation)
         ContextImpl(const InstanceImpl& instance,
             std::pair<int, int> sourceFds, const std::vector<int>& destFds, int syncFd,
-            VkExtent2D extent, bool hdr, float flow, bool perf);
+            VkExtent2D extent, FrameEncoding encoding, float flow, bool perf);
 
         /// schedule frames
         /// (see lsfg-vk documentation)
@@ -116,6 +117,8 @@ namespace lsfgvk::backend {
     private:
         std::pair<vk::Image, vk::Image> sourceImages;
         std::vector<vk::Image> destImages;
+        std::optional<std::pair<vk::Image, vk::Image>> workingSourceImages;
+        std::optional<std::vector<vk::Image>> workingDestImages;
         vk::Image blackImage;
 
         vk::TimelineSemaphore syncSemaphore; // imported
@@ -132,6 +135,8 @@ namespace lsfgvk::backend {
 
         Ctx ctx;
 
+        std::optional<ColorConversion> sourceColorConversion;
+        std::optional<ColorConversion> destColorConversion;
         Mipmaps mipmaps;
         std::array<Alpha0, 7> alpha0;
         std::array<Alpha1, 7> alpha1;
@@ -287,11 +292,11 @@ InstanceImpl::InstanceImpl(vk::PhysicalDeviceSelector selectPhysicalDevice,
 
 Context& Instance::openContext(std::pair<int, int> sourceFds, const std::vector<int>& destFds,
         int syncFd, uint32_t width, uint32_t height,
-        bool hdr, float flow, bool perf) {
+        const FrameEncoding encoding, float flow, bool perf) {
     const VkExtent2D extent{ width, height };
     return *this->m_contexts.emplace_back(std::make_unique<ContextImpl>(*this->m_impl,
         sourceFds, destFds, syncFd,
-        extent, hdr, flow, perf
+        extent, encoding, flow, perf
     )).get();
 }
 
@@ -369,8 +374,82 @@ namespace {
         }
     }
     /// create context data
+    bool usesHighPrecisionTransport(const FrameEncoding encoding) {
+        return encoding != FrameEncoding::Sdr8;
+    }
+
+    bool usesHdrModel(const FrameEncoding encoding) {
+        return encoding == FrameEncoding::ScRgbLinear ||
+            encoding == FrameEncoding::Hdr10Pq;
+    }
+
+    bool requiresPqConversion(const FrameEncoding encoding) {
+        return encoding == FrameEncoding::Hdr10Pq;
+    }
+
+    std::optional<std::pair<vk::Image, vk::Image>> createWorkingSourceImages(
+            const vk::Vulkan& vk, const VkExtent2D extent,
+            const FrameEncoding encoding) {
+        if (!requiresPqConversion(encoding))
+            return std::nullopt;
+
+        return std::make_optional(std::pair{
+            vk::Image(vk, extent, VK_FORMAT_R16G16B16A16_SFLOAT),
+            vk::Image(vk, extent, VK_FORMAT_R16G16B16A16_SFLOAT)
+        });
+    }
+
+    std::optional<std::vector<vk::Image>> createWorkingDestImages(
+            const vk::Vulkan& vk, const VkExtent2D extent,
+            const FrameEncoding encoding, const size_t count) {
+        if (!requiresPqConversion(encoding))
+            return std::nullopt;
+
+        std::vector<vk::Image> images;
+        images.reserve(count);
+        for (size_t i = 0; i < count; ++i)
+            images.emplace_back(vk, extent, VK_FORMAT_R16G16B16A16_SFLOAT);
+        return images;
+    }
+
+    const std::pair<vk::Image, vk::Image>& selectModelSourceImages(
+            const std::pair<vk::Image, vk::Image>& transportImages,
+            const std::optional<std::pair<vk::Image, vk::Image>>& workingImages) {
+        return workingImages ? *workingImages : transportImages;
+    }
+
+    const std::vector<vk::Image>& selectModelDestImages(
+            const std::vector<vk::Image>& transportImages,
+            const std::optional<std::vector<vk::Image>>& workingImages) {
+        return workingImages ? *workingImages : transportImages;
+    }
+
+    std::optional<ColorConversion> createSourceColorConversion(
+            const Ctx& ctx, const FrameEncoding encoding,
+            const std::pair<vk::Image, vk::Image>& transportImages,
+            const std::optional<std::pair<vk::Image, vk::Image>>& workingImages) {
+        if (!requiresPqConversion(encoding))
+            return std::nullopt;
+        return std::optional<ColorConversion>(std::in_place,
+            ctx, ctx.shaders.get().hdr10_pq_to_scrgb,
+            transportImages, workingImages.value()
+        );
+    }
+
+    std::optional<ColorConversion> createDestColorConversion(
+            const Ctx& ctx, const FrameEncoding encoding,
+            const std::optional<std::vector<vk::Image>>& workingImages,
+            const std::vector<vk::Image>& transportImages) {
+        if (!requiresPqConversion(encoding))
+            return std::nullopt;
+        return std::optional<ColorConversion>(std::in_place,
+            ctx, ctx.shaders.get().scrgb_to_hdr10_pq,
+            workingImages.value(), transportImages
+        );
+    }
+
     Ctx createCtx(const InstanceImpl& instance, VkExtent2D extent,
-            bool hdr, float flow, bool perf, size_t count) {
+            const FrameEncoding encoding, float flow, bool perf, size_t count) {
         const auto& vk = instance.getVulkan();
         const auto& shaders = instance.getShaderRegistry();
 
@@ -381,15 +460,19 @@ namespace {
             for (size_t i = 0; i < count; ++i)
                 constantBuffers.emplace_back(vk,
                     backend::getDefaultConstantBuffer(
-                        i, count, flow
+                        i, count, usesHdrModel(encoding), flow
                     )
                 );
 
             return {
                 .vk = std::ref(vk),
                 .shaders = std::ref(shaders),
-                .pool{vk, backend::calculateDescriptorPoolLimits(count, perf)},
-                .constantBuffer{vk, backend::getDefaultConstantBuffer(0, 1, flow)},
+                .pool{vk, backend::calculateDescriptorPoolLimits(
+                    count, perf, requiresPqConversion(encoding)
+                )},
+                .constantBuffer{vk, backend::getDefaultConstantBuffer(
+                    0, 1, usesHdrModel(encoding), flow
+                )},
                 .constantBuffers{std::move(constantBuffers)},
                 .bnbSampler{vk, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER, VK_COMPARE_OP_NEVER, false},
                 .bnwSampler{vk, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER, VK_COMPARE_OP_NEVER, true},
@@ -399,7 +482,8 @@ namespace {
                     .width = static_cast<uint32_t>(static_cast<float>(extent.width) / flow),
                     .height = static_cast<uint32_t>(static_cast<float>(extent.height) / flow)
                 },
-                .hdr = hdr,
+                .highPrecision = usesHighPrecisionTransport(encoding),
+                .hdr = usesHdrModel(encoding),
                 .flow = flow,
                 .perf = perf,
                 .count = count
@@ -412,18 +496,34 @@ namespace {
 
 ContextImpl::ContextImpl(const InstanceImpl& instance,
             std::pair<int, int> sourceFds, const std::vector<int>& destFds, int syncFd,
-            VkExtent2D extent, bool hdr, float flow, bool perf) :
+            VkExtent2D extent, const FrameEncoding encoding, float flow, bool perf) :
         sourceImages(importImages(instance.getVulkan(), sourceFds,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM)),
+            extent, usesHighPrecisionTransport(encoding)
+                ? VK_FORMAT_R16G16B16A16_SFLOAT
+                : VK_FORMAT_R8G8B8A8_UNORM)),
         destImages(importImages(instance.getVulkan(), destFds,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM)),
+            extent, usesHighPrecisionTransport(encoding)
+                ? VK_FORMAT_R16G16B16A16_SFLOAT
+                : VK_FORMAT_R8G8B8A8_UNORM)),
+        workingSourceImages(createWorkingSourceImages(
+            instance.getVulkan(), extent, encoding
+        )),
+        workingDestImages(createWorkingDestImages(
+            instance.getVulkan(), extent, encoding, destFds.size()
+        )),
         blackImage(createBlackImage(instance.getVulkan())),
         syncSemaphore(importTimelineSemaphore(instance.getVulkan(), syncFd)),
         prepassSemaphore(createPrepassSemaphore(instance.getVulkan())),
         cmdbufs(createCommandBuffers(instance.getVulkan(), destFds.size() + 1)),
         cmdbufFence(instance.getVulkan()),
-        ctx(createCtx(instance, extent, hdr, flow, perf, destFds.size())),
-        mipmaps(ctx, sourceImages),
+        ctx(createCtx(instance, extent, encoding, flow, perf, destFds.size())),
+        sourceColorConversion(createSourceColorConversion(
+            ctx, encoding, sourceImages, workingSourceImages
+        )),
+        destColorConversion(createDestColorConversion(
+            ctx, encoding, workingDestImages, destImages
+        )),
+        mipmaps(ctx, selectModelSourceImages(sourceImages, workingSourceImages)),
         alpha0{
             Alpha0(ctx, mipmaps.getImages().at(0)),
             Alpha0(ctx, mipmaps.getImages().at(1)),
@@ -444,6 +544,13 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         },
         beta0(ctx, alpha1.at(0).getImages()),
         beta1(ctx, beta0.getImages()) {
+    const auto& modelSourceImages = selectModelSourceImages(
+        this->sourceImages, this->workingSourceImages
+    );
+    const auto& modelDestImages = selectModelDestImages(
+        this->destImages, this->workingDestImages
+    );
+
     // build main passes
     for (size_t i = 0; i < destImages.size(); ++i) {
         auto& pass = this->passes.emplace_back();
@@ -505,17 +612,25 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         }
 
         pass.generate.emplace(ctx, i,
-            this->sourceImages,
+            modelSourceImages,
             pass.gamma1.at(6).getImage(),
             pass.delta1.at(2).getImage0(),
             pass.delta1.at(2).getImage1(),
-            this->destImages.at(i)
+            modelDestImages.at(i)
         );
     }
 
     // initialize all images
     std::vector<VkImage> images{};
     images.push_back(this->blackImage.handle());
+    if (this->workingSourceImages) {
+        images.push_back(this->workingSourceImages->first.handle());
+        images.push_back(this->workingSourceImages->second.handle());
+    }
+    if (this->workingDestImages) {
+        for (const auto& image : *this->workingDestImages)
+            images.push_back(image.handle());
+    }
     mipmaps.prepare(images);
     for (size_t i = 0; i < 7; ++i) {
         alpha0.at(i).prepare(images);
@@ -624,6 +739,8 @@ void Context::schedulePrepass(const VkFence completionFence) {
     const auto& cmdbuf = this->cmdbufs.at(0);
     cmdbuf.begin(ctx.vk);
 
+    if (this->sourceColorConversion)
+        this->sourceColorConversion->render(ctx.vk, cmdbuf, this->fidx);
     this->mipmaps.render(ctx.vk, cmdbuf, this->fidx);
     for (size_t i = 0; i < 7; ++i) {
         this->alpha0.at(6 - i).render(ctx.vk, cmdbuf);
@@ -672,7 +789,9 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
     // safely replaced before recording the next set of dispatches.
     if (explicitTimestamps) {
         for (size_t i = 0; i < timestamps.size(); ++i) {
-            auto constants = backend::getDefaultConstantBuffer(0, 1, this->ctx.flow);
+            auto constants = backend::getDefaultConstantBuffer(
+                0, 1, this->ctx.hdr, this->ctx.flow
+            );
             constants.timestamp = timestamps[i];
             this->ctx.constantBuffers.at(i).write(this->ctx.vk, constants);
         }
@@ -695,6 +814,8 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
             pass.delta1.at(j - 4).render(ctx.vk, cmdbuf);
         }
         pass.generate->render(ctx.vk, cmdbuf, this->fidx);
+        if (this->destColorConversion)
+            this->destColorConversion->render(ctx.vk, cmdbuf, i);
 
         cmdbuf.end(ctx.vk);
         cmdbuf.submit(this->ctx.vk,

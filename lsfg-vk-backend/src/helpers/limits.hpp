@@ -11,5 +11,7 @@ namespace lsfgvk::backend {
     /// @param count number of images
     /// @param perf whether performance mode is enabled
     /// @return calculated limits
-    vk::Limits calculateDescriptorPoolLimits(size_t count, bool perf);
+    vk::Limits calculateDescriptorPoolLimits(
+        size_t count, bool perf, bool colorConversion = false
+    );
 }

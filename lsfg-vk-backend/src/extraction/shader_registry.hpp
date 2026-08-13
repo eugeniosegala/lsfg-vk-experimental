@@ -23,6 +23,7 @@ namespace lsfgvk::backend {
     struct ShaderRegistry {
         vk::Shader mipmaps;
         vk::Shader generate, generate_hdr;
+        vk::Shader hdr10_pq_to_scrgb, scrgb_to_hdr10_pq;
         Shaders quality;
         Shaders performance;
 

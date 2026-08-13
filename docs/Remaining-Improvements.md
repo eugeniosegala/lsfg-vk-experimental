@@ -56,6 +56,22 @@ stability, or recovery regression.
   particles, menus, and scene cuts. Compare captures at matching real cadence
   and multiplier before making ghosting claims.
 
+## HDR validation
+
+- Treat linear scRGB as the model's canonical HDR working space. Keep HDR10
+  BT.2020/PQ decoding before the model and encoding after it explicit; never
+  infer HDR from a numeric `VkFormat` range.
+- Validate native Gamescope HDR10 swapchains in both packed 10-bit channel
+  orders and validate `R16G16B16A16_SFLOAT` linear scRGB independently.
+- Measure the two full-resolution colour-conversion dispatches on Steam Deck.
+  Optimize only with matched colour patches, highlight ramps, and real-device
+  GPU timestamps; transfer-function precision cannot be traded for an
+  unmeasured performance claim.
+- Keep unvalidated colour spaces, including HLG and Dolby Vision, on automatic
+  real-frame passthrough. Add a format only with a deterministic classifier
+  test, a transfer-function test, and hardware evidence that presentation is
+  not washed out.
+
 ## Adaptive and presentation reliability
 
 - Continue to expand deterministic state-machine tests for menu/focus changes,
@@ -63,7 +79,7 @@ stability, or recovery regression.
   Smooth Cadence at 2x/3x/4x.
 - Maintain a compact compatibility matrix covering Steam Deck DXVK and
   VKD3D-Proton first, then AMD/Intel Wayland and NVIDIA. Include gamescope,
-  overlays, HDR-off operation, and Flatpak/Heroic where applicable.
+  overlays, HDR-off and HDR-on operation, and Flatpak/Heroic where applicable.
 - Keep the generated-image timeout, history warm-up, bounded reacquire,
   menu/focus recovery, fast-cadence filter, multiplier ceiling, and
   context-recreation cooldown guards in every candidate build.

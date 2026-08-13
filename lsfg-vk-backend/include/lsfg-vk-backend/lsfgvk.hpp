@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -13,6 +14,14 @@
 #include <vector>
 
 namespace lsfgvk::backend {
+
+    /// Encoding of the images exchanged with the frame-generation backend.
+    enum class FrameEncoding : uint8_t {
+        Sdr8,
+        SdrHighPrecision,
+        ScRgbLinear,
+        Hdr10Pq,
+    };
 
     class [[gnu::visibility("default")]] ContextImpl;
     class [[gnu::visibility("default")]] InstanceImpl;
@@ -76,9 +85,9 @@ namespace lsfgvk::backend {
         ///
         /// Open a frame generation context.
         ///
-        /// The VkFormat of the exchanged images is inferred from whether hdr is true or false:
-        /// - false: VK_FORMAT_R8G8B8A8_UNORM
-        /// - true: VK_FORMAT_R16G16B16A16_SFLOAT
+        /// The VkFormat of the exchanged images is inferred from encoding:
+        /// - Sdr8: VK_FORMAT_R8G8B8A8_UNORM
+        /// - all other encodings: VK_FORMAT_R16G16B16A16_SFLOAT
         ///
         /// The application and library must keep track of the frame index. When the next frame
         /// is ready, signal the syncFd with one increment (with the first trigger being 1).
@@ -93,7 +102,7 @@ namespace lsfgvk::backend {
         /// @param syncFd File descriptor for the timeline semaphore used for synchronization.
         /// @param width Width of the images.
         /// @param height Height of the images.
-        /// @param hdr Whether the images are HDR.
+        /// @param encoding Colour encoding of the exchanged images.
         /// @param flow Motion flow factor.
         /// @param perf Whether to enable performance mode.
         ///
@@ -104,7 +113,7 @@ namespace lsfgvk::backend {
             const std::vector<int>& destFds,
             int syncFd,
             uint32_t width, uint32_t height,
-            bool hdr, float flow, bool perf
+            FrameEncoding encoding, float flow, bool perf
         );
 
         ///

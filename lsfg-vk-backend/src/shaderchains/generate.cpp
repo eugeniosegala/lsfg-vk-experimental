@@ -22,7 +22,7 @@ Generate::Generate(const Ctx& ctx, size_t idx,
         const vk::Image& inputImage3,
         const vk::Image& outputImage) {
     // create descriptor sets
-    const auto& shader = ctx.hdr ?
+    const auto& shader = ctx.highPrecision ?
         ctx.shaders.get().generate_hdr : ctx.shaders.get().generate;
     this->sets.reserve(2);
     this->sets.emplace_back(ManagedShaderBuilder()

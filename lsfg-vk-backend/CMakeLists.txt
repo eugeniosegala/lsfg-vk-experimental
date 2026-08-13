@@ -8,6 +8,7 @@ set(BACKEND_SOURCES
     "src/shaderchains/alpha1.cpp"
     "src/shaderchains/beta0.cpp"
     "src/shaderchains/beta1.cpp"
+    "src/shaderchains/color_conversion.cpp"
     "src/shaderchains/delta0.cpp"
     "src/shaderchains/delta1.cpp"
     "src/shaderchains/gamma0.cpp"

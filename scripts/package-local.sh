@@ -82,7 +82,8 @@ cmake -S "$repo_root" -B "$build_dir" -G Ninja \
     -DLSFGVK_LAYER_LIBRARY_PATH="../../../lib/liblsfg-vk-layer.so"
 
 cmake --build "$build_dir" --target \
-    lsfg-vk-adaptive-tests lsfg-vk-adaptive-matrix
+    lsfg-vk-adaptive-tests lsfg-vk-adaptive-matrix lsfg-vk-color-tests \
+    lsfg-vk-hdr-color-math-tests
 ctest --test-dir "$build_dir" --output-on-failure
 cmake --build "$build_dir"
 cmake --install "$build_dir"

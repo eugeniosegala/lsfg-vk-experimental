@@ -11,7 +11,7 @@ flatpak_archive="out/lsfg-vk-$version-flatpaks.tar.xz"
 release_branch="$(git branch --show-current)"
 source_commit="$(git rev-parse HEAD)"
 release_remote="${LSFGVK_RELEASE_REMOTE:-experimental}"
-notes_version="2.0.0-dev28-experimental.24"
+notes_version="2.0.0-dev28-experimental.25"
 
 if [[ "$version" != "$notes_version" ]]; then
     echo "Release notes still describe $notes_version. Update scripts/publish-package.sh for $version before publishing." >&2
@@ -88,25 +88,28 @@ cat > "$notes_file" <<EOF
 
 This is an experimental build of the lsfg-vk 2.x development line. Test it game by game and retain a known-good rollback path.
 
-## This release: corrective rollback of experimental.23
+## This release: automatic SteamOS HDR colour pipeline
 
-This \`.24\` corrective release withdraws the \`.23\` inline Vulkan submission-storage experiment after real-device reports of black screens at game launch. The affected experiment is fully removed; the runtime submission and presentation paths are restored to the known-good \`.22\` implementation.
+This \`.25\` candidate adds explicit swapchain format/colour-space classification and supports the standard Gamescope HDR10/PQ and linear-scRGB paths without a user-facing HDR switch.
 
-The earlier local-only \`ab4f790\` combined experiment also remains excluded. This release contains no global compute-barrier, persistent-mapping, or submission-storage optimization; it preserves the \`.22\` rendering, synchronization, timing, scheduler, and recovery behavior.
+HDR10 input is converted from BT.2020/PQ into linear scRGB before the model and converted back after generation. Linear scRGB is passed directly to the model with its HDR constants enabled. Unvalidated HDR encodings stay on automatic real-frame passthrough instead of generating washed-out output.
 
 ### Highlights
 
-- Restores the allocation-backed semaphore, timeline-value, and wait-stage arrays used by \`.22\` for every Vulkan queue submission.
-- Restores the \`.22\` presentation call sites exactly, including their normal vector-backed semaphore construction.
-- Retains the deterministic Adaptive suite and compatibility matrix; no Adaptive policy, shader, interpolation timestamp, generated-frame count, or recovery guard was changed.
-- Keep \`.22\` as a rollback reference only; upgrade directly to this corrective release rather than using \`.23\`.
+- Classifies the complete Vulkan format/colour-space pair instead of inferring HDR from a numeric format range.
+- Supports both Gamescope packed HDR10 swapchain channel orders and FP16 linear scRGB.
+- Decodes ST 2084 and converts BT.2020 to linear BT.709/scRGB before inference, then performs the inverse conversion for presentation.
+- Keeps 8-bit and high-precision SDR model semantics distinct from HDR while selecting the correct storage-image format.
+- Adds deterministic format-matrix and HDR colour-math tests. Adaptive scheduling, presentation recovery, interpolation timestamps, generated-frame count, and Fixed 2x/3x/4x policy are unchanged.
 
 ### Important limitations
 
 - Adaptive Frame Generation is experimental and opt-in. This independent Vulkan-layer scheduler varies between zero and three generated frames per real frame toward the configured average target. It cannot reduce a native framerate already above the target, exceed the selected 4x maximum, guarantee an unreachable target, or provide the Windows Queue Target modes.
 - The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. This fork provides a separate live synthesis switch that preserves the selected Fixed or Adaptive mode. Use \`DISABLE_LSFGVK=1\` or remove the launch wrapper and restart the game when the layer itself must be disabled.
-- Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so it defaults to disabled.
-- This release does not claim a universal GPU gain, higher image quality, or reduced ghosting. Shaders, model selection, interpolation timestamps, generated-frame counts, and Fixed 2x/3x/4x scheduling are unchanged from the known-good runtime path.
+- Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so test it per game.
+- HDR10 conversion adds one full-resolution decode dispatch per real frame and one encode dispatch per generated frame. It is correctness work, not a universal performance claim; measure the overhead on target hardware.
+- HLG, Dolby Vision, and unvalidated wide-colour combinations intentionally use real-frame passthrough. A game still needs its own HDR renderer and an HDR-capable SteamOS/Gamescope session.
+- The \`.24\` corrective rollback remains intact. The withdrawn \`.23\` submission-storage experiment and earlier local-only \`ab4f790\` optimization are not restored.
 - Lossless Scaling and \`Lossless.dll\` must already be installed through Steam; neither release archive includes or modifies it.
 - \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is an opt-in Adaptive recovery path for direct engine users. The first isolated recovery stays in-place; a repeated recovery may rebuild the swapchain and can briefly pause or flicker. The Decky experimental wrapper enables the tested timeout and guarded policy automatically.
 - Flatpak extensions for 23.08, 24.08, and 25.08 are packaged separately in \`$(basename "$flatpak_archive")\` under a dedicated experimental ID that can coexist with the public Flathub layer.

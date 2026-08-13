@@ -34,6 +34,10 @@ it does not introduce a separate frame-generation model. For the established 1.x
   repeated recovery within 15 seconds may use the guarded swapchain rebuild to clear stale presentation state.
 - **Menu and DX12 transition protection:** Adaptive preserves its proven gameplay state across hard cadence stalls and
   ignores implausibly fast DX12/VKD3D presentation bursts instead of treating them as a new game framerate.
+- **Automatic HDR colour pipeline:** Swapchain format and colour space are classified together. Standard Gamescope
+  HDR10/PQ input is decoded from BT.2020/PQ into linear scRGB before frame generation and encoded back afterward;
+  linear scRGB uses the model directly. Unsupported HDR encodings use real-frame passthrough instead of synthesized
+  frames with incorrect colours. There is no HDR configuration switch.
 - **Diagnostic tooling:** Opt-in, per-swapchain presentation records expose timing, recovery, ramp, rescue, and
   fast-cadence decisions without adding logging overhead to normal runs.
 - **Experimental Flatpak extensions:** Dedicated runtime extensions for Freedesktop 23.08, 24.08, and 25.08 can coexist
