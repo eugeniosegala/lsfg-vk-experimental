@@ -9,12 +9,20 @@
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 #include "swapchain.hpp"
 
+#include <cstddef>
 #include <optional>
 #include <unordered_map>
 
 #include <vulkan/vulkan_core.h>
 
 namespace lsfgvk::layer {
+
+    struct ConfigurationUpdateResult {
+        bool reloaded{false};
+        size_t liveContextsUpdated{0};
+        size_t deferredContexts{0};
+        bool globalChangeDeferred{false};
+    };
 
     /// root context of the lsfg-vk layer
     class Root {
@@ -28,8 +36,8 @@ namespace lsfgvk::layer {
         [[nodiscard]] bool active() const { return this->active_profile.has_value(); }
 
         /// ensure the layer is up-to-date
-        /// @return true if the configuration was updated
-        bool update();
+        /// @return classification of any configuration update
+        ConfigurationUpdateResult update();
 
         /// modify instance create info
         /// @param createInfo original create info

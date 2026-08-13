@@ -23,6 +23,15 @@ target_include_directories(lsfg-vk-common
 target_include_directories(lsfg-vk-common SYSTEM
     PRIVATE thirdparty/include)
 
+if(BUILD_TESTING)
+    add_executable(lsfg-vk-config-tests
+        "tests/config_tests.cpp")
+    target_link_libraries(lsfg-vk-config-tests
+        PRIVATE lsfg-vk-common)
+    add_test(NAME watched-configuration
+        COMMAND lsfg-vk-config-tests)
+endif()
+
 if(LSFGVK_INSTALL_DEVELOP)
     install(TARGETS lsfg-vk-common
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")

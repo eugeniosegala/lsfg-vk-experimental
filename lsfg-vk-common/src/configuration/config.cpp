@@ -93,6 +93,8 @@ ConfigFile::ConfigFile() {
 }
 
 namespace {
+    constexpr auto configurationParseRetryDelay = std::chrono::milliseconds(50);
+
     /// parse an activity array from toml value
     std::vector<std::string> activityFromString(const toml::node_view<const toml::node>& val) {
         std::vector<std::string> active_in{};
@@ -326,6 +328,7 @@ WatchedConfig::WatchedConfig() : path(findConfigurationFile()) {
         ConfigFile::createDefaultConfigFile(this->path);
 
     this->configFile = ConfigFile(this->path);
+    this->last_timestamp = std::filesystem::last_write_time(this->path);
 }
 
 bool WatchedConfig::update() {
@@ -335,10 +338,26 @@ bool WatchedConfig::update() {
     const auto now = std::filesystem::last_write_time(this->path);
     if (now == this->last_timestamp)
         return false;
-    this->last_timestamp = now;
 
-    ConfigFile new_config{this->path};
+    const auto retryNow = std::chrono::steady_clock::now();
+    if (this->failed_timestamp && *this->failed_timestamp == now &&
+            retryNow < this->next_parse_retry)
+        return false;
+
+    // Advance the observed timestamp only after parsing succeeds. Decky may
+    // briefly expose a partially-written TOML file; retaining the old stamp
+    // makes the same version retryable instead of silently losing the update.
+    ConfigFile new_config;
+    try {
+        new_config = ConfigFile(this->path);
+    } catch (...) {
+        this->failed_timestamp = now;
+        this->next_parse_retry = retryNow + configurationParseRetryDelay;
+        throw;
+    }
     this->configFile = std::move(new_config);
+    this->last_timestamp = now;
+    this->failed_timestamp.reset();
     return true;
 }
 

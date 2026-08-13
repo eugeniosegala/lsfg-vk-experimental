@@ -114,6 +114,9 @@ namespace lsfgvk::backend {
         /// update temporal history without generating output frames
         /// (see lsfg-vk documentation)
         void scheduleFrameHistory();
+
+        /// wait for this context's most recently submitted work only
+        [[nodiscard]] bool waitForIdle(uint64_t timeoutNs) const;
     private:
         std::pair<vk::Image, vk::Image> sourceImages;
         std::vector<vk::Image> destImages;
@@ -209,6 +212,9 @@ Instance::Instance(
 }
 
 namespace {
+    constexpr uint64_t previousWorkFenceTimeoutNs = 250'000'000ULL;
+    constexpr size_t maximumRetiredContextCount = 2;
+
     /// find the cache file path
     std::filesystem::path findCacheFilePath() {
         const char* xdgCacheHome = std::getenv("XDG_CACHE_HOME");
@@ -293,6 +299,12 @@ InstanceImpl::InstanceImpl(vk::PhysicalDeviceSelector selectPhysicalDevice,
 Context& Instance::openContext(std::pair<int, int> sourceFds, const std::vector<int>& destFds,
         int syncFd, uint32_t width, uint32_t height,
         const FrameEncoding encoding, float flow, bool perf) {
+    this->collectRetiredContexts();
+    if (this->m_retiredContexts.size() >= maximumRetiredContextCount) {
+        throw backend::error(
+            "Too many frame-generation contexts are still retiring"
+        );
+    }
     const VkExtent2D extent{ width, height };
     return *this->m_contexts.emplace_back(std::make_unique<ContextImpl>(*this->m_impl,
         sourceFds, destFds, syncFd,
@@ -729,9 +741,17 @@ void Instance::scheduleFrameHistory(Context& context) { // NOLINT (static)
     context.scheduleFrameHistory();
 }
 
+bool Instance::contextReady(const Context& context) const {
+    return context.waitForIdle(0);
+}
+
 void Context::prepareWork() {
-    if (this->workScheduled && !this->cmdbufFence.wait(this->ctx.vk))
+    if (this->workScheduled && !this->cmdbufFence.wait(
+            this->ctx.vk, previousWorkFenceTimeoutNs)) {
+        std::cerr << "lsfg-vk: backend work fence timed out after 250 ms; "
+                     "aborting frame scheduling\n";
         throw backend::error("Timeout waiting for previous frame to complete");
+    }
     this->cmdbufFence.reset(this->ctx.vk);
 }
 
@@ -837,7 +857,25 @@ void Context::scheduleFrameHistory() {
     this->workScheduled = true;
 }
 
+bool Context::waitForIdle(const uint64_t timeoutNs) const {
+    return !this->workScheduled || this->cmdbufFence.wait(this->ctx.vk, timeoutNs);
+}
+
+void Instance::collectRetiredContexts() {
+    std::erase_if(this->m_retiredContexts,
+        [](const std::unique_ptr<ContextImpl>& context) {
+            try {
+                return context->waitForIdle(0);
+            } catch (const std::exception& e) {
+                std::cerr << "lsfg-vk: unable to poll a retired backend context: "
+                          << e.what() << '\n';
+                return false;
+            }
+        });
+}
+
 void Instance::closeContext(const Context& context) {
+    this->collectRetiredContexts();
     auto it = std::ranges::find_if(this->m_contexts,
         [context = &context](const std::unique_ptr<ContextImpl>& ctx) {
             return ctx.get() == context;
@@ -846,9 +884,22 @@ void Instance::closeContext(const Context& context) {
         throw backend::error("attempted to close unknown context",
             std::runtime_error("no such context"));
 
-    const auto& vk = this->m_impl->getVulkan();
-    vk.df().DeviceWaitIdle(vk.dev());
+    try {
+        if ((*it)->waitForIdle(previousWorkFenceTimeoutNs)) {
+            this->m_contexts.erase(it);
+            return;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "lsfg-vk: unable to wait for backend context retirement: "
+                  << e.what() << '\n';
+    }
 
+    // Never issue a device-wide indefinite wait while the game is replacing a
+    // swapchain. Keep the exceptional in-flight context alive and reclaim it
+    // on a later open/close once its own completion fence signals.
+    std::cerr << "lsfg-vk: backend context did not retire within 250 ms; "
+                 "deferring resource destruction\n";
+    this->m_retiredContexts.push_back(std::move(*it));
     this->m_contexts.erase(it);
 }
 

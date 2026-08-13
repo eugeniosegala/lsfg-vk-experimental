@@ -1022,6 +1022,82 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     }
 }
 
+ProfileUpdateAction Swapchain::updateProfile(const ls::GameConf& nextProfile) {
+    if (!this->colorPipeline.generationSupported) {
+        this->profile = nextProfile;
+        return ProfileUpdateAction::NoRuntimeChange;
+    }
+
+    const bool resourcesAvailable = this->sourceImages.size() == 2 &&
+        !this->destinationImages.empty() && this->syncSemaphore.has_value();
+    const auto decision = classifyProfileUpdate(
+        this->profile, nextProfile, this->destinationImages.size(), resourcesAvailable
+    );
+
+    if (decision.action == ProfileUpdateAction::DeferUntilSwapchainRecreation) {
+        // Turning generation off is always safe and should not be delayed just
+        // because the same write also changed a resource-shape setting.
+        if (this->profile.frame_generation_enabled &&
+                !nextProfile.frame_generation_enabled)
+            this->disableFrameGeneration();
+        return decision.action;
+    }
+
+    if (decision.action == ProfileUpdateAction::NoRuntimeChange) {
+        this->profile = nextProfile;
+        return decision.action;
+    }
+
+    const bool enabling = !this->profile.frame_generation_enabled &&
+        nextProfile.frame_generation_enabled;
+    const bool disabling = this->profile.frame_generation_enabled &&
+        !nextProfile.frame_generation_enabled;
+    this->profile = nextProfile;
+
+    if (disabling) {
+        this->configurationHistoryWarmupRemaining = 0;
+        if (this->adaptiveScheduler)
+            this->adaptiveScheduler->cancelHistoryWarmup();
+    }
+
+    if (enabling) {
+        this->generatedImageAcquireBackoff = false;
+        this->generatedImageAcquireBypassCount = 0;
+        this->generatedImageAcquireLastBoundedProbe.reset();
+        this->configurationHistoryWarmupRemaining = this->profile.adaptive
+            ? 0
+            : AdaptiveScheduler::historyWarmupFrameCount();
+    }
+
+    if (this->profile.adaptive &&
+            (decision.adaptivePolicyChanged || enabling)) {
+        this->adaptiveScheduler.emplace(
+            AdaptiveSchedulerConfig{
+                .targetFps = this->profile.target_fps,
+                .maximumMultiplier = this->profile.adaptive_max_multiplier,
+                .generatedFrameCapacity = this->destinationImages.size(),
+                .stableCadence = this->profile.adaptive_stable_cadence,
+            },
+            &adaptiveSchedulerDiagnostics
+        );
+        this->adaptiveScheduler->beginStabilization(
+            DiagnosticsClock::now(), "configuration-update"
+        );
+    }
+
+    return decision.action;
+}
+
+void Swapchain::disableFrameGeneration() {
+    if (!this->profile.frame_generation_enabled)
+        return;
+
+    this->profile.frame_generation_enabled = false;
+    this->configurationHistoryWarmupRemaining = 0;
+    if (this->adaptiveScheduler)
+        this->adaptiveScheduler->cancelHistoryWarmup();
+}
+
 VkResult Swapchain::present(const vk::Vulkan& vk,
         VkQueue queue, VkSwapchainKHR swapchain,
         void* next_chain, uint32_t imageIdx,
@@ -1037,10 +1113,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
     const auto presentStarted = startPresentDiagnostic();
 
-    // Frame generation is live-disabled; hand the game's own image directly to
-    // the driver without copies, model scheduling, fences or generated images.
-    if (!this->profile.frame_generation_enabled ||
-            !this->colorPipeline.generationSupported) {
+    const auto presentNativeFrame = [&]() {
         if (this->colorPipeline.generationSupported &&
                 this->profile.pacing == ls::Pacing::None)
             forceFifoPresentModes(next_chain);
@@ -1054,19 +1127,72 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             .pSwapchains = &swapchain,
             .pImageIndices = &imageIdx,
         };
-        const auto res = vk.df().QueuePresentKHR(queue, &presentInfo);
-        if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
-            throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
+        const auto result = vk.df().QueuePresentKHR(queue, &presentInfo);
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+            throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
 
-        logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);
+        logSlowPresentOperation(
+            "present-total", this->fidx, this->idx, presentStarted, result
+        );
         this->fidx++;
-        return res;
+        return result;
+    };
+
+    // Frame generation is live-disabled; hand the game's own image directly to
+    // the driver without copies, model scheduling, fences or generated images.
+    if (!this->profile.frame_generation_enabled ||
+            !this->colorPipeline.generationSupported)
+        return presentNativeFrame();
+
+    if (this->backendRecoveryPending) {
+        bool backendReady = false;
+        try {
+            backendReady = this->instance.get().contextReady(this->ctx.get());
+        } catch (const std::exception& e) {
+            std::cerr << "lsfg-vk: backend recovery poll failed; native "
+                         "presentation retained: " << e.what() << '\n';
+        }
+        if (!backendReady)
+            return presentNativeFrame();
+
+        this->backendRecoveryPending = false;
+        this->generatedImageAcquireBackoff = false;
+        this->generatedImageAcquireBypassCount = 0;
+        this->generatedImageAcquireLastBoundedProbe.reset();
+        if (this->adaptiveRecoveryState)
+            *this->adaptiveRecoveryState = {};
+
+        if (this->profile.adaptive) {
+            this->adaptiveScheduler.emplace(
+                AdaptiveSchedulerConfig{
+                    .targetFps = this->profile.target_fps,
+                    .maximumMultiplier = this->profile.adaptive_max_multiplier,
+                    .generatedFrameCapacity = this->destinationImages.size(),
+                    .stableCadence = this->profile.adaptive_stable_cadence,
+                },
+                &adaptiveSchedulerDiagnostics
+            );
+            this->adaptiveScheduler->beginStabilization(
+                DiagnosticsClock::now(), "backend-recovery"
+            );
+        } else {
+            this->configurationHistoryWarmupRemaining =
+                AdaptiveScheduler::historyWarmupFrameCount();
+        }
+
+        std::cerr << "lsfg-vk: backend work recovered; warming temporal "
+                     "history before resuming frame generation\n";
     }
 
     const auto& swapchainImage = this->info.images.at(imageIdx);
-    const auto& sourceImage = this->sourceImages.at(this->fidx % 2);
-    const bool historyWarmupActive = this->adaptiveScheduler &&
-        this->adaptiveScheduler->historyWarmupActive();
+    // Presentation diagnostics continue across live-off intervals, while the
+    // backend's two-image temporal history does not. Select the source image
+    // from the number of frames actually submitted to the backend so an odd
+    // number of native-only frames cannot invert temporal history on re-enable.
+    const auto& sourceImage = this->sourceImages.at(this->backendFrameIndex % 2);
+    const bool historyWarmupActive =
+        this->configurationHistoryWarmupRemaining > 0 ||
+        (this->adaptiveScheduler && this->adaptiveScheduler->historyWarmupActive());
     const auto generatedFramePlan = this->profile.adaptive && !historyWarmupActive
         ? this->adaptiveScheduler->planFrame(
             DiagnosticsClock::now(), this->generatedImageAcquireBackoff
@@ -1277,8 +1403,19 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             else
                 this->instance.get().scheduleFrames(this->ctx.get());
         } catch (const std::exception& e) {
-            throw ls::error("failed to schedule frames", e);
+            // Do not turn a bounded backend stall into a game-visible present
+            // error. This frame has not consumed the game's wait semaphores yet,
+            // so generation can be disabled and the real image presented safely.
+            std::cerr << "lsfg-vk: temporarily bypassing frame generation after "
+                         "backend scheduling failure; native presentation retained: "
+                      << e.what() << '\n';
+            this->backendRecoveryPending = true;
+            this->configurationHistoryWarmupRemaining = 0;
+            if (this->adaptiveScheduler)
+                this->adaptiveScheduler->cancelHistoryWarmup();
+            return presentNativeFrame();
         }
+        this->backendFrameIndex++;
         logSlowPresentOperation("schedule-frames", this->fidx, this->idx, scheduleStarted);
     }
 
@@ -1410,8 +1547,62 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         try {
             this->instance.get().scheduleFrameHistory(this->ctx.get());
         } catch (const std::exception& e) {
-            throw ls::error("failed to maintain frame history", e);
+            // The fallback copy is already queued and signals
+            // fallbackSemaphore. Present the real image through that semaphore
+            // and quarantine generation instead of returning an error to Steam.
+            std::cerr << "lsfg-vk: temporarily bypassing frame generation after "
+                         "history scheduling failure; native presentation retained: "
+                      << e.what() << '\n';
+            this->backendRecoveryPending = true;
+            this->configurationHistoryWarmupRemaining = 0;
+            if (this->adaptiveScheduler)
+                this->adaptiveScheduler->cancelHistoryWarmup();
+
+            void* fallbackNextChain = next_chain;
+            if (recoveryWarmupImage) {
+                // The recovery probe already acquired this image. Retire it
+                // before presenting the game's original image so no swapchain
+                // image remains permanently owned by the failed FG path.
+                const VkSemaphore recoveryWaitSemaphore =
+                    fallbackSemaphores.first.handle();
+                const VkPresentInfoKHR recoveryPresentInfo{
+                    .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                    .pNext = next_chain,
+                    .waitSemaphoreCount = 1,
+                    .pWaitSemaphores = &recoveryWaitSemaphore,
+                    .swapchainCount = 1,
+                    .pSwapchains = &swapchain,
+                    .pImageIndices = &*recoveryWarmupImage,
+                };
+                const auto recoveryResult = vk.df().QueuePresentKHR(
+                    queue, &recoveryPresentInfo
+                );
+                if (recoveryResult != VK_SUCCESS &&
+                        recoveryResult != VK_SUBOPTIMAL_KHR) {
+                    throw ls::vulkan_error(
+                        recoveryResult, "vkQueuePresentKHR() failed"
+                    );
+                }
+                fallbackNextChain = nullptr;
+            }
+
+            const auto fallbackResult = presentOriginalImage(
+                fallbackSemaphore.handle(), fallbackNextChain
+            );
+            if (fallbackResult != VK_SUCCESS &&
+                    fallbackResult != VK_SUBOPTIMAL_KHR) {
+                throw ls::vulkan_error(
+                    fallbackResult, "vkQueuePresentKHR() failed"
+                );
+            }
+            logSlowPresentOperation(
+                "present-total", this->fidx, this->idx,
+                presentStarted, fallbackResult
+            );
+            this->fidx++;
+            return fallbackResult;
         }
+        this->backendFrameIndex++;
         if (generatedImageUnavailable &&
                 (!this->generatedImageAcquireBypassCount || boundedRecoveryProbe)) {
             logPresentFallback(
@@ -1433,6 +1624,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->adaptiveScheduler->consumeHistoryWarmupFrame(
                 DiagnosticsClock::now()
             );
+        } else if (this->configurationHistoryWarmupRemaining > 0) {
+            logHistoryWarmup(
+                this->fidx, this->idx,
+                this->configurationHistoryWarmupRemaining,
+                false, recoveryWarmupImage
+            );
+            this->configurationHistoryWarmupRemaining--;
         }
 
         void* originalNextChain = next_chain;

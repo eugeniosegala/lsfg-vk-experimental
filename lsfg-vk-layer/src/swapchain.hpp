@@ -13,6 +13,7 @@
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 #include "adaptive_scheduler.hpp"
 #include "color_pipeline.hpp"
+#include "profile_update.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -95,6 +96,14 @@ namespace lsfgvk::layer {
         [[nodiscard]] uint64_t diagnosticsId() const {
             return this->diagnosticsContextId;
         }
+
+        /// Apply configuration that is safe for an already-created context.
+        /// Resource-shape and backend-construction changes are left pending for
+        /// normal game-owned swapchain recreation.
+        [[nodiscard]] ProfileUpdateAction updateProfile(const ls::GameConf& profile);
+
+        /// Stop generation in place when the active profile disappears.
+        void disableFrameGeneration();
     private:
         std::vector<vk::Image> sourceImages;
         std::vector<vk::Image> destinationImages;
@@ -113,11 +122,14 @@ namespace lsfgvk::layer {
         ls::owned_ptr<ls::R<backend::Context>> ctx;
         size_t idx{1};
         size_t fidx{0}; // real frame index
+        size_t backendFrameIndex{0};
         bool generatedImageAcquireBackoff{false};
         size_t generatedImageAcquireBypassCount{0};
         std::optional<std::chrono::steady_clock::time_point> generatedImageAcquireLastBoundedProbe;
+        bool backendRecoveryPending{false};
         bool swapchainRecreationRequested{false};
         std::optional<AdaptiveScheduler> adaptiveScheduler;
+        size_t configurationHistoryWarmupRemaining{0};
         AdaptiveRecoveryState* adaptiveRecoveryState{};
         uint64_t diagnosticsContextId{0};
 

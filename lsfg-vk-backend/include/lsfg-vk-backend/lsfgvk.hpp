@@ -149,6 +149,10 @@ namespace lsfgvk::backend {
         ///
         void scheduleFrameHistory(Context& context);
 
+        /// Check whether the context's previously submitted work has completed
+        /// without blocking.
+        [[nodiscard]] bool contextReady(const Context& context) const;
+
         ///
         /// Close a frame generation context
         ///
@@ -163,9 +167,12 @@ namespace lsfgvk::backend {
         Instance& operator=(Instance&&) = delete;
         virtual ~Instance();
     private:
+        void collectRetiredContexts();
+
         std::unique_ptr<InstanceImpl> m_impl;
 
         std::vector<std::unique_ptr<Context>> m_contexts;
+        std::vector<std::unique_ptr<Context>> m_retiredContexts;
     };
 
     ///

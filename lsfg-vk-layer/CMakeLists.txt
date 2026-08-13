@@ -39,6 +39,14 @@ if(LSFGVK_BUILD_VK_LAYER)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(lsfg-vk-profile-update-tests
+        "tests/profile_update_tests.cpp")
+    target_include_directories(lsfg-vk-profile-update-tests
+        PRIVATE "src"
+        PRIVATE "../lsfg-vk-common/include")
+    add_test(NAME profile-update
+        COMMAND lsfg-vk-profile-update-tests)
+
     add_executable(lsfg-vk-adaptive-tests
         "tests/adaptive_scheduler_tests.cpp")
     target_link_libraries(lsfg-vk-adaptive-tests

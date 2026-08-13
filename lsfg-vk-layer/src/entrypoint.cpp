@@ -355,26 +355,24 @@ namespace {
         bool swapchainOutOfDate = false;
 
         // ensure layer config is up to date
-        bool reload{};
+        ConfigurationUpdateResult configurationUpdate;
         try {
-            reload = layer_info->root.update();
+            configurationUpdate = layer_info->root.update();
         } catch (const std::exception&) {
-            reload = false; // ignore parse errors
+            configurationUpdate = {}; // retain the last valid configuration
         }
 
-        if (reload) {
-            try {
-                for (const auto& [swapchain, vk] : instance_info->swapchains) {
-                    auto& info = instance_info->swapchainInfos.at(swapchain);
-
-                    layer_info->root.removeSwapchainContext(swapchain);
-                    layer_info->root.createSwapchainContext(vk, swapchain, info);
-                }
-
-                std::cerr << "lsfg-vk: updated lsfg-vk configuration\n";
-            } catch (const std::exception& e) {
-                std::cerr << "lsfg-vk: something went wrong during lsfg-vk configuration update:\n";
-                std::cerr << "- " << e.what() << '\n';
+        if (configurationUpdate.reloaded) {
+            std::cerr << "lsfg-vk: updated lsfg-vk configuration in place; contexts="
+                      << configurationUpdate.liveContextsUpdated << '\n';
+            if (configurationUpdate.deferredContexts > 0 ||
+                    configurationUpdate.globalChangeDeferred) {
+                std::cerr << "lsfg-vk: configuration changes requiring GPU resource "
+                             "reconstruction were deferred until normal swapchain "
+                             "recreation; contexts="
+                          << configurationUpdate.deferredContexts
+                          << "; global="
+                          << configurationUpdate.globalChangeDeferred << '\n';
             }
         }
 

@@ -112,6 +112,9 @@ namespace ls {
 
         std::filesystem::path path;
         std::chrono::time_point<std::chrono::file_clock> last_timestamp;
+        std::optional<std::chrono::time_point<std::chrono::file_clock>>
+            failed_timestamp;
+        std::chrono::steady_clock::time_point next_parse_retry;
     };
 
     /// find the configuration file in the most common locations

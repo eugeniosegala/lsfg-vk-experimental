@@ -74,32 +74,57 @@ Root::Root() {
     }
 }
 
-bool Root::update() {
+ConfigurationUpdateResult Root::update() {
+    const auto previousGlobal = this->config.get().global();
     if (!this->config.update())
-        return false;
+        return {};
 
-    const std::optional<bool> previousFrameGenerationEnabled =
-        this->active_profile
-        ? std::optional<bool>(this->active_profile->frame_generation_enabled)
-        : std::nullopt;
+    ConfigurationUpdateResult result{
+        .reloaded = true,
+    };
+    const auto& currentGlobal = this->config.get().global();
+    result.globalChangeDeferred =
+        previousGlobal.dll != currentGlobal.dll ||
+        previousGlobal.allow_fp16 != currentGlobal.allow_fp16;
+
     const auto& profile = findProfile(this->config.get(), ls::identify());
     if (profile.has_value())
         this->active_profile = profile->second;
     else
         this->active_profile = std::nullopt;
 
-    const std::optional<bool> currentFrameGenerationEnabled =
-        this->active_profile
-        ? std::optional<bool>(this->active_profile->frame_generation_enabled)
-        : std::nullopt;
-    if (previousFrameGenerationEnabled != currentFrameGenerationEnabled) {
-        // A live off/on transition creates a fresh swapchain context. Do not
-        // let a pending Adaptive recovery or recreation cooldown from the old
-        // context leak into the newly selected state.
+    if (this->active_profile) {
+        for (auto& [swapchain, context] : this->swapchains) {
+            static_cast<void>(swapchain);
+            switch (context.updateProfile(*this->active_profile)) {
+                case ProfileUpdateAction::NoRuntimeChange:
+                    break;
+                case ProfileUpdateAction::ApplyLive:
+                    result.liveContextsUpdated++;
+                    break;
+                case ProfileUpdateAction::DeferUntilSwapchainRecreation:
+                    result.deferredContexts++;
+                    break;
+            }
+        }
+    } else {
+        // Losing the active profile must stop generation immediately, but it
+        // does not require destroying any in-flight Vulkan resources.
+        for (auto& [swapchain, context] : this->swapchains) {
+            static_cast<void>(swapchain);
+            context.disableFrameGeneration();
+            result.liveContextsUpdated++;
+        }
+    }
+
+    if (result.liveContextsUpdated > 0) {
+        // A live policy transition starts with fresh scheduler timing. Do not
+        // carry a recovery/recreation decision from the previous policy into
+        // the newly selected one.
         this->adaptiveRecoveryState = {};
     }
 
-    return true;
+    return result;
 }
 
 void Root::modifyInstanceCreateInfo(VkInstanceCreateInfo& createInfo,
