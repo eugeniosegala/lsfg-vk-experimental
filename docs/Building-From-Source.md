@@ -19,6 +19,7 @@ You will need the following dependencies:
 - CMake (version 3.10 or higher)
 - Ninja build system (other build systems may work, but Ninja is recommended)
 - Vulkan SDK
+- A multilib C++ toolchain when building the 32-bit Vulkan layer
 - Qt6 and Qt6Quick (only needed when building lsfg-vk-ui)
 
 The list of required packages may vary depending on your operating system. Below are the installation commands for some common Linux distributions.
@@ -27,7 +28,7 @@ The list of required packages may vary depending on your operating system. Below
 sudo apt-get install -y \
     git curl \
     llvm clang clang-tools clang-tidy \
-    cmake ninja-build pkg-config \
+    cmake ninja-build pkg-config g++-multilib \
     libvulkan-dev \
     mesa-common-dev \
     qt6-base-dev qt6-base-dev-tools \
@@ -37,11 +38,16 @@ sudo apt-get install -y \
 # On Arch Linux, use:
 sudo pacman -S --needed \
     git curl \
-    llvm clang \
+    llvm clang gcc-multilib \
     cmake ninja \
     vulkan-headers vulkan-icd-loader \
     qt6-base qt6-declarative
 ```
+
+The release packager builds the normal 64-bit application, CLI, UI, and layer,
+then builds a second layer with `-m32`. It installs the two layer libraries in
+`lib` and `lib32` with architecture-tagged Vulkan manifests. Direct CMake builds
+produce one layer for the compiler architecture selected for that build.
 
 ### Building & Installing lsfg-vk
 
@@ -79,6 +85,7 @@ However, lsfg-vk provides several CMake options to customize the build process:
 - `LSFGVK_INSTALL_DEVELOP`: Set to `On` to install development files like headers and libraries (default is `Off`).
 - `LSFGVK_INSTALL_XDG_FILES`: Set to `On` to install XDG desktop files and icons (default is `Off`).
 - `LSFGVK_LAYER_LIBRARY_PATH`: Override the path to the Vulkan layer library (by default, Vulkan will search the systems library path).
+- `LSFGVK_LAYER_MANIFEST_SUFFIX`: Add a suffix to the installed manifest filename when packaging multiple architectures.
 
 Please keep in mind that installing to non-system paths will require `LSFGVK_LAYER_LIBRARY_PATH` to be set accordingly (e.g. `../../../lib/liblsfg-vk-layer.so`).
 

@@ -43,6 +43,14 @@ if [[ "$(uname -s)" != "Linux" ]]; then
         bash -lc '
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
+            sed -i "s|http://|https://|g" /etc/apt/sources.list.d/ubuntu.sources
+            # Minimal Ubuntu images do not contain a CA bundle. APT still
+            # verifies signed Ubuntu repository metadata during this one-time
+            # TLS bootstrap; subsequent downloads use normal certificate checks.
+            if [[ ! -s /etc/ssl/certs/ca-certificates.crt ]]; then
+                apt-get -o Acquire::https::Verify-Peer=false update -qq
+                apt-get -o Acquire::https::Verify-Peer=false install -y -qq ca-certificates
+            fi
             apt-get update -qq
             apt-get install -y -qq ca-certificates flatpak flatpak-builder xz-utils
             scripts/package-flatpaks.sh "/workspace/'"$output_relative"'"
@@ -55,6 +63,17 @@ for command in flatpak flatpak-builder tar; do
         exit 1
     fi
 done
+
+verify_elf_class() {
+    local path="$1"
+    local expected="$2"
+    local actual
+    actual="$(od -An -t u1 -j 4 -N 1 "$path" | tr -d '[:space:]')"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "Flatpak packaging failed: $path has unexpected ELF class byte $actual" >&2
+        exit 1
+    fi
+}
 
 # Docker Desktop's Linux VM may not expose CONFIG_SECCOMP_FILTER to nested
 # Bubblewrap instances. This is only set by the privileged local Docker build
@@ -98,23 +117,41 @@ for runtime_version in 23.08 24.08 25.08; do
         --state-dir="$build_root/state-$runtime_version" \
         --repo="$repo_dir" "$build_dir" "$manifest"
 
-    # Verify the extension payload before it is bundled. The manifest contains
-    # an absolute library path, so checking both files prevents publishing a
-    # layer that Vulkan can discover but cannot load.
-    # The manifests advertise the runtime's `lib64` location. Build directly
-    # into that location, then verify the staging and deployed bundles agree.
+    # Verify both layer architectures before bundling. Flatpak applications may
+    # launch either a 64-bit or genuine 32-bit Vulkan process, and each process
+    # must find a manifest and library with matching bitness.
     for required_path in \
         "files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json" \
-        "files/lib64/liblsfg-vk-layer.so"; do
+        "files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json" \
+        "files/lib64/liblsfg-vk-layer.so" \
+        "files/lib/i386-linux-gnu/liblsfg-vk-layer.so"; do
         if [[ ! -f "$build_dir/$required_path" ]]; then
             echo "Flatpak packaging failed: missing $required_path for $runtime_version" >&2
             exit 1
         fi
     done
 
+    verify_elf_class "$build_dir/files/lib64/liblsfg-vk-layer.so" 2
+    verify_elf_class "$build_dir/files/lib/i386-linux-gnu/liblsfg-vk-layer.so" 1
+
     if ! grep -Fq "/usr/lib/extensions/vulkan/lsfgvkexperimental/lib64/liblsfg-vk-layer.so" \
         "$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"; then
-        echo "Flatpak packaging failed: manifest library path is incorrect for $runtime_version" >&2
+        echo "Flatpak packaging failed: 64-bit manifest path is incorrect for $runtime_version" >&2
+        exit 1
+    fi
+    if ! grep -Fq '"library_arch": "64"' \
+        "$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"; then
+        echo "Flatpak packaging failed: 64-bit manifest architecture is incorrect for $runtime_version" >&2
+        exit 1
+    fi
+    if ! grep -Fq "/usr/lib/extensions/vulkan/lsfgvkexperimental/lib/i386-linux-gnu/liblsfg-vk-layer.so" \
+        "$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json"; then
+        echo "Flatpak packaging failed: 32-bit manifest path is incorrect for $runtime_version" >&2
+        exit 1
+    fi
+    if ! grep -Fq '"library_arch": "32"' \
+        "$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json"; then
+        echo "Flatpak packaging failed: 32-bit manifest architecture is incorrect for $runtime_version" >&2
         exit 1
     fi
 
@@ -131,16 +168,37 @@ for runtime_version in 23.08 24.08 25.08; do
     # time.
     flatpak install --user --noninteractive "$bundle" >/dev/null
     deployed_dir="$(flatpak info --user --show-location "$extension_id//$runtime_version")"
-    deployed_manifest="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"
+    deployed_manifest64="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"
+    deployed_manifest32="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json"
 
     if [[ ! -f "$deployed_dir/files/lib64/liblsfg-vk-layer.so" ]]; then
-        echo "Flatpak packaging failed: deployed library is missing for $runtime_version" >&2
+        echo "Flatpak packaging failed: deployed 64-bit library is missing for $runtime_version" >&2
+        exit 1
+    fi
+    if [[ ! -f "$deployed_dir/files/lib/i386-linux-gnu/liblsfg-vk-layer.so" ]]; then
+        echo "Flatpak packaging failed: deployed 32-bit library is missing for $runtime_version" >&2
         exit 1
     fi
 
+    verify_elf_class "$deployed_dir/files/lib64/liblsfg-vk-layer.so" 2
+    verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/liblsfg-vk-layer.so" 1
+
     if ! grep -Fq "/usr/lib/extensions/vulkan/lsfgvkexperimental/lib64/liblsfg-vk-layer.so" \
-        "$deployed_manifest"; then
-        echo "Flatpak packaging failed: deployed manifest library path is incorrect for $runtime_version" >&2
+        "$deployed_manifest64"; then
+        echo "Flatpak packaging failed: deployed 64-bit manifest path is incorrect for $runtime_version" >&2
+        exit 1
+    fi
+    if ! grep -Fq '"library_arch": "64"' "$deployed_manifest64"; then
+        echo "Flatpak packaging failed: deployed 64-bit manifest architecture is incorrect for $runtime_version" >&2
+        exit 1
+    fi
+    if ! grep -Fq "/usr/lib/extensions/vulkan/lsfgvkexperimental/lib/i386-linux-gnu/liblsfg-vk-layer.so" \
+        "$deployed_manifest32"; then
+        echo "Flatpak packaging failed: deployed 32-bit manifest path is incorrect for $runtime_version" >&2
+        exit 1
+    fi
+    if ! grep -Fq '"library_arch": "32"' "$deployed_manifest32"; then
+        echo "Flatpak packaging failed: deployed 32-bit manifest architecture is incorrect for $runtime_version" >&2
         exit 1
     fi
 done

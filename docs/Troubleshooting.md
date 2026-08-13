@@ -6,7 +6,9 @@ Before reporting a bug, please read through the following sections to see if you
 ### Basic Troubleshooting Steps
 If lsfg-vk does not seem to be doing *anything*:
 - Ensure the game you are trying to run is using Vulkan (not OpenGL).
-- Ensure you are running a 64-bit game (try `PROTON_USE_WOW64=1`, but if it doesn't work then you're out of luck).
+- For a 32-bit game, ensure both `lib32/liblsfg-vk-layer.so` and
+  `VkLayer_LSFGVK_frame_generation.x86.json` were installed from the Linux
+  archive. The manifest must report `"library_arch": "32"`.
 - Install `vulkan-tools` and run `vulkaninfo | grep -i VK_LAYER_LSFGVK_frame_generation`.
   - If there is no output revisit the installation steps.
 - Launch the game with the environment variable `VK_LOADER_DEBUG=layer` set.

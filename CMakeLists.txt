@@ -10,6 +10,7 @@ option(LSFGVK_BUILD_CLI          "Build the command line interface"  ON)
 option(LSFGVK_INSTALL_DEVELOP    "Install development libraries and headers"      OFF)
 option(LSFGVK_INSTALL_XDG_FILES  "Install the application icon and desktop files" OFF)
 set(LSFGVK_LAYER_LIBRARY_PATH liblsfg-vk-layer.so CACHE STRING "Change where Vulkan searches for the layer library")
+set(LSFGVK_LAYER_MANIFEST_SUFFIX "" CACHE STRING "Suffix for the installed Vulkan layer manifest filename")
 option(LSFGVK_TESTING_RENDERDOC  "Enable RenderDoc integration for testing purposes" OFF)
 # === READ HERE FOR BUILD OPTIONS ===
 

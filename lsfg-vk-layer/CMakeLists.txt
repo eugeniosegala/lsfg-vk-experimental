@@ -82,13 +82,22 @@ if(BUILD_TESTING)
 endif()
 
 if(LSFGVK_BUILD_VK_LAYER)
+    math(EXPR LSFGVK_LAYER_LIBRARY_ARCH "${CMAKE_SIZEOF_VOID_P} * 8")
+    if(NOT LSFGVK_LAYER_LIBRARY_ARCH EQUAL 32 AND
+            NOT LSFGVK_LAYER_LIBRARY_ARCH EQUAL 64)
+        message(FATAL_ERROR
+            "The Vulkan layer manifest supports only 32-bit or 64-bit libraries")
+    endif()
+
+    set(LSFGVK_LAYER_MANIFEST_FILE
+        "VkLayer_LSFGVK_frame_generation${LSFGVK_LAYER_MANIFEST_SUFFIX}.json")
     configure_file(
         "VkLayer_LSFGVK_frame_generation.json.in"
-        "VkLayer_LSFGVK_frame_generation.json"
+        "${LSFGVK_LAYER_MANIFEST_FILE}"
         @ONLY)
 
     install(TARGETS lsfg-vk-layer
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/VkLayer_LSFGVK_frame_generation.json"
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${LSFGVK_LAYER_MANIFEST_FILE}"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/vulkan/implicit_layer.d")
 endif()

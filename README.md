@@ -117,7 +117,7 @@ Use the [Decky LSFG-VK Experimental plugin](https://github.com/eugeniosegala/dec
 per-game installation that can coexist with the public Decky plugin. Follow that repository's installation, engine
 update, launch-wrapper, and Heroic instructions instead of manually extracting this engine archive for the same game.
 
-### Direct 64-bit Linux installation
+### Direct Linux installation
 
 1. Purchase and install [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) through Steam.
 2. Download the versioned Linux archive from this fork's
@@ -129,6 +129,11 @@ update, launch-wrapper, and Heroic instructions instead of manually extracting t
    ```
 
 Keep track of the extracted files so the direct installation can be removed or rolled back later.
+
+The Linux archive contains both 64-bit and 32-bit Vulkan layer libraries. The
+Vulkan loader selects the matching library for each game; no launcher-side
+architecture setting is required. The CLI and graphical interface remain
+64-bit applications.
 
 The graphical interface requires Qt 6 and Qt Quick. Install the appropriate packages for your distribution if they are
 not already available:
