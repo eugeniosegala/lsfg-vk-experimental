@@ -29,15 +29,17 @@ it does not introduce a separate frame-generation model. For the established 1.x
   useful throughput, and waits for sustained evidence before trying a more expensive multiplier.
 - **Optional Smooth Cadence:** Suitable fractional targets can prefer a validated constant interpolation cadence.
   This can look smoother but may lower real-frame cadence and responsiveness, so it is disabled by default.
+- **Automatic HDR colour pipeline:** Swapchain format and colour space are classified together. Standard Gamescope
+  HDR10/PQ input is decoded from BT.2020/PQ into linear scRGB before frame generation and encoded back afterward;
+  linear scRGB uses the model directly. Unsupported HDR encodings use real-frame passthrough instead of synthesized
+  frames with incorrect colours. HDR processing is automatic; there is no engine HDR toggle.
+- **64-bit and 32-bit Vulkan layers:** Host and Flatpak packages include architecture-matched layer libraries and
+  manifests. The Vulkan loader selects the correct one for each game process; the CLI and Qt UI remain 64-bit.
 - **SteamOS/Gamescope recovery:** Generated-image stalls fall back to real frames, keep temporal history current, and
   recover without repeatedly spending the full acquire timeout. Isolated recoveries warm history in-place; only a
   repeated recovery within 15 seconds may use the guarded swapchain rebuild to clear stale presentation state.
 - **Menu and DX12 transition protection:** Adaptive preserves its proven gameplay state across hard cadence stalls and
   ignores implausibly fast DX12/VKD3D presentation bursts instead of treating them as a new game framerate.
-- **Automatic HDR colour pipeline:** Swapchain format and colour space are classified together. Standard Gamescope
-  HDR10/PQ input is decoded from BT.2020/PQ into linear scRGB before frame generation and encoded back afterward;
-  linear scRGB uses the model directly. Unsupported HDR encodings use real-frame passthrough instead of synthesized
-  frames with incorrect colours. There is no HDR configuration switch.
 - **Diagnostic tooling:** Opt-in, per-swapchain presentation records expose timing, recovery, ramp, rescue, and
   fast-cadence decisions without adding logging overhead to normal runs.
 - **Experimental Flatpak extensions:** Dedicated runtime extensions for Freedesktop 23.08, 24.08, and 25.08 can coexist
@@ -122,10 +124,10 @@ update, launch-wrapper, and Heroic instructions instead of manually extracting t
 1. Purchase and install [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) through Steam.
 2. Download the versioned Linux archive from this fork's
    [GitHub Releases](https://github.com/eugeniosegala/lsfg-vk-experimental/releases).
-3. Extract it into your local prefix. For version `2.0.0-dev28-experimental.22`:
+3. Extract it into your local prefix. For version `2.0.0-dev28-experimental.25`:
 
    ```bash
-   tar -xJf lsfg-vk-2.0.0-dev28-experimental.22-linux.tar.xz -C ~/.local
+   tar -xJf lsfg-vk-2.0.0-dev28-experimental.25-linux.tar.xz -C ~/.local
    ```
 
 Keep track of the extracted files so the direct installation can be removed or rolled back later.
@@ -189,7 +191,7 @@ The default duration is 10 seconds. Add `-h` to list the available options.
 
 This repository builds and publishes locally without GitHub Actions. Install the dependencies from
 [Building from Source](docs/Building-From-Source.md). On macOS, start Docker Desktop; the packaging scripts build the
-64-bit Linux artifacts inside a local `linux/amd64` container.
+dual-architecture Vulkan layers and 64-bit CLI/UI inside a local `linux/amd64` container.
 
 Create and verify a local host archive without changing GitHub:
 

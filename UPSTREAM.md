@@ -8,19 +8,21 @@ baseline so a future update can distinguish upstream work from experimental-fork
 
 | Item                       | Value                                                                                  |
 |----------------------------|----------------------------------------------------------------------------------------|
-| Release version            | `2.0.0-dev28-experimental.22`                                                          |
-| Release basis              | `.21` deterministic runtime plus diagnostics-derived recovery corrections              |
-| Pre-publication validation | Deterministic suite, 120-case matrix, native/Flatpak packaging, and log-path replay     |
-| Included change range      | `.22`: post-menu load guard and isolated presentation recovery                         |
+| Release version            | `2.0.0-dev28-experimental.25` local candidate                                          |
+| Release basis              | Published `.24` rollback plus local HDR, live-recovery, and dual-architecture work     |
+| Pre-publication validation | Deterministic suites, 120-case matrix, and native/Flatpak dual-architecture packaging  |
+| Included change range      | `.25`: HDR colour pipeline, safe live rebuilds, and ELF64/ELF32 Vulkan layers          |
 | Retired local experiment   | `ab4f790` hot-path changes removed after intermittent generation flinches              |
 | Fixed-mode impact          | Fixed 2x, 3x, and 4x scheduling remains on its existing path                          |
-| Ledger reconciled          | 2026-08-12                                                                             |
+| Ledger reconciled          | 2026-08-13                                                                             |
 
 The sections below are chronological. Versions through `.9` document the original published prereleases; `.10` through
 `.17` record the successive local test builds consolidated into the `.18` release; `.19` records the follow-up 2x
 gameplay-hitch refinement; `.20` adds the live frame-generation switch; `.21` extracts and validates the Adaptive
-policy state machine; and `.22` corrects two pre-existing recovery edge cases identified from SteamOS traces. The
-detailed history is intentionally retained here so the public README and release notes can remain concise.
+policy state machine; `.22` corrects two pre-existing recovery edge cases; `.23`/`.24` record a withdrawn submission
+experiment and corrective rollback; and the local `.25` candidate adds automatic HDR, safer live configuration recovery,
+and architecture-matched Vulkan layers. The detailed history is intentionally retained here so the public README and
+release notes can remain concise.
 
 ## Reviewed baseline
 
@@ -505,6 +507,30 @@ confirmed that `.21` moved these policies without introducing either behavior.
   and cooldown behavior. The full 120-case scheduler matrix and Linux integration/package build remain green.
 - Fixed scheduling, shaders, model selection, interpolation timestamps, generated-frame capacity, acquire-timeout
   fallback, temporal-history refresh, and the retired `ab4f790` hot-path experiment are unchanged.
+
+### Corrective submission rollback release: `v2.0.0-dev28-experimental.24`
+
+The `.23` release tried inline Vulkan submission storage and produced black screens on real devices. The `.24`
+corrective release removes that experiment completely and restores the allocation-backed submission path from the
+known-good `.22` runtime. Adaptive policy, shaders, interpolation timing, generated-frame counts, and recovery guards
+remain unchanged.
+
+### Automatic HDR and dual-architecture candidate: `v2.0.0-dev28-experimental.25`
+
+The local `.25` candidate consists of three committed checkpoints:
+
+- `4777cb2` classifies swapchain formats and colour spaces together, converts Gamescope HDR10/PQ through linear
+  scRGB around the frame-generation model, supports direct linear-scRGB generation, and uses real-frame passthrough
+  for unsupported HDR encodings or HDR resource-initialization failures.
+- `4672521` applies live CPU-policy changes to an existing context while deferring structural changes to a safe
+  replacement. Context retirement is bounded; incomplete GPU work stays alive and temporarily presents native frames
+  until generation can resume with refreshed temporal history.
+- `eb4ea9e` packages separate ELF64 and ELF32 Vulkan layers and architecture-qualified manifests for the host archive
+  and Freedesktop 23.08, 24.08, and 25.08 extensions. The loader chooses the correct layer for each process, so genuine
+  32-bit Vulkan games do not depend on a launcher-side WoW64 mode.
+
+The engine tests and native/Flatpak package verification pass for this exact local source. Runtime HDR rendering and
+individual game compatibility still require SteamOS hardware testing before publication.
 
 ## Update procedure
 

@@ -100,6 +100,7 @@ HDR10 input is converted from BT.2020/PQ into linear scRGB before the model and 
 - Supports both Gamescope packed HDR10 swapchain channel orders and FP16 linear scRGB.
 - Decodes ST 2084 and converts BT.2020 to linear BT.709/scRGB before inference, then performs the inverse conversion for presentation.
 - Keeps 8-bit and high-precision SDR model semantics distinct from HDR while selecting the correct storage-image format.
+- Ships architecture-matched ELF64 and ELF32 Vulkan layers and manifests in the host archive and every supported Flatpak extension. The Vulkan loader selects the matching layer for each process; no launcher-side WoW64 workaround is required.
 - Adds deterministic format-matrix and HDR colour-math tests. Adaptive scheduling, presentation recovery, interpolation timestamps, generated-frame count, and Fixed 2x/3x/4x policy are unchanged.
 
 ### Important limitations
@@ -116,9 +117,10 @@ HDR10 input is converted from BT.2020/PQ into linear scRGB before the model and 
 
 ### Included files
 
-- Vulkan implicit layer: \`liblsfg-vk-layer.so\`
-- CLI and Qt configuration UI
-- Vulkan manifest and XDG desktop files
+- 64-bit Vulkan implicit layer and manifest under \`lib/\` and \`share/vulkan/implicit_layer.d/\`
+- 32-bit Vulkan implicit layer and manifest under \`lib32/\` and \`share/vulkan/implicit_layer.d/\`
+- 64-bit CLI and Qt configuration UI
+- XDG desktop files
 
 ### Adaptive configuration
 
@@ -194,7 +196,7 @@ Download \`$(basename "$archive")\` and extract it to your local prefix:
 tar -xJf $(basename "$archive") -C ~/.local
 \`\`\`
 
-The host archive is for 64-bit Linux. Flatpak extensions are provided separately below.
+The host archive includes 64-bit and 32-bit Vulkan layers; the CLI and Qt UI are 64-bit. Flatpak extensions are provided separately below.
 
 ### Flatpak extensions
 
