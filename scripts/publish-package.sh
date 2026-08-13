@@ -12,9 +12,33 @@ release_branch="$(git branch --show-current)"
 source_commit="$(git rev-parse HEAD)"
 release_remote="${LSFGVK_RELEASE_REMOTE:-experimental}"
 notes_version="2.0.0-dev28-experimental.25"
+notes_previous_version="2.0.0-dev28-experimental.24"
+notes_previous_tag="v$notes_previous_version"
+notes_tag_pattern="v2.0.0-dev28-experimental.*"
 
 if [[ "$version" != "$notes_version" ]]; then
     echo "Release notes still describe $notes_version. Update scripts/publish-package.sh for $version before publishing." >&2
+    exit 1
+fi
+
+if ! git rev-parse -q --verify "refs/tags/$notes_previous_tag" >/dev/null; then
+    echo "Release-note baseline tag $notes_previous_tag is missing." >&2
+    exit 1
+fi
+if ! git merge-base --is-ancestor "$notes_previous_tag" HEAD; then
+    echo "Release-note baseline $notes_previous_tag is not an ancestor of HEAD." >&2
+    exit 1
+fi
+
+latest_previous_tag=""
+while IFS= read -r candidate_tag; do
+    if [[ "$candidate_tag" != "$tag" ]]; then
+        latest_previous_tag="$candidate_tag"
+        break
+    fi
+done < <(git tag --merged HEAD --list "$notes_tag_pattern" --sort=-version:refname)
+if [[ "$latest_previous_tag" != "$notes_previous_tag" ]]; then
+    echo "Release notes use $notes_previous_tag, but the latest prior tag is ${latest_previous_tag:-missing}. Update the baseline and change list before publishing." >&2
     exit 1
 fi
 
@@ -88,20 +112,23 @@ cat > "$notes_file" <<EOF
 
 This is an experimental build of the lsfg-vk 2.x development line. Test it game by game and retain a known-good rollback path.
 
-## This release: automatic SteamOS HDR colour pipeline
+## What's new since \`$notes_previous_version\`
 
 This \`.25\` candidate adds explicit swapchain format/colour-space classification and supports the standard Gamescope HDR10/PQ and linear-scRGB paths without a user-facing HDR switch.
 
 HDR10 input is converted from BT.2020/PQ into linear scRGB before the model and converted back after generation. Linear scRGB is passed directly to the model with its HDR constants enabled. Unvalidated HDR encodings stay on automatic real-frame passthrough instead of generating washed-out output.
 
-### Highlights
+### Changes introduced in this release
 
 - Classifies the complete Vulkan format/colour-space pair instead of inferring HDR from a numeric format range.
 - Supports both Gamescope packed HDR10 swapchain channel orders and FP16 linear scRGB.
 - Decodes ST 2084 and converts BT.2020 to linear BT.709/scRGB before inference, then performs the inverse conversion for presentation.
 - Keeps 8-bit and high-precision SDR model semantics distinct from HDR while selecting the correct storage-image format.
+- Makes configuration reloads resilient to transient partial TOML writes instead of losing the update.
+- Applies Frame Generation and Adaptive target, maximum multiplier, and Smooth Cadence changes safely in place. Changes that alter GPU resources or presentation shape are deferred; restart the game to guarantee those settings are rebuilt.
+- Replaces indefinite device-wide waits during context replacement with bounded per-context retirement. A transient backend scheduling stall keeps native presentation active, then warms temporal history before frame generation resumes.
 - Ships architecture-matched ELF64 and ELF32 Vulkan layers and manifests in the host archive and every supported Flatpak extension. The Vulkan loader selects the matching layer for each process; no launcher-side WoW64 workaround is required.
-- Adds deterministic format-matrix and HDR colour-math tests. Adaptive scheduling, presentation recovery, interpolation timestamps, generated-frame count, and Fixed 2x/3x/4x policy are unchanged.
+- Adds deterministic watched-configuration, profile-update, format-matrix, and HDR colour-math coverage. Adaptive scheduling, interpolation timestamps, generated-frame count, and Fixed 2x/3x/4x policy are unchanged.
 
 ### Important limitations
 
@@ -110,7 +137,6 @@ HDR10 input is converted from BT.2020/PQ into linear scRGB before the model and 
 - Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so test it per game.
 - HDR10 conversion adds one full-resolution decode dispatch per real frame and one encode dispatch per generated frame. It is correctness work, not a universal performance claim; measure the overhead on target hardware.
 - HLG, Dolby Vision, and unvalidated wide-colour combinations intentionally use real-frame passthrough. A game still needs its own HDR renderer and an HDR-capable SteamOS/Gamescope session.
-- The \`.24\` corrective rollback remains intact. The withdrawn \`.23\` submission-storage experiment and earlier local-only \`ab4f790\` optimization are not restored.
 - Lossless Scaling and \`Lossless.dll\` must already be installed through Steam; neither release archive includes or modifies it.
 - \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is an opt-in Adaptive recovery path for direct engine users. The first isolated recovery stays in-place; a repeated recovery may rebuild the swapchain and can briefly pause or flicker. The Decky experimental wrapper enables the tested timeout and guarded policy automatically.
 - Flatpak extensions for 23.08, 24.08, and 25.08 are packaged separately in \`$(basename "$flatpak_archive")\` under a dedicated experimental ID that can coexist with the public Flathub layer.
@@ -134,41 +160,7 @@ adaptive_stable_cadence = false
 frame_generation_enabled = true
 \`\`\`
 
-Restart the game after switching between Fixed and Adaptive modes, or before increasing a Fixed multiplier beyond the capacity used when the game created its swapchain. Target, maximum multiplier, Smooth Cadence, flow scale, and performance mode can then rebuild the private interpolation context through hot reload.
-
-### Included foundation and .22 improvements
-
-- Prevents post-menu restoration from clearing the lower proven level and recovered real-only baseline needed by delayed-load collapse detection.
-- Prevents an isolated generated-image recovery from immediately requesting a game-owned swapchain rebuild; repeated recovery and cooldown decisions are now a deterministic policy.
-
-- Extracts the existing Adaptive controller from swapchain presentation into a testable state machine without changing the intended policy.
-- Adds deterministic timing tests, a compatibility-oriented 120-case policy matrix, and a scheduler microbenchmark.
-- Corrects native UI defaults and Active In dialog wiring.
-
-- Adds a live frame-generation switch contributed by PacificSilent and adapted to preserve both Fixed and Adaptive mode state. Off mode directly presents real game frames without per-swapchain interpolation resources; re-enabling creates a fresh context without restarting the game.
-- Adds a narrow 2x Adaptive gameplay-hitch recovery path. It applies only after 2x is validated and does not alter Fixed mode, Adaptive 3x/4x, bounded generated-image acquisition, or guarded swapchain recreation.
-- Adds a configurable 2x/3x/4x Adaptive ceiling. When the target is unreachable at the selected quality limit, output remains below target instead of silently using a higher interpolation ratio.
-- Stabilizes on real frames, ramps generated workload one level at a time, and accepts a step only when it improves useful output without an unsafe real-rate collapse. A bounded bridge probe handles misleading Gamescope divisors.
-- Separates interrupted probes from genuine failures. Interrupted work rearms after two stable seconds; rejected probes use progressive cooldowns and can retry early after a sustained 15% base-rate improvement.
-- Treats 95% of the target as satisfied and requires a smaller remaining deficit to persist for one second before testing more expensive work.
-- Adds optional Smooth Cadence for suitable fractional targets, with strict target scheduling and all load protections retained when the option is disabled.
-- Monitors a newly accepted higher level after its initial probe. If full load later collapses real-frame throughput, Adaptive measures one second without generated work and restores the lower proven level only when cadence recovers.
-- Preserves the validated generation level and gameplay baseline across recovery and hard menu/focus stalls. Sustained gameplay slowdowns instead rebase after normal one-second stabilization.
-- Warms all three shared temporal-history slots before Adaptive first generates output and keeps shared history current while generated images are unavailable.
-
-### Stability carried forward and corrected through .22
-
-- Prevents Smooth Cadence restoration and rescue paths from retaining a generated-frame level above the configured maximum.
-
-- Prevents an isolated short gameplay hitch at an already validated 2x ceiling from unnecessarily disabling generation for the full one-to-five-second menu/focus recovery window.
-- Prevents the existing Gamescope inference-bypass fallback from advancing temporal-history counters without refreshing the shared feature slots used when generation resumes.
-- Prevents startup and post-recovery ghosting caused by partially initialized or stale shared temporal-history slots.
-- Prevents repeated menu transitions from accumulating stale Adaptive credit, validating a multiplier while generation is bypassed, or immediately rebuilding the same harmful load after swapchain recovery.
-- Prevents a recovered context from entering a swapchain recreate-and-retry loop through a five-second cross-context cooldown and a real-frame stabilization period.
-- Prevents strict Adaptive from remaining trapped at an accepted higher multiplier that later performs worse than the previous proven level. Suspected delayed collapses are confirmed with one second of real-only measurement.
-- Starts delayed-load rescue below 80% base-rate retention while preserving persistence checks, so sustained degradation is handled earlier without reacting to an isolated hitch.
-- Prevents Steam-menu interruptions from being counted as genuine probe failures or imposing unnecessary long cooldowns.
-- Excludes implausibly fast DX12/VKD3D presentation bursts from cadence smoothing and pauses policy evaluation until ordinary cadence returns.
+Frame Generation and the Adaptive target, maximum multiplier, and Smooth Cadence can update live when the current swapchain already has sufficient resources. Restart after switching between Fixed and Adaptive modes, changing the Fixed multiplier, GPU, Flow Scale, Performance Mode, pacing, DLL, or FP16 policy, or when increasing a setting beyond the resources created at startup.
 
 ### Optional diagnostics
 
