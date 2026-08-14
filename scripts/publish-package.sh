@@ -137,7 +137,7 @@ This \`.25\` release consolidates the tested SDR runtime, safer live configurati
 - Classifies the complete Vulkan format/colour-space pair, with separate SDR 8-bit, SDR high-precision, HDR10/PQ, and linear-scRGB pipelines.
 - Includes explicit BT.2020/PQ to linear scRGB conversion around the model, plus a capability-validated packed HDR10 boundary transport that leaves model and temporal images at 16-bit float.
 - Resolves Gamescope application feedback away from the presentation hot path and requires application colour-space feedback or HDR metadata. Display HDR capability alone never promotes an SDR swapchain.
-- Keeps unsupported or unconfirmed encodings on real-frame passthrough. The companion Decky plugin leaves \`LSFGVK_DISABLE_HDR_EXPOSURE=1\` and \`DXVK_HDR=0\` enabled by default; direct launchers can set \`LSFGVK_DISABLE_HDR_EXPOSURE=1\` for the same hard SDR boundary.
+- Keeps unsupported or unconfirmed encodings on real-frame passthrough. The companion Decky plugin sets \`LSFGVK_DISABLE_HDR_EXPOSURE=1\` as the engine's hard SDR boundary and leaves DXVK at its normal SDR default; direct launchers can set the same LSFG variable.
 - Treats this code as architecture and diagnostic groundwork. Cross-game HDR activation, colour validation, presentation and performance still require future hardware testing.
 
 ### Important limitations

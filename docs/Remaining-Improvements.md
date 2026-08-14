@@ -59,8 +59,8 @@ stability, or recovery regression.
 ## HDR validation
 
 - Treat the `.25` HDR implementation as disabled-by-default foundation, not a
-  completed compatibility claim. The companion Decky wrapper retains its
-  isolated SDR boundary until a user deliberately opts into HDR testing.
+  completed compatibility claim. The companion Decky wrapper enforces a hard
+  SDR boundary while HDR remains unavailable in the packaged plugin.
 - Treat linear scRGB as the model's canonical HDR working space. Keep HDR10
   BT.2020/PQ decoding before the model and encoding after it explicit; never
   infer HDR from a numeric `VkFormat` range.

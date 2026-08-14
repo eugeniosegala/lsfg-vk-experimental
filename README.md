@@ -30,8 +30,9 @@ it does not introduce a separate frame-generation model. For the established 1.x
 - **Optional Smooth Cadence:** Suitable fractional targets can prefer a validated constant interpolation cadence.
   This can look smoother but may lower real-frame cadence and responsiveness, so it is disabled by default.
 - **HDR pipeline foundation (disabled by default in Decky):** Adds HDR10/PQ and linear-scRGB groundwork, not a promise
-  of working HDR frame generation across games. Decky defaults to `LSFGVK_DISABLE_HDR_EXPOSURE=1` and `DXVK_HDR=0` to
-  retain its established isolated SDR path; direct launchers can use the same boundary. The engine activates HDR only
+  of working HDR frame generation across games. Decky sets `LSFGVK_DISABLE_HDR_EXPOSURE=1` as the engine's hard SDR
+  boundary and leaves DXVK at its normal SDR default; direct launchers can set the same LSFG variable. The engine
+  activates HDR only
   after live application colour-space feedback or HDR metadata—not display capability alone—and uses real-frame
   passthrough for unsupported encodings. Validated HDR10 paths use packed 10-bit exchange images to reduce memory
   pressure while the model continues to work in linear 16-bit float.
