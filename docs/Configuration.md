@@ -72,12 +72,19 @@ remain linear 16-bit float. If either capability check fails, the validated floa
 
 **Pacing modes** determine how lsfg-vk synchronizes frame generation with the application's frame rate.
 
-Traditionally, lsfg-vk did not have frame pacing and would present frames to the screen as soon as they are generated. This approach is flawed, because frames are generated and presented much quicker than your screen refreshes, causing frames to be skipped. This effect is countered by force-enabling V-Sync, as the compositor will then wait for the next screen update, before presenting the next frame.
+On the normal SDR path, `none` uses lsfg-vk's private FIFO output transport. The layer reserves swapchain capacity for
+the generated images, then presents each generated/real sequence in order; FIFO supplies display-rate backpressure so
+the sequence is not immediately coalesced or skipped. This is distinct from the game's V-Sync setting: game V-Sync
+stabilizes the incoming real-frame cadence, while lsfg-vk's FIFO transport orders the output it inserts. Together they
+can improve frame pacing and perceived smoothness, especially when an uncapped game otherwise submits irregular bursts.
 
-Enabling V-Sync is not a "get-out-of-jail-free" card, because it introduces input latency. Additionally, not every compositor (such as gamescope) respects the V-Sync setting, leading to the same issues as before. As a result of this, additional pacing modes have been introduced to properly handle frame pacing.
+V-Sync is not a performance multiplier: it cannot create GPU headroom and may add latency, interact with VRR or a
+game's limiter, or fall to a lower refresh divisor when the game misses its interval. Test it enabled and disabled per
+game. HDR-capable Gamescope swapchains preserve their separate WSI presentation contract, so this SDR FIFO guarantee
+does not describe the experimental HDR path.
 
 Here are all available pacing modes:
-- `none`: Traditional lsfg-vk behavior. Forces V-Sync. Might require workarounds on some compositors.
+- `none`: Uses the established ordered SDR FIFO transport. It may require workarounds on some compositors.
 - *... there are no other pacing modes yet ...*
 
 ### Environment Variables
