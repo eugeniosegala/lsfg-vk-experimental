@@ -61,7 +61,7 @@ Next is a list of all available **profile** configuration options:
 - **Pacing Mode / `pacing`**: This option is explained in greater detail below. Supported values are **None / `none`**.
 - **GPU / `gpu`**: The GPU to use for frame generation. This MUST be the **same GPU** as the one being used by the application. **Dual GPU is NOT supported**. You can identify a GPU through its name (e.g. `NVIDIA GeForce RTX 3080`), uppercase-only ID (e.g. `0x10DE:0x2C02`) or PCI bus ID (e.g. `3:0.0`). If not specified, the primary GPU will be used, which may lead to issues.
 
-The "Frame Generation", "Multiplier", "Adaptive Target", "Maximum Adaptive Multiplier", "Smooth Cadence", "Flow Scale" and "Performance Mode" options can be **hot-reloaded**, meaning that the layer rebuilds its private interpolation context without requiring the game to restart. Frame Generation Off preserves the selected mode and the game-owned swapchain capacity needed to resume it. Restart the application after switching between Fixed and Adaptive modes, or before increasing a Fixed multiplier beyond the value used when the game created its swapchain, so the game-owned swapchain has the intended generated-frame capacity. Options such as "Pacing Mode" or removal of the profile require a game-owned swapchain recreation, which usually means resizing or restarting the application. Any other change requires an application restart.
+"Frame Generation", Fixed/Adaptive mode, "Multiplier", "Adaptive Target", "Maximum Adaptive Multiplier", and "Smooth Cadence" can be **hot-reloaded** when the active context has the required reserved capacity. Fixed and Adaptive share one private output set, so these ordinary controls do not invalidate or recreate the game-owned swapchain. Flow Scale, Performance Mode, GPU selection, a capacity increase beyond the reserved set, and an HDR encoding change remain pending until the game naturally recreates its swapchain; restart the game when an immediate deterministic change is required. The layer never returns an out-of-date result merely because a Decky setting changed. Global DLL and FP16 changes still require a process restart because they alter the shared backend instance.
 
 ### Pacing Modes
 
@@ -78,15 +78,15 @@ Here are all available pacing modes:
 ### Environment Variables
 
 The following environment variables affect lsfg-vk:
-- `DISABLE_LSFGVK`: If set, lsfg-vk will be completely disabled.
+- `ENABLE_LSFGVK_EXPERIMENTAL`: Set to `1` in the experimental launch wrapper to scope this fork's uniquely named
+  implicit Vulkan layer to that game.
+- `DISABLE_LSFGVK_EXPERIMENTAL`: If set to `1`, this experimental layer will be completely disabled.
+- `DISABLE_LSFGVK` and `DISABLE_LSFG`: Disable the two public LSFG layer identities. The experimental Decky wrapper
+  sets both so only its private engine is active for the wrapped game.
 - `LSFGVK_CONFIG`: Path to the configuration file.
 - `LSFGVK_PROFILE`: Name of the profile to use. If set, this will override automatic profile detection.
 - `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS`: Optional timeout for generated-image acquisition. A timeout enters the
   Gamescope presentation fallback; unset or `0` keeps the normal unbounded acquisition path.
-- `LSFGVK_PRESENT_RECOVERY_RECREATE`: Set to `1` to ask the game to recreate its swapchain after Adaptive recovers
-  from that fallback. The first isolated recovery uses history warm-up without a rebuild; a repeated recovery within
-  15 seconds can request one. Recreation requests have a five-second cooldown shared across replacement contexts.
-  This experimental option has no effect without the acquire timeout and does not affect Fixed mode.
 - `LSFGVK_PRESENT_DIAGNOSTICS`: Set to `1` to log slow presentation operations.
 - `LSFGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS`: Minimum duration in milliseconds reported by presentation diagnostics.
 
@@ -94,7 +94,8 @@ If you do not wish to use a configuration file, you can also set configuration o
 - `LSFGVK_DLL_PATH`: Path to Lossless Scaling DLL.
 - `LSFGVK_NO_FP16`: If set to `1`, half-precision will be disabled.
 - `LSFGVK_MULTIPLIER`: Frame generation multiplier.
-- `LSFGVK_FRAME_GENERATION_ENABLED`: Set to `0` for live real-frame passthrough. Unlike `DISABLE_LSFGVK`, the layer remains loaded.
+- `LSFGVK_FRAME_GENERATION_ENABLED`: Set to `0` for live real-frame passthrough. Unlike
+  `DISABLE_LSFGVK_EXPERIMENTAL`, the layer remains loaded.
 - `LSFGVK_ADAPTIVE`: Set to `1` to enable Adaptive Frame Generation.
 - `LSFGVK_TARGET_FPS`: Adaptive displayed-framerate target.
 - `LSFGVK_ADAPTIVE_MAX_MULTIPLIER`: Maximum Adaptive multiplier from `2` to `4`.

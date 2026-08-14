@@ -34,6 +34,40 @@ int main() {
         "10-bit SDR must not activate HDR model semantics");
     expect(!sdr10.hdr, "10-bit SDR should not be classified as HDR");
 
+    const auto gamescopeHdr10 = layer::classifySwapchainColor(
+        VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+        VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+        true
+    );
+    expect(gamescopeHdr10.generationSupported,
+        "Gamescope-normalized HDR10 should remain supported below WSI");
+    expect(gamescopeHdr10.encoding == backend::FrameEncoding::Hdr10Pq,
+        "Gamescope-normalized packed 10-bit should recover PQ semantics");
+    expect(gamescopeHdr10.hdr,
+        "Gamescope-normalized packed 10-bit should be classified as HDR");
+    expect(gamescopeHdr10.gamescopeColorSpaceRecovered,
+        "Gamescope-normalized HDR10 should identify its recovered source");
+
+    const auto gamescopeScrgb = layer::classifySwapchainColor(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+        true
+    );
+    expect(gamescopeScrgb.encoding == backend::FrameEncoding::ScRgbLinear,
+        "Gamescope-normalized float swapchains should recover scRGB semantics");
+    expect(gamescopeScrgb.gamescopeColorSpaceRecovered,
+        "Gamescope-normalized scRGB should identify its recovered source");
+
+    const auto gamescopeSdr8 = layer::classifySwapchainColor(
+        VK_FORMAT_B8G8R8A8_SRGB,
+        VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+        true
+    );
+    expect(gamescopeSdr8.encoding == backend::FrameEncoding::Sdr8,
+        "Gamescope HDR feedback must not reclassify an 8-bit SDR swapchain");
+    expect(!gamescopeSdr8.hdr,
+        "Gamescope HDR feedback must preserve 8-bit SDR semantics");
+
     for (const auto format : {
             VK_FORMAT_A2B10G10R10_UNORM_PACK32,
             VK_FORMAT_A2R10G10B10_UNORM_PACK32}) {

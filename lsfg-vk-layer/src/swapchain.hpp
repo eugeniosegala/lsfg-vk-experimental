@@ -41,22 +41,7 @@ namespace lsfgvk::layer {
     /// @param maxImages maximum number of images supported by the surface
     /// @param createInfo swapchain create info to modify
     void context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
-        VkSwapchainCreateInfoKHR& createInfo);
-
-    /// Recovery coordination that survives a game-owned swapchain recreation.
-    struct AdaptiveRecoveryState {
-        AdaptivePresentationRecoveryPolicy presentationRecoveryPolicy;
-        bool nextContextIsRecovery{false};
-        size_t nextContextGenerationLimit{0};
-        size_t nextContextLoadFallbackGenerationLimit{0};
-        double nextContextLoadBaselineBaseFps{0.0};
-        bool nextContextIsDiscontinuityRecovery{false};
-        size_t nextContextDiscontinuityFallbackGenerationLimit{0};
-        double nextContextDiscontinuityBaselineBaseFps{0.0};
-        std::optional<std::chrono::steady_clock::time_point>
-            nextContextDiscontinuityDeadline;
-        bool nextContextDiscontinuitySoftRecoveryAttempted{false};
-    };
+        VkSwapchainCreateInfoKHR& createInfo, bool gamescopeHdrActive);
 
     /// swapchain context for a layer instance
     class Swapchain {
@@ -66,20 +51,10 @@ namespace lsfgvk::layer {
         /// @param backend lsfg-vk backend instance
         /// @param profile active game profile
         /// @param info swapchain info
-        /// @param recoveryState recovery coordination shared across swapchains
-        /// @param recoveryContext true when this context follows guarded recovery
         Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
-            AdaptiveRecoveryState* recoveryState, bool recoveryContext,
-            size_t recoveryGenerationLimit,
-            size_t recoveryLoadFallbackGenerationLimit,
-            double recoveryLoadBaselineBaseFps,
-            bool discontinuityRecoveryContext,
-            size_t discontinuityFallbackGenerationLimit,
-            double discontinuityBaselineBaseFps,
-            std::optional<std::chrono::steady_clock::time_point>
-                discontinuityDeadline,
-            bool discontinuitySoftRecoveryAttempted);
+            bool gamescopeHdrActive,
+            uint64_t runtimeStateRevision);
 
         /// present a frame
         /// @param vk vulkan instance
@@ -98,9 +73,17 @@ namespace lsfgvk::layer {
         }
 
         /// Apply configuration that is safe for an already-created context.
-        /// Resource-shape and backend-construction changes are left pending for
-        /// normal game-owned swapchain recreation.
-        [[nodiscard]] ProfileUpdateAction updateProfile(const ls::GameConf& profile);
+        /// Resource-shape and backend-construction changes remain pending for
+        /// a natural game-owned recreation; this layer never forces one for a
+        /// Decky setting change.
+        [[nodiscard]] ProfileUpdateAction updateProfile(
+            const ls::GameConf& profile, uint64_t runtimeStateRevision);
+
+        /// Record a confirmed Gamescope application-HDR state change. Existing
+        /// contexts retain their safe encoding until the game naturally
+        /// recreates them.
+        [[nodiscard]] bool updateGamescopeHdrState(
+            bool active, uint64_t runtimeStateRevision);
 
         /// Stop generation in place when the active profile disappears.
         void disableFrameGeneration();
@@ -127,10 +110,14 @@ namespace lsfgvk::layer {
         size_t generatedImageAcquireBypassCount{0};
         std::optional<std::chrono::steady_clock::time_point> generatedImageAcquireLastBoundedProbe;
         bool backendRecoveryPending{false};
-        bool swapchainRecreationRequested{false};
         std::optional<AdaptiveScheduler> adaptiveScheduler;
+        std::vector<float> fixedFrameTimestamps;
+        std::optional<std::chrono::steady_clock::time_point>
+            fixedDiagnosticWindowStarted;
+        size_t fixedDiagnosticRealFrames{0};
+        size_t fixedDiagnosticGeneratedFrames{0};
+        size_t fixedDiagnosticSkippedFrames{0};
         size_t configurationHistoryWarmupRemaining{0};
-        AdaptiveRecoveryState* adaptiveRecoveryState{};
         uint64_t diagnosticsContextId{0};
 
         SwapchainColorPipeline colorPipeline;

@@ -7,12 +7,16 @@ Before reporting a bug, please read through the following sections to see if you
 If lsfg-vk does not seem to be doing *anything*:
 - Ensure the game you are trying to run is using Vulkan (not OpenGL).
 - For a 32-bit game, ensure both `lib32/liblsfg-vk-layer.so` and
-  `VkLayer_LSFGVK_frame_generation.x86.json` were installed from the Linux
+  `VkLayer_LSFGVK_experimental_frame_generation.x86.json` were installed from the Linux
   archive. The manifest must report `"library_arch": "32"`.
-- Install `vulkan-tools` and run `vulkaninfo | grep -i VK_LAYER_LSFGVK_frame_generation`.
+- Install `vulkan-tools` and run
+  `ENABLE_LSFGVK_EXPERIMENTAL=1 vulkaninfo | grep -i VK_LAYER_LSFGVK_experimental_frame_generation`.
   - If there is no output revisit the installation steps.
 - Launch the game with the environment variable `VK_LOADER_DEBUG=layer` set.
-  - Look for lines mentioning `VK_LAYER_LSFGVK_frame_generation` inbetween `<Loader>` and `<Device>`.
+  - Look for `VK_LAYER_LSFGVK_experimental_frame_generation` and the
+    `lsfg-vk: experimental layer active` build marker between `<Loader>` and `<Device>`.
+  - If a public layer (`VK_LAYER_LSFGVK_frame_generation` or `VK_LAYER_LS_frame_generation`) is inserted for the same
+    game, add `DISABLE_LSFGVK=1 DISABLE_LSFG=1`. The experimental Decky wrapper adds both guards automatically.
   - If you can't find any, try again using `LSFGVK_ENV=1`.
     - If it still doesn't show up, you may be running in flatpak.
     - If it does show up, then the `active_in` property of your profile is likely misconfigured. Reconfigure it, then try again without `LSFGVK_ENV=1`.
@@ -90,22 +94,11 @@ Fixed-mode recovery uses `resume-generated-frames`. Adaptive recovery reports `g
 three `history-warmup` entries with `reason=recovery`. Adaptive startup uses the same entries with `reason=startup`.
 The recovery record includes the total number of frames whose output work was bypassed.
 
-If repeated overlay transitions still accumulate input latency, the experimental Adaptive recovery can instead ask
-the game to rebuild its Vulkan swapchain after Gamescope releases an image:
-
-```bash
-LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=1 ~/.local/bin/lsfg-vk-experimental %command%
-```
-
-The first successful recovery probe after an isolated timeout stays in the current swapchain and performs the normal
-three-frame history warm-up. Diagnostics report `swapchain-recreation-suppressed reason=first-recovery`. If another
-generated-image recovery occurs within 15 seconds, the acquired image is safely presented before lsfg-vk may return
-`VK_ERROR_OUT_OF_DATE_KHR`, the standard signal applications use to recreate their swapchain. Diagnostics then report
-`generated-image-recovered recovery_action=swapchain-recreate`, followed by `request-swapchain-recreation`. The
-replacement context stabilizes on real frames before generated-frame load is ramped one step at a time. A five-second
-cross-context cooldown suppresses immediate recreation loops. A short pause or flicker can occur while the game
-rebuilds its swapchain. Some games may mishandle a forced recreation; set `LSFGVK_PRESENT_RECOVERY_RECREATE=0` for that
-game to keep all recovery in-place. Fixed mode is unaffected.
+Every successful Adaptive recovery probe stays in the current swapchain and performs the normal three-frame history
+warm-up. Diagnostics report `swapchain-recreation-suppressed reason=in-place-only` and
+`generated-image-recovered recovery_action=in-place`. LSFG does not return `VK_ERROR_OUT_OF_DATE_KHR` to apply a
+setting or recovery decision; this avoids game/Wine-specific swapchain rebuild failures. Fixed mode resumes in place
+without the Adaptive history-policy reset.
 
 For a normal non-isolated installation, place the same environment variables before its usual launch command.
 
@@ -113,7 +106,7 @@ Clear the Steam log before reproducing the problem. After reproducing it, extrac
 with:
 
 ```bash
-grep -aE 'lsfg-vk: present diagnostics: operation=(adaptive-plan|adaptive-discontinuity|adaptive-stabilization|adaptive-gameplay-hitch|adaptive-fast-cadence-burst|adaptive-stable-cadence|adaptive-ramp|adaptive-recovery-resume-scheduled|adaptive-load-shed|adaptive-rescue|adaptive-bridge|adaptive-probe-aborted|adaptive-rearm|skip-generated-frames|generated-image-recovered|request-swapchain-recreation|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
+grep -aE 'lsfg-vk: present diagnostics: operation=(runtime-transition-pending|runtime-state-applied|fixed-plan|adaptive-plan|adaptive-discontinuity|adaptive-stabilization|adaptive-gameplay-hitch|adaptive-fast-cadence-burst|adaptive-stable-cadence|adaptive-ramp|adaptive-recovery-resume-scheduled|adaptive-load-shed|adaptive-rescue|adaptive-bridge|adaptive-probe-aborted|adaptive-rearm|skip-generated-frames|generated-image-recovered|swapchain-recreation-suppressed|swapchain-context-create|swapchain-context-destroy)' ~/.steam/steam/logs/console-linux.txt | tail -n 800
 ```
 
 `adaptive-stabilization` and `adaptive-ramp` show the normal restart sequence. `adaptive-load-shed` means a tested
@@ -130,6 +123,12 @@ and refreshed temporal history instead of entering the longer menu/focus recover
 Every presentation-diagnostic record includes a `context=<ID>` field. Use it to separate concurrent or replacement
 swapchains before comparing ramp, recovery, and presentation events; records with different context IDs may describe
 different windows or an old context being destroyed while its replacement starts.
+For a live-compatible in-game configuration change, `runtime-state-applied transition=live` records the requested state
+revision and the active mode. If a change needs different private GPU resources or HDR encoding,
+`runtime-transition-pending action=wait-for-natural-swapchain-recreation` records that it was deliberately not forced;
+the next naturally-created context reports `runtime-state-applied` with the same or a newer `state_revision`. Its
+`adaptive`, `target_fps`, multiplier, Smooth Cadence, and `hdr` fields are the authoritative engine state; a Decky UI
+value alone does not prove the active context changed.
 
 Disable the diagnostic variables after collecting the trace. Remove the acquire-timeout and recreation variables too
 if you do not want to continue testing the recovery path.

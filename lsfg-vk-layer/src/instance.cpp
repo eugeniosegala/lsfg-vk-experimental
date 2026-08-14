@@ -24,7 +24,46 @@
 using namespace lsfgvk;
 using namespace lsfgvk::layer;
 
+#ifndef LSFGVK_BUILD_VERSION
+#define LSFGVK_BUILD_VERSION "unknown"
+#endif
+
 namespace {
+    constexpr char experimentalBuildIdentity[] =
+        "lsfg-vk: experimental layer active; identity="
+        "VK_LAYER_LSFGVK_experimental_frame_generation; build="
+        LSFGVK_BUILD_VERSION;
+
+    class ScopedEnvironmentOverride {
+    public:
+        ScopedEnvironmentOverride(std::string name, const char* value) :
+                name(std::move(name)) {
+            if (const char* current = std::getenv(this->name.c_str()))
+                this->previousValue = current;
+
+            if (setenv(this->name.c_str(), value, 1) != 0)
+                throw ls::error("unable to set environment override: " + this->name);
+        }
+
+        ~ScopedEnvironmentOverride() {
+            if (this->previousValue)
+                static_cast<void>(setenv(
+                    this->name.c_str(), this->previousValue->c_str(), 1
+                ));
+            else
+                static_cast<void>(unsetenv(this->name.c_str()));
+        }
+
+        ScopedEnvironmentOverride(const ScopedEnvironmentOverride&) = delete;
+        ScopedEnvironmentOverride& operator=(const ScopedEnvironmentOverride&) = delete;
+        ScopedEnvironmentOverride(ScopedEnvironmentOverride&&) = delete;
+        ScopedEnvironmentOverride& operator=(ScopedEnvironmentOverride&&) = delete;
+
+    private:
+        std::string name;
+        std::optional<std::string> previousValue;
+    };
+
     bool presentDiagnosticsEnabled() {
         const char* value = std::getenv("LSFGVK_PRESENT_DIAGNOSTICS");
         return value && std::string(value) != "0";
@@ -50,6 +89,28 @@ namespace {
 }
 
 Root::Root() {
+    std::cerr << experimentalBuildIdentity << '\n';
+
+    const auto initialHdrFeedback =
+        this->hdrFeedbackReader.diagnosticSample();
+    this->lastHdrFeedbackSample = initialHdrFeedback.active;
+    this->lastHdrFeedbackStatus = initialHdrFeedback.status;
+    this->gamescopeHdrActive = this->lastHdrFeedbackSample;
+    this->hdrFeedback.seed(this->lastHdrFeedbackSample);
+    this->lastHdrFeedbackPoll = std::chrono::steady_clock::now();
+    if (this->lastHdrFeedbackSample) {
+        std::cerr << "lsfg-vk: Gamescope application HDR feedback initialized: active="
+                  << *this->lastHdrFeedbackSample << '\n';
+    } else {
+        std::cerr << "lsfg-vk: Gamescope application HDR feedback unavailable; "
+                     "normalized 10-bit swapchains remain SDR until confirmed; "
+                  << "reason=" << initialHdrFeedback.status
+                  << " display="
+                  << (initialHdrFeedback.display.empty()
+                        ? "(unset)" : initialHdrFeedback.display)
+                  << '\n';
+    }
+
     // find active profile
     const auto& profile = findProfile(this->config.get(), ls::identify());
     if (!profile.has_value())
@@ -75,13 +136,49 @@ Root::Root() {
 }
 
 ConfigurationUpdateResult Root::update() {
+    ConfigurationUpdateResult result;
+    const auto now = std::chrono::steady_clock::now();
+    constexpr auto hdrFeedbackPollInterval = std::chrono::milliseconds(250);
+    if (!this->lastHdrFeedbackPoll ||
+            now - *this->lastHdrFeedbackPoll >= hdrFeedbackPollInterval) {
+        const auto hdrFeedbackSample =
+            this->hdrFeedbackReader.diagnosticSample();
+        this->lastHdrFeedbackSample = hdrFeedbackSample.active;
+        if (hdrFeedbackSample.status != this->lastHdrFeedbackStatus) {
+            this->lastHdrFeedbackStatus = hdrFeedbackSample.status;
+            std::cerr << "lsfg-vk: Gamescope application HDR feedback status: "
+                      << hdrFeedbackSample.status
+                      << "; display="
+                      << (hdrFeedbackSample.display.empty()
+                            ? "(unset)" : hdrFeedbackSample.display)
+                      << '\n';
+        }
+        this->lastHdrFeedbackPoll = now;
+    }
+
+    if (const auto changed = this->hdrFeedback.observe(
+            this->lastHdrFeedbackSample, now)) {
+        this->gamescopeHdrActive = changed;
+        this->runtimeStateRevision++;
+        result.hdrFeedbackChanged = true;
+        for (auto& [swapchain, context] : this->swapchains) {
+            static_cast<void>(swapchain);
+            if (context.updateGamescopeHdrState(
+                    *changed, this->runtimeStateRevision))
+                result.hdrContextsDeferred++;
+        }
+        std::cerr << "lsfg-vk: Gamescope application HDR feedback stabilized: active="
+                  << *changed
+                  << "; contexts_pending_recreation="
+                  << result.hdrContextsDeferred << '\n';
+    }
+
     const auto previousGlobal = this->config.get().global();
     if (!this->config.update())
-        return {};
+        return result;
 
-    ConfigurationUpdateResult result{
-        .reloaded = true,
-    };
+    result.reloaded = true;
+    this->runtimeStateRevision++;
     const auto& currentGlobal = this->config.get().global();
     result.globalChangeDeferred =
         previousGlobal.dll != currentGlobal.dll ||
@@ -96,7 +193,8 @@ ConfigurationUpdateResult Root::update() {
     if (this->active_profile) {
         for (auto& [swapchain, context] : this->swapchains) {
             static_cast<void>(swapchain);
-            switch (context.updateProfile(*this->active_profile)) {
+            switch (context.updateProfile(
+                    *this->active_profile, this->runtimeStateRevision)) {
                 case ProfileUpdateAction::NoRuntimeChange:
                     break;
                 case ProfileUpdateAction::ApplyLive:
@@ -115,13 +213,6 @@ ConfigurationUpdateResult Root::update() {
             context.disableFrameGeneration();
             result.liveContextsUpdated++;
         }
-    }
-
-    if (result.liveContextsUpdated > 0) {
-        // A live policy transition starts with fresh scheduler timing. Do not
-        // carry a recovery/recreation decision from the previous policy into
-        // the newly selected one.
-        this->adaptiveRecoveryState = {};
     }
 
     return result;
@@ -204,7 +295,12 @@ void Root::modifySwapchainCreateInfo(const vk::Vulkan& vk, VkSwapchainCreateInfo
     if (res != VK_SUCCESS)
         throw ls::vulkan_error(res, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR() failed");
 
-    context_ModifySwapchainCreateInfo(*this->active_profile, caps.maxImageCount, createInfo);
+    context_ModifySwapchainCreateInfo(
+        *this->active_profile,
+        caps.maxImageCount,
+        createInfo,
+        this->gamescopeHdrActive.value_or(false)
+    );
 
     finish();
 }
@@ -218,9 +314,21 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     if (!this->backend.has_value()) { // emplace backend late, due to loader bug
         const auto& global = this->config.get().global();
 
-        setenv("DISABLE_LSFGVK", "1", 1);
-
         try {
+            // The backend owns a separate Vulkan instance. Prevent this
+            // experimental layer and either public LSFG identity from entering
+            // that internal instance, while preserving caller-provided values
+            // for the rest of the game process.
+            const ScopedEnvironmentOverride disableExperimental(
+                "DISABLE_LSFGVK_EXPERIMENTAL", "1"
+            );
+            const ScopedEnvironmentOverride disablePublic(
+                "DISABLE_LSFGVK", "1"
+            );
+            const ScopedEnvironmentOverride disableLegacy(
+                "DISABLE_LSFG", "1"
+            );
+
             std::string dll{};
             if (global.dll.has_value())
                 dll = *global.dll;
@@ -243,52 +351,14 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
                 dll, global.allow_fp16
             );
         } catch (const std::exception& e) {
-            unsetenv("DISABLE_LSFGVK");
             throw ls::error("failed to create backend instance", e);
         }
-
-        unsetenv("DISABLE_LSFGVK");
     }
 
-    const bool recoveryContext = this->adaptiveRecoveryState.nextContextIsRecovery;
-    const size_t recoveryGenerationLimit =
-        this->adaptiveRecoveryState.nextContextGenerationLimit;
-    const size_t recoveryLoadFallbackGenerationLimit =
-        this->adaptiveRecoveryState.nextContextLoadFallbackGenerationLimit;
-    const double recoveryLoadBaselineBaseFps =
-        this->adaptiveRecoveryState.nextContextLoadBaselineBaseFps;
-    const bool discontinuityRecoveryContext =
-        this->adaptiveRecoveryState.nextContextIsDiscontinuityRecovery;
-    const size_t discontinuityFallbackGenerationLimit =
-        this->adaptiveRecoveryState
-            .nextContextDiscontinuityFallbackGenerationLimit;
-    const double discontinuityBaselineBaseFps =
-        this->adaptiveRecoveryState.nextContextDiscontinuityBaselineBaseFps;
-    const auto discontinuityDeadline =
-        this->adaptiveRecoveryState.nextContextDiscontinuityDeadline;
-    const bool discontinuitySoftRecoveryAttempted =
-        this->adaptiveRecoveryState.nextContextDiscontinuitySoftRecoveryAttempted;
-    this->adaptiveRecoveryState.nextContextIsRecovery = false;
-    this->adaptiveRecoveryState.nextContextGenerationLimit = 0;
-    this->adaptiveRecoveryState.nextContextLoadFallbackGenerationLimit = 0;
-    this->adaptiveRecoveryState.nextContextLoadBaselineBaseFps = 0.0;
-    this->adaptiveRecoveryState.nextContextIsDiscontinuityRecovery = false;
-    this->adaptiveRecoveryState
-        .nextContextDiscontinuityFallbackGenerationLimit = 0;
-    this->adaptiveRecoveryState.nextContextDiscontinuityBaselineBaseFps = 0.0;
-    this->adaptiveRecoveryState.nextContextDiscontinuityDeadline.reset();
-    this->adaptiveRecoveryState.nextContextDiscontinuitySoftRecoveryAttempted = false;
     const bool inserted = this->swapchains.emplace(swapchain,
         Swapchain(vk, this->backend.mut(), profile, info,
-            &this->adaptiveRecoveryState, recoveryContext,
-            recoveryGenerationLimit,
-            recoveryLoadFallbackGenerationLimit,
-            recoveryLoadBaselineBaseFps,
-            discontinuityRecoveryContext,
-            discontinuityFallbackGenerationLimit,
-            discontinuityBaselineBaseFps,
-            discontinuityDeadline,
-            discontinuitySoftRecoveryAttempted)).second;
+            this->gamescopeHdrActive.value_or(false),
+            this->runtimeStateRevision)).second;
     const auto insertedContext = this->swapchains.find(swapchain);
     const uint64_t diagnosticsContextId =
         insertedContext != this->swapchains.end()
@@ -301,10 +371,7 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
                   << " swapchain=" << swapchain
                   << " active_contexts=" << this->swapchains.size()
                   << " inserted=" << inserted
-                  << " recovery_context=" << recoveryContext
-                  << " recovery_generated_limit=" << recoveryGenerationLimit
-                  << " discontinuity_recovery="
-                  << discontinuityRecoveryContext
+                  << " layer_forced_recreation=disabled"
                   << '\n';
     }
 }

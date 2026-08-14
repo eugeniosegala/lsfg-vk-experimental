@@ -38,8 +38,6 @@ using namespace lsfgvk::layer;
 namespace {
     using DiagnosticsClock = std::chrono::steady_clock;
 
-    constexpr size_t adaptiveCapacityMultiplier = 4;
-
     std::atomic<uint32_t> nextDiagnosticsContextSequence{1};
     thread_local uint64_t activeDiagnosticsContextId{0};
 
@@ -71,23 +69,23 @@ namespace {
     };
 
     size_t generatedFrameCapacity(const ls::GameConf& profile) {
-        const size_t multiplier = profile.adaptive
-            ? adaptiveCapacityMultiplier
-            : profile.multiplier;
-        return multiplier - 1;
+        return generatedFrameCapacityForProfile(profile);
+    }
+
+    std::vector<float> buildFixedFrameTimestamps(
+            const size_t multiplier, const size_t generatedFrameCapacity) {
+        const size_t count = fixedGeneratedFrameCount(
+            multiplier, generatedFrameCapacity
+        );
+        std::vector<float> timestamps(count);
+        for (size_t i = 0; i < count; ++i)
+            timestamps[i] = fixedFrameTimestamp(i, multiplier);
+        return timestamps;
     }
 
     bool presentDiagnosticsEnabled() {
         static const bool enabled = [] {
             const char* value = std::getenv("LSFGVK_PRESENT_DIAGNOSTICS");
-            return value && std::string_view(value) != "0";
-        }();
-        return enabled;
-    }
-
-    bool presentRecoveryRecreateEnabled() {
-        static const bool enabled = [] {
-            const char* value = std::getenv("LSFGVK_PRESENT_RECOVERY_RECREATE");
             return value && std::string_view(value) != "0";
         }();
         return enabled;
@@ -196,13 +194,12 @@ namespace {
 
     void logPresentRecovery(size_t frameIndex, size_t sequenceIndex,
             size_t passIndex, uint32_t imageIndex, size_t bypassedFrames,
-            std::string_view acquireMode, size_t warmupFrames,
-            bool requestSwapchainRecreation) {
+            std::string_view acquireMode, size_t warmupFrames) {
         if (!presentDiagnosticsEnabled())
             return;
 
         std::cerr << "lsfg-vk: present diagnostics: operation="
-                  << ((warmupFrames || requestSwapchainRecreation)
+                  << (warmupFrames
                       ? "generated-image-recovered"
                       : "resume-generated-frames")
                   << " context=" << activeDiagnosticsContextId
@@ -214,21 +211,8 @@ namespace {
                   << " bypassed_frames=" << bypassedFrames;
         if (warmupFrames)
             std::cerr << " recovery_warmup_frames=" << warmupFrames;
-        if (requestSwapchainRecreation)
-            std::cerr << " recovery_action=swapchain-recreate";
+        std::cerr << " recovery_action=in-place";
         std::cerr << '\n';
-    }
-
-    void logSwapchainRecreation(size_t frameIndex, size_t sequenceIndex,
-            std::string_view reason) {
-        if (!presentDiagnosticsEnabled())
-            return;
-
-        std::cerr << "lsfg-vk: present diagnostics: operation=request-swapchain-recreation"
-                  << " context=" << activeDiagnosticsContextId
-                  << " frame=" << frameIndex
-                  << " sequence=" << sequenceIndex
-                  << " reason=" << reason << '\n';
     }
 
     void logHistoryWarmup(size_t frameIndex, size_t sequenceIndex,
@@ -815,9 +799,10 @@ namespace {
 }
 
 void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
-        VkSwapchainCreateInfoKHR& createInfo) {
+        VkSwapchainCreateInfoKHR& createInfo, const bool gamescopeHdrActive) {
     const auto colorPipeline = classifySwapchainColor(
-        createInfo.imageFormat, createInfo.imageColorSpace
+        createInfo.imageFormat, createInfo.imageColorSpace,
+        gamescopeHdrActive
     );
     if (!colorPipeline.generationSupported)
         return;
@@ -842,19 +827,12 @@ void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint3
 
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
-            AdaptiveRecoveryState* recoveryState, bool recoveryContext,
-            const size_t recoveryGenerationLimit,
-            const size_t recoveryLoadFallbackGenerationLimit,
-            const double recoveryLoadBaselineBaseFps,
-            const bool discontinuityRecoveryContext,
-            const size_t discontinuityFallbackGenerationLimit,
-            const double discontinuityBaselineBaseFps,
-            const std::optional<std::chrono::steady_clock::time_point>
-                discontinuityDeadline,
-            const bool discontinuitySoftRecoveryAttempted) :
+            const bool gamescopeHdrActive,
+            const uint64_t runtimeStateRevision) :
         instance(backend),
-        adaptiveRecoveryState(recoveryState),
-        colorPipeline(classifySwapchainColor(info.format, info.colorSpace)),
+        colorPipeline(classifySwapchainColor(
+            info.format, info.colorSpace, gamescopeHdrActive
+        )),
         profile(std::move(profile)), info(std::move(info)) {
     this->diagnosticsContextId = allocateDiagnosticsContextId();
     const DiagnosticsContextScope diagnosticsContext(
@@ -863,10 +841,28 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
 
     const VkExtent2D extent = this->info.extent;
 
+    if (presentDiagnosticsEnabled()) {
+        std::cerr << "lsfg-vk: present diagnostics: operation=runtime-state-applied"
+                  << " context=" << this->diagnosticsContextId
+                  << " state_revision=" << runtimeStateRevision
+                  << " adaptive=" << this->profile.adaptive
+                  << " target_fps=" << this->profile.target_fps
+                  << " multiplier=" << this->profile.multiplier
+                  << " adaptive_max_multiplier="
+                  << this->profile.adaptive_max_multiplier
+                  << " stable_cadence="
+                  << this->profile.adaptive_stable_cadence
+                  << " hdr=" << this->colorPipeline.hdr
+                  << '\n';
+    }
+
     std::cerr << "lsfg-vk: swapchain colour pipeline: format="
               << static_cast<int>(this->info.format)
               << "; color-space=" << static_cast<int>(this->info.colorSpace)
               << "; mode=" << this->colorPipeline.name
+              << "; source="
+              << (this->colorPipeline.gamescopeColorSpaceRecovered
+                    ? "gamescope-normalized" : "application")
               << "; frame-generation="
               << (this->colorPipeline.generationSupported ? "supported" : "passthrough")
               << '\n';
@@ -874,14 +870,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     if (!this->colorPipeline.generationSupported) {
         std::cerr << "lsfg-vk: frame generation disabled for this swapchain: "
                   << this->colorPipeline.reason << '\n';
-        return;
-    }
-
-    // Live-off is passthrough. Keep the backend instance loaded so the watched
-    // configuration can turn the selected Fixed or Adaptive mode back on, but
-    // allocate no interpolation images and open no per-swapchain model context.
-    if (!this->profile.frame_generation_enabled) {
-        std::cerr << "lsfg-vk: frame generation is off for this swapchain\n";
         return;
     }
 
@@ -945,6 +933,14 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             });
         }
 
+        this->fixedFrameTimestamps = buildFixedFrameTimestamps(
+            this->profile.multiplier, this->destinationImages.size()
+        );
+
+        if (!this->profile.frame_generation_enabled)
+            std::cerr << "lsfg-vk: frame generation is off; retained private "
+                         "resources permit a live enable\n";
+
         const size_t frames = std::max(
             this->info.images.size(), this->destinationImages.size() + 2
         );
@@ -976,30 +972,8 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
                       << '\n';
             const auto schedulerNow = DiagnosticsClock::now();
             this->adaptiveScheduler->beginStabilization(
-                schedulerNow,
-                recoveryContext ? "swapchain-recreation" : "startup"
+                schedulerNow, "startup"
             );
-            if (recoveryContext) {
-                if (discontinuityRecoveryContext) {
-                    this->adaptiveScheduler->beginDiscontinuityRecovery(
-                        schedulerNow,
-                        recoveryGenerationLimit,
-                        discontinuityFallbackGenerationLimit,
-                        discontinuityBaselineBaseFps,
-                        discontinuityDeadline,
-                        discontinuitySoftRecoveryAttempted,
-                        "swapchain-recreation"
-                    );
-                } else {
-                    this->adaptiveScheduler->restoreGenerationLimit(
-                        schedulerNow,
-                        recoveryGenerationLimit,
-                        "swapchain-recreation",
-                        recoveryLoadFallbackGenerationLimit,
-                        recoveryLoadBaselineBaseFps
-                    );
-                }
-            }
         }
     } catch (const std::exception& e) {
         // Swapchain creation belongs to the game. A failure in LSFG's optional
@@ -1022,7 +996,9 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     }
 }
 
-ProfileUpdateAction Swapchain::updateProfile(const ls::GameConf& nextProfile) {
+ProfileUpdateAction Swapchain::updateProfile(
+        const ls::GameConf& nextProfile,
+        const uint64_t runtimeStateRevision) {
     if (!this->colorPipeline.generationSupported) {
         this->profile = nextProfile;
         return ProfileUpdateAction::NoRuntimeChange;
@@ -1040,6 +1016,14 @@ ProfileUpdateAction Swapchain::updateProfile(const ls::GameConf& nextProfile) {
         if (this->profile.frame_generation_enabled &&
                 !nextProfile.frame_generation_enabled)
             this->disableFrameGeneration();
+        if (presentDiagnosticsEnabled()) {
+            std::cerr << "lsfg-vk: present diagnostics: "
+                         "operation=runtime-transition-pending"
+                      << " context=" << this->diagnosticsContextId
+                      << " state_revision=" << runtimeStateRevision
+                      << " reason=profile-resources"
+                      << " action=wait-for-natural-swapchain-recreation\n";
+        }
         return decision.action;
     }
 
@@ -1048,11 +1032,22 @@ ProfileUpdateAction Swapchain::updateProfile(const ls::GameConf& nextProfile) {
         return decision.action;
     }
 
+    const bool wasAdaptive = this->profile.adaptive;
     const bool enabling = !this->profile.frame_generation_enabled &&
         nextProfile.frame_generation_enabled;
     const bool disabling = this->profile.frame_generation_enabled &&
         !nextProfile.frame_generation_enabled;
     this->profile = nextProfile;
+    this->fixedFrameTimestamps = buildFixedFrameTimestamps(
+        this->profile.multiplier, this->destinationImages.size()
+    );
+    if (decision.generationModeChanged || decision.fixedMultiplierChanged ||
+            enabling || disabling) {
+        this->fixedDiagnosticWindowStarted.reset();
+        this->fixedDiagnosticRealFrames = 0;
+        this->fixedDiagnosticGeneratedFrames = 0;
+        this->fixedDiagnosticSkippedFrames = 0;
+    }
 
     if (disabling) {
         this->configurationHistoryWarmupRemaining = 0;
@@ -1070,7 +1065,8 @@ ProfileUpdateAction Swapchain::updateProfile(const ls::GameConf& nextProfile) {
     }
 
     if (this->profile.adaptive &&
-            (decision.adaptivePolicyChanged || enabling)) {
+            (decision.adaptivePolicyChanged ||
+             decision.generationModeChanged || enabling)) {
         this->adaptiveScheduler.emplace(
             AdaptiveSchedulerConfig{
                 .targetFps = this->profile.target_fps,
@@ -1083,9 +1079,53 @@ ProfileUpdateAction Swapchain::updateProfile(const ls::GameConf& nextProfile) {
         this->adaptiveScheduler->beginStabilization(
             DiagnosticsClock::now(), "configuration-update"
         );
+    } else if (wasAdaptive && !this->profile.adaptive) {
+        this->adaptiveScheduler.reset();
+        this->configurationHistoryWarmupRemaining =
+            AdaptiveScheduler::historyWarmupFrameCount();
+    }
+
+    if (presentDiagnosticsEnabled()) {
+        std::cerr << "lsfg-vk: present diagnostics: operation=runtime-state-applied"
+                  << " context=" << this->diagnosticsContextId
+                  << " state_revision=" << runtimeStateRevision
+                  << " transition=live"
+                  << " adaptive=" << this->profile.adaptive
+                  << " target_fps=" << this->profile.target_fps
+                  << " multiplier=" << this->profile.multiplier
+                  << " adaptive_max_multiplier="
+                  << this->profile.adaptive_max_multiplier
+                  << " stable_cadence="
+                  << this->profile.adaptive_stable_cadence
+                  << " hdr=" << this->colorPipeline.hdr
+                  << '\n';
     }
 
     return decision.action;
+}
+
+bool Swapchain::updateGamescopeHdrState(
+        const bool active, const uint64_t runtimeStateRevision) {
+    const auto desiredPipeline = classifySwapchainColor(
+        this->info.format, this->info.colorSpace, active
+    );
+    if (desiredPipeline.encoding == this->colorPipeline.encoding &&
+            desiredPipeline.generationSupported ==
+                this->colorPipeline.generationSupported) {
+        return false;
+    }
+
+    if (presentDiagnosticsEnabled()) {
+        std::cerr << "lsfg-vk: present diagnostics: "
+                     "operation=runtime-transition-pending"
+                  << " context=" << this->diagnosticsContextId
+                  << " state_revision=" << runtimeStateRevision
+                  << " reason=hdr-mode"
+                  << " current=" << this->colorPipeline.name
+                  << " requested=" << desiredPipeline.name
+                  << " action=wait-for-natural-swapchain-recreation\n";
+    }
+    return true;
 }
 
 void Swapchain::disableFrameGeneration() {
@@ -1106,12 +1146,49 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->diagnosticsContextId
     );
 
-    if (this->swapchainRecreationRequested) {
-        logSwapchainRecreation(this->fidx, this->idx, "pending");
-        return VK_ERROR_OUT_OF_DATE_KHR;
-    }
-
     const auto presentStarted = startPresentDiagnostic();
+    if (presentDiagnosticsEnabled() && !this->profile.adaptive) {
+        const auto now = presentStarted;
+        if (!this->fixedDiagnosticWindowStarted)
+            this->fixedDiagnosticWindowStarted = now;
+        const double windowSeconds = std::chrono::duration<double>(
+            now - *this->fixedDiagnosticWindowStarted
+        ).count();
+        if (windowSeconds >= 1.0) {
+            const double realFps =
+                static_cast<double>(this->fixedDiagnosticRealFrames) /
+                    windowSeconds;
+            const double observedOutputFps =
+                static_cast<double>(this->fixedDiagnosticRealFrames +
+                    this->fixedDiagnosticGeneratedFrames) / windowSeconds;
+            std::cerr << "lsfg-vk: present diagnostics: operation=fixed-plan"
+                      << " context=" << this->diagnosticsContextId
+                      << " base_fps=" << realFps
+                      << " multiplier=" << this->profile.multiplier
+                      << " generated_per_real="
+                      << (this->profile.frame_generation_enabled
+                            ? this->fixedFrameTimestamps.size() : 0)
+                      << " observed_output_fps=" << observedOutputFps
+                      << " generated_presented="
+                      << this->fixedDiagnosticGeneratedFrames
+                      << " generated_skipped="
+                      << this->fixedDiagnosticSkippedFrames
+                      << " configured_adaptive_target_fps="
+                      << this->profile.target_fps
+                      << " target_applies=0"
+                      << '\n';
+            this->fixedDiagnosticWindowStarted = now;
+            this->fixedDiagnosticRealFrames = 0;
+            this->fixedDiagnosticGeneratedFrames = 0;
+            this->fixedDiagnosticSkippedFrames = 0;
+        }
+        this->fixedDiagnosticRealFrames++;
+    } else if (this->profile.adaptive) {
+        this->fixedDiagnosticWindowStarted.reset();
+        this->fixedDiagnosticRealFrames = 0;
+        this->fixedDiagnosticGeneratedFrames = 0;
+        this->fixedDiagnosticSkippedFrames = 0;
+    }
 
     const auto presentNativeFrame = [&]() {
         if (this->colorPipeline.generationSupported &&
@@ -1159,9 +1236,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->generatedImageAcquireBackoff = false;
         this->generatedImageAcquireBypassCount = 0;
         this->generatedImageAcquireLastBoundedProbe.reset();
-        if (this->adaptiveRecoveryState)
-            *this->adaptiveRecoveryState = {};
-
         if (this->profile.adaptive) {
             this->adaptiveScheduler.emplace(
                 AdaptiveSchedulerConfig{
@@ -1200,7 +1274,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         : AdaptiveFramePlan{};
     const size_t generatedFrameCount = this->profile.adaptive
         ? generatedFramePlan.size()
-        : this->destinationImages.size();
+        : this->fixedFrameTimestamps.size();
 
     const auto configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
     bool renderFencePrepared = false;
@@ -1210,7 +1284,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     bool boundedRecoveryProbe = false;
     std::optional<uint32_t> preacquiredGeneratedImage;
     std::optional<uint32_t> recoveryWarmupImage;
-    bool requestSwapchainRecreation = false;
 
     const auto prepareRenderFence = [&]() {
         if (renderFencePrepared)
@@ -1288,70 +1361,22 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 this->adaptiveScheduler->markDiscontinuitySoftRecoveryAttempted();
                 logAdaptiveDiscontinuitySoftRecovery(recoveryGenerationLimit);
             }
-            if (this->profile.adaptive && presentRecoveryRecreateEnabled()) {
-                const auto recoveryNow = DiagnosticsClock::now();
-                const auto recoveryDecision = this->adaptiveRecoveryState
-                    ? this->adaptiveRecoveryState->presentationRecoveryPolicy.
-                        recover(recoveryNow, true)
-                    : AdaptivePresentationRecoveryDecision{};
-                requestSwapchainRecreation = recoveryDecision.action ==
-                    AdaptivePresentationRecoveryAction::RecreateSwapchain;
-                if (requestSwapchainRecreation && this->adaptiveRecoveryState) {
-                    this->adaptiveRecoveryState->nextContextIsRecovery = true;
-                    this->adaptiveRecoveryState->nextContextGenerationLimit =
-                        recoveryGenerationLimit;
-                    this->adaptiveRecoveryState->
-                        nextContextLoadFallbackGenerationLimit =
-                            recoveryLoadBaseline.fallbackGenerationLimit;
-                    this->adaptiveRecoveryState->nextContextLoadBaselineBaseFps =
-                        recoveryLoadBaseline.baseFps;
-                    this->adaptiveRecoveryState->nextContextIsDiscontinuityRecovery =
-                        discontinuityRecoveryActive;
-                    this->adaptiveRecoveryState->
-                        nextContextDiscontinuityFallbackGenerationLimit =
-                            this->adaptiveScheduler->
-                                discontinuityFallbackGenerationLimit();
-                    this->adaptiveRecoveryState->
-                        nextContextDiscontinuityBaselineBaseFps =
-                            this->adaptiveScheduler->
-                                discontinuityBaselineBaseFps();
-                    this->adaptiveRecoveryState->nextContextDiscontinuityDeadline =
-                        this->adaptiveScheduler->discontinuityDeadline();
-                    this->adaptiveRecoveryState->
-                        nextContextDiscontinuitySoftRecoveryAttempted =
-                            this->adaptiveScheduler->
-                                discontinuitySoftRecoveryAttempted();
-                } else if (recoveryDecision.action ==
-                        AdaptivePresentationRecoveryAction::InPlaceCooldown) {
-                    logSwapchainRecreationSuppressed(
-                        "cooldown",
-                        std::chrono::duration<double, std::milli>(
-                            recoveryDecision.recreationCooldownRemaining
-                        ).count()
-                    );
-                } else if (!useSoftDiscontinuityRecovery) {
-                    logSwapchainRecreationSuppressed(
-                        "first-recovery",
-                        std::chrono::duration<double, std::milli>(
-                            AdaptivePresentationRecoveryPolicy::
-                                repeatedRecoveryWindow()
-                        ).count()
-                    );
-                }
+            if (this->profile.adaptive && !useSoftDiscontinuityRecovery) {
+                logSwapchainRecreationSuppressed(
+                    "in-place-only", 0.0
+                );
             }
-            const size_t recoveryWarmupFrames = this->profile.adaptive &&
-                    !requestSwapchainRecreation
+            const size_t recoveryWarmupFrames = this->profile.adaptive
                 ? AdaptiveScheduler::historyWarmupFrameCount()
                 : 0;
             logPresentRecovery(
                 this->fidx, this->idx, 0, recoveryImageIndex,
                 this->generatedImageAcquireBypassCount,
                 boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry",
-                recoveryWarmupFrames,
-                requestSwapchainRecreation
+                recoveryWarmupFrames
             );
             this->generatedImageAcquireBypassCount = 0;
-            if (this->profile.adaptive && !requestSwapchainRecreation) {
+            if (this->profile.adaptive) {
                 const auto recoveryNow = DiagnosticsClock::now();
                 this->adaptiveScheduler->beginStabilization(
                     recoveryNow, "generated-image-recovery"
@@ -1369,10 +1394,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 if (this->adaptiveScheduler)
                     this->adaptiveScheduler->resetTiming(DiagnosticsClock::now());
             }
-            if (recoveryWarmupFrames || requestSwapchainRecreation) {
+            if (recoveryWarmupFrames) {
                 // The successful probe owns a swapchain image. Copy the real
-                // image into it and present it below before either warming the
-                // current context or asking the game to recreate that context.
+                // image into it and present it below before warming the
+                // current private context in place.
                 recoveryWarmupImage = recoveryImageIndex;
                 if (this->adaptiveScheduler) {
                     this->adaptiveScheduler->beginHistoryWarmup(
@@ -1401,7 +1426,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                     this->ctx.get(), generatedFramePlan.timestamps()
                 );
             else
-                this->instance.get().scheduleFrames(this->ctx.get());
+                this->instance.get().scheduleFrames(
+                    this->ctx.get(), this->fixedFrameTimestamps
+                );
         } catch (const std::exception& e) {
             // Do not turn a bounded backend stall into a game-visible present
             // error. This frame has not consumed the game's wait semaphores yet,
@@ -1660,17 +1687,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
-        if (requestSwapchainRecreation) {
-            this->swapchainRecreationRequested = true;
-            logSwapchainRecreation(this->fidx, this->idx, "adaptive-recovery");
-            logSlowPresentOperation(
-                "present-total", this->fidx, this->idx,
-                presentStarted, VK_ERROR_OUT_OF_DATE_KHR
-            );
-            this->fidx++;
-            return VK_ERROR_OUT_OF_DATE_KHR;
-        }
-
         logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);
         this->fidx++;
         return res;
@@ -1709,6 +1725,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             // generated frame for this sequence, so wait for its final timeline value before presenting the original
             // image and advancing both sides to the next sequence.
             const size_t skippedFrames = generatedFrameCount - i;
+            if (!this->profile.adaptive)
+                this->fixedDiagnosticSkippedFrames += skippedFrames;
             const uint64_t finalGeneratedTimelineValue = this->idx + skippedFrames - 1;
             auto& fallbackSemaphore = pcs.second;
             this->generatedImageAcquireBackoff = true;
@@ -1826,6 +1844,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         );
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
+        if (!this->profile.adaptive)
+            this->fixedDiagnosticGeneratedFrames++;
 
         this->idx++;
     }

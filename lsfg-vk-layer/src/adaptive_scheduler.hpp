@@ -13,44 +13,9 @@
 
 namespace lsfgvk::layer {
 
-    enum class AdaptivePresentationRecoveryAction : uint8_t {
-        InPlaceWarmup,
-        RecreateSwapchain,
-        InPlaceCooldown,
-    };
-
-    struct AdaptivePresentationRecoveryDecision {
-        AdaptivePresentationRecoveryAction action{
-            AdaptivePresentationRecoveryAction::InPlaceWarmup
-        };
-        std::chrono::steady_clock::duration recreationCooldownRemaining{};
-    };
-
     struct AdaptiveGenerationLoadBaseline {
         size_t fallbackGenerationLimit{0};
         double baseFps{0.0};
-    };
-
-    /// Deterministic policy for generated-image presentation recovery.
-    ///
-    /// The first recovered stall is handled inside the existing swapchain so
-    /// an isolated compositor interruption cannot force a game-visible
-    /// rebuild. A second recovery inside a bounded window may request the
-    /// guarded rebuild that clears accumulated presentation latency.
-    class AdaptivePresentationRecoveryPolicy {
-    public:
-        using Clock = std::chrono::steady_clock;
-        using TimePoint = Clock::time_point;
-
-        [[nodiscard]] AdaptivePresentationRecoveryDecision recover(
-            TimePoint now, bool swapchainRecreationEnabled);
-
-        static Clock::duration recreationCooldown();
-        static Clock::duration repeatedRecoveryWindow();
-
-    private:
-        std::optional<TimePoint> lastInPlaceRecovery;
-        std::optional<TimePoint> lastSwapchainRecreation;
     };
 
     struct AdaptiveSchedulerConfig {
@@ -255,7 +220,6 @@ namespace lsfgvk::layer {
         }
 
         static size_t historyWarmupFrameCount();
-        static Clock::duration recreationCooldown();
         static Clock::duration rescueMeasurementDuration();
         static Clock::duration rescueCooldown();
         static Clock::duration stableRearmDuration();
@@ -303,6 +267,10 @@ namespace lsfgvk::layer {
         std::optional<TimePoint> adaptiveStableCadenceOutsideRangeSince;
         std::optional<TimePoint> adaptiveStableCadenceRetryAt;
         double adaptiveStableCadenceBaselineBaseFps{0.0};
+        std::optional<size_t> adaptiveStableCadenceCandidateLimit;
+        std::optional<TimePoint> adaptiveStableCadenceCandidateSince;
+        double adaptiveStableCadenceCandidateMinimumBaseFps{0.0};
+        double adaptiveStableCadenceCandidateMaximumBaseFps{0.0};
         std::optional<TimePoint> adaptiveRescueUntil;
         std::optional<TimePoint> adaptiveRescueCooldownUntil;
         size_t adaptiveRescuePreviousLimit{0};

@@ -42,8 +42,10 @@ namespace {
     constexpr auto adaptiveRecoveryHigherProbeDelay = std::chrono::seconds(5);
     constexpr auto adaptiveStableCadenceEvaluationDuration = std::chrono::seconds(1);
     constexpr auto adaptiveStableCadenceExitGraceDuration = std::chrono::milliseconds(500);
-    constexpr auto adaptiveStableCadenceRetryDelay = std::chrono::seconds(5);
+    constexpr auto adaptiveStableCadenceRetryDelay = std::chrono::seconds(15);
     constexpr auto adaptiveStableCadenceStrictSettlingDuration = std::chrono::seconds(2);
+    constexpr auto adaptiveStableCadenceCandidateDuration = std::chrono::seconds(2);
+    constexpr double adaptiveStableCadenceMaximumCandidateSpreadRatio = 1.15;
     constexpr double adaptiveRescueBaseCollapseRatio = 0.78;
     constexpr double adaptiveRescueOutputCollapseRatio = 0.80;
     constexpr double adaptiveRescueRecoveredBaseRatio = 0.90;
@@ -53,10 +55,6 @@ namespace {
     constexpr double adaptiveDiscontinuityRecoveredBaseRatio = 0.90;
     constexpr auto adaptiveDiscontinuityStableDuration = std::chrono::seconds(1);
     constexpr auto adaptiveDiscontinuityMaximumDuration = std::chrono::seconds(5);
-    constexpr auto adaptivePresentationRecreationCooldown =
-        std::chrono::seconds(5);
-    constexpr auto adaptivePresentationRepeatedRecoveryWindow =
-        std::chrono::seconds(15);
     constexpr auto adaptiveTwoXGameplayHitchMaximumDuration =
         std::chrono::milliseconds(250);
     constexpr auto adaptiveFailedProbeCooldown = std::chrono::seconds(15);
@@ -76,54 +74,6 @@ namespace {
             return adaptiveRampThirdRetryDelay;
         return adaptiveRampMaximumRetryDelay;
     }
-}
-
-AdaptivePresentationRecoveryDecision
-AdaptivePresentationRecoveryPolicy::recover(
-        const TimePoint now,
-        const bool swapchainRecreationEnabled) {
-    if (!swapchainRecreationEnabled) {
-        return {
-            .action = AdaptivePresentationRecoveryAction::InPlaceWarmup,
-        };
-    }
-
-    const bool repeatedRecovery = this->lastInPlaceRecovery &&
-        now >= *this->lastInPlaceRecovery &&
-        now - *this->lastInPlaceRecovery <= repeatedRecoveryWindow();
-    this->lastInPlaceRecovery = now;
-    if (!repeatedRecovery) {
-        return {
-            .action = AdaptivePresentationRecoveryAction::InPlaceWarmup,
-        };
-    }
-
-    if (this->lastSwapchainRecreation &&
-            now >= *this->lastSwapchainRecreation) {
-        const auto elapsed = now - *this->lastSwapchainRecreation;
-        if (elapsed < recreationCooldown()) {
-            return {
-                .action = AdaptivePresentationRecoveryAction::InPlaceCooldown,
-                .recreationCooldownRemaining = recreationCooldown() - elapsed,
-            };
-        }
-    }
-
-    this->lastSwapchainRecreation = now;
-    this->lastInPlaceRecovery.reset();
-    return {
-        .action = AdaptivePresentationRecoveryAction::RecreateSwapchain,
-    };
-}
-
-AdaptivePresentationRecoveryPolicy::Clock::duration
-AdaptivePresentationRecoveryPolicy::recreationCooldown() {
-    return adaptivePresentationRecreationCooldown;
-}
-
-AdaptivePresentationRecoveryPolicy::Clock::duration
-AdaptivePresentationRecoveryPolicy::repeatedRecoveryWindow() {
-    return adaptivePresentationRepeatedRecoveryWindow;
 }
 
 AdaptiveScheduler::AdaptiveScheduler(AdaptiveSchedulerConfig config,
@@ -751,19 +701,64 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
         }
     }
 
-    if (!this->adaptiveStableCadenceLimit && stableCadenceCandidate &&
+    const bool stableCadenceProbePermitted =
+        !this->adaptiveStableCadenceLimit && stableCadenceCandidate &&
             !this->adaptiveRampEvaluationAt &&
             !this->adaptiveRearmRequired &&
             (!this->adaptiveRescueCooldownUntil ||
              now >= *this->adaptiveRescueCooldownUntil) &&
             (!this->adaptiveStableCadenceRetryAt ||
-             now >= *this->adaptiveStableCadenceRetryAt)) {
-        this->adaptiveStableCadenceLimit = stableCadenceCandidate;
+             now >= *this->adaptiveStableCadenceRetryAt);
+    bool stableCadenceCandidateQualified = false;
+    if (!stableCadenceProbePermitted) {
+        this->adaptiveStableCadenceCandidateLimit.reset();
+        this->adaptiveStableCadenceCandidateSince.reset();
+        this->adaptiveStableCadenceCandidateMinimumBaseFps = 0.0;
+        this->adaptiveStableCadenceCandidateMaximumBaseFps = 0.0;
+    } else if (this->adaptiveStableCadenceCandidateLimit !=
+            stableCadenceCandidate) {
+        this->adaptiveStableCadenceCandidateLimit = stableCadenceCandidate;
+        this->adaptiveStableCadenceCandidateSince = now;
+        this->adaptiveStableCadenceCandidateMinimumBaseFps = baseFps;
+        this->adaptiveStableCadenceCandidateMaximumBaseFps = baseFps;
+    } else {
+        this->adaptiveStableCadenceCandidateMinimumBaseFps = std::min(
+            this->adaptiveStableCadenceCandidateMinimumBaseFps, baseFps
+        );
+        this->adaptiveStableCadenceCandidateMaximumBaseFps = std::max(
+            this->adaptiveStableCadenceCandidateMaximumBaseFps, baseFps
+        );
+        const bool spreadTooWide =
+            this->adaptiveStableCadenceCandidateMinimumBaseFps > 0.0 &&
+            this->adaptiveStableCadenceCandidateMaximumBaseFps >
+                this->adaptiveStableCadenceCandidateMinimumBaseFps *
+                    adaptiveStableCadenceMaximumCandidateSpreadRatio;
+        if (spreadTooWide) {
+            // Begin a fresh qualification window at the new cadence instead
+            // of allowing old low/high samples to trigger a workload switch.
+            this->adaptiveStableCadenceCandidateSince = now;
+            this->adaptiveStableCadenceCandidateMinimumBaseFps = baseFps;
+            this->adaptiveStableCadenceCandidateMaximumBaseFps = baseFps;
+        } else {
+            stableCadenceCandidateQualified =
+                this->adaptiveStableCadenceCandidateSince &&
+                now - *this->adaptiveStableCadenceCandidateSince >=
+                    adaptiveStableCadenceCandidateDuration;
+        }
+    }
+
+    if (stableCadenceCandidateQualified) {
+        this->adaptiveStableCadenceLimit =
+            this->adaptiveStableCadenceCandidateLimit;
         this->adaptiveStableCadenceBaselineBaseFps = baseFps;
         this->adaptiveStableCadenceEvaluationAt =
             now + adaptiveStableCadenceEvaluationDuration;
         this->adaptiveStableCadenceOutsideRangeSince.reset();
         this->adaptiveStableCadenceRetryAt.reset();
+        this->adaptiveStableCadenceCandidateLimit.reset();
+        this->adaptiveStableCadenceCandidateSince.reset();
+        this->adaptiveStableCadenceCandidateMinimumBaseFps = 0.0;
+        this->adaptiveStableCadenceCandidateMaximumBaseFps = 0.0;
         this->adaptiveOutputCredit = 0.0;
         this->diagnostics->stableCadence(
             "adaptive-stable-cadence-probe",
@@ -902,10 +897,6 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
 
 size_t AdaptiveScheduler::historyWarmupFrameCount() {
     return adaptiveHistoryWarmupFrames;
-}
-
-AdaptiveScheduler::Clock::duration AdaptiveScheduler::recreationCooldown() {
-    return AdaptivePresentationRecoveryPolicy::recreationCooldown();
 }
 
 AdaptiveScheduler::Clock::duration
@@ -1168,6 +1159,10 @@ void AdaptiveScheduler::beginStabilization(
     this->adaptiveStableCadenceOutsideRangeSince.reset();
     this->adaptiveStableCadenceRetryAt.reset();
     this->adaptiveStableCadenceBaselineBaseFps = 0.0;
+    this->adaptiveStableCadenceCandidateLimit.reset();
+    this->adaptiveStableCadenceCandidateSince.reset();
+    this->adaptiveStableCadenceCandidateMinimumBaseFps = 0.0;
+    this->adaptiveStableCadenceCandidateMaximumBaseFps = 0.0;
     this->adaptiveRescueUntil.reset();
     this->adaptiveRescuePreviousLimit = 0;
     this->adaptiveRescueBaselineBaseFps = 0.0;

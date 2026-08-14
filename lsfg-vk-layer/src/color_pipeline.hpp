@@ -16,13 +16,15 @@ namespace lsfgvk::layer {
         VkFormat exchangeFormat{VK_FORMAT_R8G8B8A8_UNORM};
         bool generationSupported{true};
         bool hdr{false};
+        bool gamescopeColorSpaceRecovered{false};
         std::string_view name{"sdr-8-bit"};
         std::string_view reason{};
     };
 
     /// Classify a swapchain without relying on VkFormat enum ordering.
     [[nodiscard]] SwapchainColorPipeline classifySwapchainColor(
-        VkFormat format, VkColorSpaceKHR colorSpace
+        VkFormat format, VkColorSpaceKHR colorSpace,
+        bool gamescopeHdrActive = false
     );
 
 }

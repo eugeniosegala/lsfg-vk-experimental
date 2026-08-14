@@ -62,7 +62,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
         '
 fi
 
-for command in cmake ninja clang++ tar; do
+for command in cmake ninja clang++ strings tar; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command not found: $command" >&2
         exit 1
@@ -93,6 +93,7 @@ cmake -S "$repo_root" -B "$build64_dir" -G Ninja \
 
 cmake --build "$build64_dir" --target \
     lsfg-vk-config-tests lsfg-vk-profile-update-tests \
+    lsfg-vk-runtime-transition-tests \
     lsfg-vk-adaptive-tests lsfg-vk-adaptive-matrix lsfg-vk-color-tests \
     lsfg-vk-hdr-color-math-tests
 ctest --test-dir "$build64_dir" --output-on-failure
@@ -125,8 +126,8 @@ for required_path in \
     "bin/lsfg-vk-ui" \
     "lib/liblsfg-vk-layer.so" \
     "lib32/liblsfg-vk-layer.so" \
-    "share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json" \
-    "share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json"; do
+    "share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.json" \
+    "share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.x86.json"; do
     if [[ ! -e "$install_dir/$required_path" ]]; then
         echo "Packaging failed: missing $required_path" >&2
         exit 1
@@ -147,18 +148,34 @@ verify_elf_class() {
 verify_elf_class "$install_dir/lib/liblsfg-vk-layer.so" 2
 verify_elf_class "$install_dir/lib32/liblsfg-vk-layer.so" 1
 
-manifest64="$install_dir/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"
-manifest32="$install_dir/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json"
+manifest64="$install_dir/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.json"
+manifest32="$install_dir/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.x86.json"
 if ! grep -Fq '"library_arch": "64"' "$manifest64" ||
-        ! grep -Fq '../../../lib/liblsfg-vk-layer.so' "$manifest64"; then
+        ! grep -Fq '../../../lib/liblsfg-vk-layer.so' "$manifest64" ||
+        ! grep -Fq '"name": "VK_LAYER_LSFGVK_experimental_frame_generation"' "$manifest64" ||
+        ! grep -Fq '"ENABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest64" ||
+        ! grep -Fq '"DISABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest64"; then
     echo "Packaging failed: 64-bit Vulkan manifest is incorrect" >&2
     exit 1
 fi
 if ! grep -Fq '"library_arch": "32"' "$manifest32" ||
-        ! grep -Fq '../../../lib32/liblsfg-vk-layer.so' "$manifest32"; then
+        ! grep -Fq '../../../lib32/liblsfg-vk-layer.so' "$manifest32" ||
+        ! grep -Fq '"name": "VK_LAYER_LSFGVK_experimental_frame_generation"' "$manifest32" ||
+        ! grep -Fq '"ENABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest32" ||
+        ! grep -Fq '"DISABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest32"; then
     echo "Packaging failed: 32-bit Vulkan manifest is incorrect" >&2
     exit 1
 fi
+
+for layer_binary in \
+        "$install_dir/lib/liblsfg-vk-layer.so" \
+        "$install_dir/lib32/liblsfg-vk-layer.so"; do
+    if ! strings "$layer_binary" |
+            grep -F "lsfg-vk: experimental layer active; identity=VK_LAYER_LSFGVK_experimental_frame_generation; build=$version" >/dev/null; then
+        echo "Packaging failed: layer build identity diagnostic is missing from $layer_binary" >&2
+        exit 1
+    fi
+done
 
 tar -C "$install_dir" -cJf "$output_path" .
 

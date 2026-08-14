@@ -46,4 +46,9 @@ mkdir -p ~/.config/lsfg-vk
 flatpak override --user --filesystem=/home/$USER/.config/lsfg-vk:rw $appid
 flatpak override --user --filesystem=/home/$USER/local/share/Steam/steamapps/common:ro $appid
 flatpak override --user --env=LSFGVK_CONFIG=/home/$USER/.config/lsfg-vk/conf.toml $appid
+flatpak override --user --env=ENABLE_LSFGVK_EXPERIMENTAL=1 --env=DISABLE_LSFGVK=1 --env=DISABLE_LSFG=1 $appid
 ```
+
+The experimental manifest is deliberately wrapper-scoped, so merely installing its separately named runtime extension
+does not activate it or interfere with the public `lsfgvk` extension. The experimental Decky plugin applies these
+variables per wrapped game instead of setting an application-wide override.

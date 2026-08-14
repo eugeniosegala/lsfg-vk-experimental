@@ -104,3 +104,7 @@ sudo cmake --install build
 ```
 
 Keep track of the installed files, in order to uninstall them later if needed.
+
+The installed experimental manifest is wrapper-scoped. Start a direct game with
+`ENABLE_LSFGVK_EXPERIMENTAL=1`; if either public LSFG implementation is installed alongside it, also set
+`DISABLE_LSFGVK=1 DISABLE_LSFG=1` for that game. The experimental Decky wrapper manages these guards automatically.

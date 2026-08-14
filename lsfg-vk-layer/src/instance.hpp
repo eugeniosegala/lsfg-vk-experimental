@@ -7,10 +7,15 @@
 #include "lsfg-vk-common/helpers/errors.hpp"
 #include "lsfg-vk-common/helpers/pointers.hpp"
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
+#include "gamescope_hdr_feedback.hpp"
+#include "runtime_transition.hpp"
 #include "swapchain.hpp"
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <string>
 #include <unordered_map>
 
 #include <vulkan/vulkan_core.h>
@@ -22,6 +27,8 @@ namespace lsfgvk::layer {
         size_t liveContextsUpdated{0};
         size_t deferredContexts{0};
         bool globalChangeDeferred{false};
+        bool hdrFeedbackChanged{false};
+        size_t hdrContextsDeferred{0};
     };
 
     /// root context of the lsfg-vk layer
@@ -82,8 +89,14 @@ namespace lsfgvk::layer {
         std::optional<ls::GameConf> active_profile;
 
         ls::lazy<backend::Instance> backend;
-        AdaptiveRecoveryState adaptiveRecoveryState;
         std::unordered_map<VkSwapchainKHR, Swapchain> swapchains;
+        GamescopeHdrFeedbackReader hdrFeedbackReader;
+        StableBooleanFeedback hdrFeedback;
+        std::optional<bool> gamescopeHdrActive;
+        std::optional<bool> lastHdrFeedbackSample;
+        std::string lastHdrFeedbackStatus;
+        std::optional<std::chrono::steady_clock::time_point> lastHdrFeedbackPoll;
+        uint64_t runtimeStateRevision{1};
     };
 
 }

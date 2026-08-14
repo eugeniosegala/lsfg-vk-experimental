@@ -1,5 +1,6 @@
 set(LAYER_SOURCES
     "src/entrypoint.cpp"
+    "src/gamescope_hdr_feedback.cpp"
     "src/instance.cpp"
     "src/swapchain.cpp")
 
@@ -12,6 +13,8 @@ set_target_properties(lsfg-vk-adaptive PROPERTIES
     VISIBILITY_INLINES_HIDDEN ON)
 
 if(LSFGVK_BUILD_VK_LAYER)
+    find_package(Threads REQUIRED)
+
     add_library(lsfg-vk-color STATIC
         "src/color_pipeline.cpp")
     target_include_directories(lsfg-vk-color
@@ -27,12 +30,16 @@ if(LSFGVK_BUILD_VK_LAYER)
     target_link_libraries(lsfg-vk-layer
         PRIVATE lsfg-vk-adaptive
         PRIVATE lsfg-vk-color
+        PRIVATE Threads::Threads
         PUBLIC lsfg-vk-common
         PUBLIC lsfg-vk-backend)
 
     target_compile_options(lsfg-vk-layer PRIVATE
         -Wno-unknown-warning-option
         -Wno-unsafe-buffer-usage) # Array indexing
+
+    target_compile_definitions(lsfg-vk-layer PRIVATE
+        LSFGVK_BUILD_VERSION="${LSFGVK_VERSION}")
 
     set_target_properties(lsfg-vk-layer PROPERTIES
         CXX_VISIBILITY_PRESET hidden)
@@ -46,6 +53,13 @@ if(BUILD_TESTING)
         PRIVATE "../lsfg-vk-common/include")
     add_test(NAME profile-update
         COMMAND lsfg-vk-profile-update-tests)
+
+    add_executable(lsfg-vk-runtime-transition-tests
+        "tests/runtime_transition_tests.cpp")
+    target_include_directories(lsfg-vk-runtime-transition-tests
+        PRIVATE "src")
+    add_test(NAME runtime-transition
+        COMMAND lsfg-vk-runtime-transition-tests)
 
     add_executable(lsfg-vk-adaptive-tests
         "tests/adaptive_scheduler_tests.cpp")
@@ -90,9 +104,9 @@ if(LSFGVK_BUILD_VK_LAYER)
     endif()
 
     set(LSFGVK_LAYER_MANIFEST_FILE
-        "VkLayer_LSFGVK_frame_generation${LSFGVK_LAYER_MANIFEST_SUFFIX}.json")
+        "VkLayer_LSFGVK_experimental_frame_generation${LSFGVK_LAYER_MANIFEST_SUFFIX}.json")
     configure_file(
-        "VkLayer_LSFGVK_frame_generation.json.in"
+        "VkLayer_LSFGVK_experimental_frame_generation.json.in"
         "${LSFGVK_LAYER_MANIFEST_FILE}"
         @ONLY)
 

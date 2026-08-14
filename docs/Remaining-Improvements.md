@@ -74,6 +74,12 @@ stability, or recovery regression.
 
 ## Adaptive and presentation reliability
 
+- Keep ordinary Fixed/Adaptive controls inside the compatible private capacity;
+  never force a game-owned swapchain recreation for a configuration write.
+  If fully live Flow Scale, Performance Mode, capacity growth, or HDR encoding
+  is added later, build and retire a replacement private LSFG context behind
+  real-frame passthrough, then swap it at an idle boundary. Do not surface
+  `VK_ERROR_OUT_OF_DATE_KHR` solely to apply a Decky setting.
 - Continue to expand deterministic state-machine tests for menu/focus changes,
   abrupt real-FPS shifts, target overshoot above 90 FPS, recovery re-entry, and
   Smooth Cadence at 2x/3x/4x.
@@ -81,8 +87,8 @@ stability, or recovery regression.
   VKD3D-Proton first, then AMD/Intel Wayland and NVIDIA. Include gamescope,
   overlays, HDR-off and HDR-on operation, and Flatpak/Heroic where applicable.
 - Keep the generated-image timeout, history warm-up, bounded reacquire,
-  menu/focus recovery, fast-cadence filter, multiplier ceiling, and
-  context-recreation cooldown guards in every candidate build.
+  menu/focus recovery, fast-cadence filter, multiplier ceiling, and in-place
+  recovery guards in every candidate build.
 - Add a user-visible diagnostic summary with measured real FPS, displayed
   estimate, active generation level, fallback/recovery state, and recent
   p95/p99 frametime so reports can be reproduced.

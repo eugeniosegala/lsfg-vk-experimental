@@ -40,7 +40,8 @@ namespace {
 }
 
 layer::SwapchainColorPipeline layer::classifySwapchainColor(
-        const VkFormat format, const VkColorSpaceKHR colorSpace) {
+        const VkFormat format, const VkColorSpaceKHR colorSpace,
+        const bool gamescopeHdrActive) {
     if (colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
         if (isHdr10Format(format)) {
             return {
@@ -85,6 +86,36 @@ layer::SwapchainColorPipeline layer::classifySwapchainColor(
             .name = "unsupported-hdr-colorspace",
             .reason = "the selected HDR transfer function is not supported",
         };
+    }
+
+    // Gamescope WSI consumes the application's HDR colour space and sends an
+    // sRGB-normalized copy of VkSwapchainCreateInfoKHR to lower layers. LSFG
+    // must remain below Gamescope so Wine's WSI bridge can translate its
+    // dispatchable handles before they reach us. Recover the transfer
+    // function only when Gamescope's application feedback confirms that the
+    // active game requested HDR and the format is one of its HDR formats.
+    if (gamescopeHdrActive &&
+            colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+        if (isHdr10Format(format)) {
+            return {
+                .encoding = backend::FrameEncoding::Hdr10Pq,
+                .exchangeFormat = VK_FORMAT_R16G16B16A16_SFLOAT,
+                .generationSupported = true,
+                .hdr = true,
+                .gamescopeColorSpaceRecovered = true,
+                .name = "hdr10-pq",
+            };
+        }
+        if (format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+            return {
+                .encoding = backend::FrameEncoding::ScRgbLinear,
+                .exchangeFormat = VK_FORMAT_R16G16B16A16_SFLOAT,
+                .generationSupported = true,
+                .hdr = true,
+                .gamescopeColorSpaceRecovered = true,
+                .name = "scrgb-linear",
+            };
+        }
     }
 
     if (colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {

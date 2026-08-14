@@ -31,13 +31,20 @@ it does not introduce a separate frame-generation model. For the established 1.x
   This can look smoother but may lower real-frame cadence and responsiveness, so it is disabled by default.
 - **Automatic HDR colour pipeline:** Swapchain format and colour space are classified together. Standard Gamescope
   HDR10/PQ input is decoded from BT.2020/PQ into linear scRGB before frame generation and encoded back afterward;
-  linear scRGB uses the model directly. Unsupported HDR encodings use real-frame passthrough instead of synthesized
-  frames with incorrect colours. HDR processing is automatic; there is no engine HDR toggle.
+  linear scRGB uses the model directly. When Gamescope's Wine WSI bridge normalizes its driver-facing colour space to
+  sRGB, the engine recovers HDR semantics only from an exact packed-10-bit or float format after Gamescope's live
+  application feedback confirms that the game is presenting HDR. Unsupported HDR encodings use real-frame
+  passthrough instead of synthesized frames with incorrect colours. HDR processing and live HDR/SDR transitions are
+  automatic; there is no engine HDR toggle.
+- **Safe live mode transitions:** Fixed and Adaptive reserve one compatible private output set, so live generation,
+  Fixed 2x/3x/4x (within the reserved capacity), Adaptive mode, target, ceiling, and Smooth Cadence can change without
+  invalidating the game's swapchain. Backend-model and HDR-encoding changes wait for a natural game-owned recreation;
+  a Decky setting never forces one.
 - **64-bit and 32-bit Vulkan layers:** Host and Flatpak packages include architecture-matched layer libraries and
   manifests. The Vulkan loader selects the correct one for each game process; the CLI and Qt UI remain 64-bit.
 - **SteamOS/Gamescope recovery:** Generated-image stalls fall back to real frames, keep temporal history current, and
-  recover without repeatedly spending the full acquire timeout. Isolated recoveries warm history in-place; only a
-  repeated recovery within 15 seconds may use the guarded swapchain rebuild to clear stale presentation state.
+  recover without repeatedly spending the full acquire timeout. Every recovery warms history in-place; LSFG never
+  invalidates the game-owned swapchain to apply a recovery decision.
 - **Menu and DX12 transition protection:** Adaptive preserves its proven gameplay state across hard cadence stalls and
   ignores implausibly fast DX12/VKD3D presentation bursts instead of treating them as a new game framerate.
 - **Diagnostic tooling:** Opt-in, per-swapchain presentation records expose timing, recovery, ramp, rescue, and
@@ -67,9 +74,11 @@ adaptive_stable_cadence = false
 frame_generation_enabled = true
 ```
 
-Restart the game after switching between Fixed and Adaptive modes so its swapchain is created with the correct output
-capacity. Target, multiplier ceiling, Smooth Cadence, flow scale, and performance mode can then be adjusted while the
-game is running.
+Live generation, Fixed/Adaptive mode, Fixed multiplier, target, multiplier ceiling, and Smooth Cadence can be changed
+while the game is running when the current context has the required reserved capacity. These changes reuse private
+resources and do not ask the game to recreate its swapchain. Flow Scale, Performance Mode, GPU selection, a capacity
+increase beyond the reserved set, and an HDR encoding change apply on the game's next natural swapchain recreation;
+restart the game when an immediate deterministic change is required.
 
 The target is an objective, not a guaranteed lock:
 
@@ -81,8 +90,8 @@ The target is an objective, not a guaranteed lock:
 - Smooth Cadence may improve motion consistency on constrained hardware, but strict scheduling is usually more
   responsive. Leave it disabled unless a game benefits from the trade-off.
 - lsfg-vk v2 has no 0x multiplier. Set `frame_generation_enabled = false` for live real-frame passthrough. This stops
-  synthesis but keeps the Vulkan layer and shared backend loaded. Set `DISABLE_LSFGVK=1`, or remove the launch wrapper
-  and restart the game, when the layer itself must be disabled completely.
+  synthesis but keeps the Vulkan layer and shared backend loaded. Set `DISABLE_LSFGVK_EXPERIMENTAL=1`, or remove the
+  launch wrapper and restart the game, when the experimental layer itself must be disabled completely.
 
 This scheduler is an independent Vulkan-layer implementation inspired by Lossless Scaling's
 [Adaptive Frame Generation](https://store.steampowered.com/news/app/993090/view/518581441632666732). It is not a port of
@@ -91,24 +100,15 @@ the closed Windows capture engine and does not provide its Queue Target modes.
 ### SteamOS and Gamescope recovery
 
 The [Decky LSFG-VK Experimental plugin](https://github.com/eugeniosegala/decky-lsfg-vk-experimental) applies the tested
-50 ms generated-image timeout and guarded Adaptive swapchain recovery to games launched with its isolated wrapper.
-Direct lsfg-vk users can opt in before their normal game command:
+50 ms generated-image timeout and in-place Adaptive recovery to games launched with its isolated wrapper. Direct
+lsfg-vk users can opt in before their normal game command:
 
 ```bash
-LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=1 your-game-command
+LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 your-game-command
 ```
 
-The first successful probe after an isolated acquire timeout keeps the current game swapchain and warms temporal
-history in-place. A second recovery within 15 seconds may request the guarded rebuild. A game may briefly pause or
-flicker while recreating its swapchain, and a small number of games may mishandle the request. Keep the bounded
-real-frame fallback but disable forced recreation for those games:
-
-```bash
-LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS=50 LSFGVK_PRESENT_RECOVERY_RECREATE=0 your-game-command
-```
-
-The guarded rebuild affects Adaptive only. Fixed mode can use the bounded acquisition fallback but resumes immediately
-when image acquisition succeeds. See
+Adaptive recovery keeps the current game swapchain and warms temporal history in-place. Fixed mode uses the same
+bounded acquisition fallback but resumes immediately when image acquisition succeeds. See
 [Diagnosing presentation stalls](docs/Troubleshooting.md#diagnosing-presentation-stalls) for the full workflow.
 
 ## Installation
@@ -131,6 +131,16 @@ update, launch-wrapper, and Heroic instructions instead of manually extracting t
    ```
 
 Keep track of the extracted files so the direct installation can be removed or rolled back later.
+
+This fork installs a uniquely named, wrapper-scoped implicit layer. Activate it for a direct game launch and suppress
+either public LSFG identity if it is also installed:
+
+```bash
+ENABLE_LSFGVK_EXPERIMENTAL=1 DISABLE_LSFGVK=1 DISABLE_LSFG=1 your-game-command
+```
+
+For a Steam launch option, replace `your-game-command` with `%command%`. The experimental Decky plugin generates these
+guards automatically; they affect only the wrapped game and do not uninstall or disable the public plugin globally.
 
 The Linux archive contains both 64-bit and 32-bit Vulkan layer libraries. The
 Vulkan loader selects the matching library for each game; no launcher-side

@@ -212,6 +212,15 @@ namespace {
             }
             return nullptr;
         }
+
+        [[nodiscard]] size_t count(const std::string_view operation) const {
+            size_t result = 0;
+            for (const auto& event : this->events) {
+                if (event.operation == operation)
+                    result++;
+            }
+            return result;
+        }
     };
 
     struct Harness {
@@ -628,7 +637,7 @@ namespace {
     void testSmoothCadenceSettlesNearIntegerDemand() {
         Harness harness(90, 2, true);
         harness.start();
-        const auto timestamps = harness.runAtFps(47.0, 10s);
+        const auto timestamps = harness.runAtFps(47.0, 12s);
         require(timestamps.size() == 1,
             "Smooth Cadence did not settle on constant 2x output");
         require(harness.scheduler.snapshot().phase ==
@@ -642,7 +651,7 @@ namespace {
     void testSmoothCadenceReturnsToTargetAfterBaseRecovery() {
         Harness harness(100, 2, true);
         harness.start();
-        harness.runAtFps(50.0, 10s);
+        harness.runAtFps(50.0, 12s);
         require(harness.scheduler.snapshot().phase ==
                 AdaptiveSchedulerPhase::StableCadence,
             "precondition failed: 50 FPS did not settle on 2x for a 100 FPS target");
@@ -665,6 +674,33 @@ namespace {
             static_cast<double>(outputs) / 10.0;
         require(std::abs(estimatedOutputFps - 100.0) <= 0.2,
             "strict scheduling did not return recovered cadence to the 100 FPS target");
+    }
+
+    void testSmoothCadenceDoesNotChatterOnOscillatingLoad() {
+        Harness harness(110, 3, true);
+        harness.start();
+        harness.runAtFps(55.0, 10s);
+        require(harness.scheduler.snapshot().phase ==
+                AdaptiveSchedulerPhase::StableCadence,
+            "precondition failed: stable 55 FPS did not settle on Smooth Cadence");
+
+        harness.runAtFps(68.0, 2s);
+        require(harness.scheduler.snapshot().phase !=
+                AdaptiveSchedulerPhase::StableCadence,
+            "native cadence recovery did not leave Smooth Cadence");
+
+        const size_t probesBeforeOscillation = harness.diagnostics.count(
+            "adaptive-stable-cadence-probe"
+        );
+        for (size_t cycle = 0; cycle < 6; ++cycle) {
+            harness.runAtFps(55.0, 4s);
+            harness.runAtFps(68.0, 2s);
+        }
+        const size_t probesAfterOscillation = harness.diagnostics.count(
+            "adaptive-stable-cadence-probe"
+        );
+        require(probesAfterOscillation - probesBeforeOscillation <= 2,
+            "oscillating load repeatedly toggled Smooth Cadence workload");
     }
 
     void testStrictLoadCollapseRestoresCheaperProvenLevel() {
@@ -698,7 +734,7 @@ namespace {
     void testSmoothCadenceCollapseUsesRealOnlyMeasurement() {
         Harness harness(90, 2, true);
         harness.start();
-        harness.runAtFps(47.0, 10s);
+        harness.runAtFps(47.0, 12s);
         require(harness.scheduler.snapshot().phase ==
                 AdaptiveSchedulerPhase::StableCadence,
             "precondition failed: Smooth Cadence did not settle");
@@ -790,54 +826,6 @@ namespace {
             "image recovery did not return harmful 3x load to proven 2x");
     }
 
-    void testPresentationRecoveryRecreatesOnlyAfterRepeatedStall() {
-        AdaptivePresentationRecoveryPolicy policy;
-        TimePoint now{};
-
-        const auto first = policy.recover(now, true);
-        require(first.action ==
-                AdaptivePresentationRecoveryAction::InPlaceWarmup,
-            "first generated-image recovery requested a swapchain rebuild");
-
-        now += 2s;
-        const auto repeated = policy.recover(now, true);
-        require(repeated.action ==
-                AdaptivePresentationRecoveryAction::RecreateSwapchain,
-            "repeated generated-image recovery did not retain guarded rebuild");
-
-        now += 1s;
-        const auto firstAfterRecreation = policy.recover(now, true);
-        require(firstAfterRecreation.action ==
-                AdaptivePresentationRecoveryAction::InPlaceWarmup,
-            "fresh replacement context did not receive an in-place first recovery");
-
-        now += 1s;
-        const auto duringCooldown = policy.recover(now, true);
-        require(duringCooldown.action ==
-                AdaptivePresentationRecoveryAction::InPlaceCooldown &&
-                duringCooldown.recreationCooldownRemaining >
-                    AdaptivePresentationRecoveryPolicy::Clock::duration::zero(),
-            "repeated recovery bypassed the cross-context recreation cooldown");
-    }
-
-    void testIsolatedPresentationRecoveriesRemainInPlace() {
-        AdaptivePresentationRecoveryPolicy policy;
-        TimePoint now{};
-        require(policy.recover(now, true).action ==
-                AdaptivePresentationRecoveryAction::InPlaceWarmup,
-            "first isolated recovery was not in-place");
-
-        now += AdaptivePresentationRecoveryPolicy::repeatedRecoveryWindow() + 1s;
-        require(policy.recover(now, true).action ==
-                AdaptivePresentationRecoveryAction::InPlaceWarmup,
-            "isolated recovery outside the repeat window rebuilt the swapchain");
-
-        now += 1s;
-        require(policy.recover(now, false).action ==
-                AdaptivePresentationRecoveryAction::InPlaceWarmup,
-            "disabled rebuild policy did not remain in-place");
-    }
-
     void testDeterministicReplay() {
         Harness first(120, 4, true);
         Harness second(120, 4, true);
@@ -896,12 +884,11 @@ int main() {
         {"rejected higher level backs off", testRejectedHigherLevelRetainsProvenLoadAndBacksOff},
         {"Smooth Cadence settles near integer demand", testSmoothCadenceSettlesNearIntegerDemand},
         {"Smooth Cadence exits after native recovery", testSmoothCadenceReturnsToTargetAfterBaseRecovery},
+        {"Smooth Cadence resists oscillating-load chatter", testSmoothCadenceDoesNotChatterOnOscillatingLoad},
         {"strict load collapse restores lower level", testStrictLoadCollapseRestoresCheaperProvenLevel},
         {"Smooth Cadence collapse measures real-only", testSmoothCadenceCollapseUsesRealOnlyMeasurement},
         {"restored load keeps collapse guard", testRestoredDiscontinuityLoadRetainsCollapseGuard},
         {"image recovery keeps collapse guard", testGeneratedImageRecoveryRetainsCollapseGuard},
-        {"repeated presentation recovery rebuilds", testPresentationRecoveryRecreatesOnlyAfterRepeatedStall},
-        {"isolated presentation recovery stays in-place", testIsolatedPresentationRecoveriesRemainInPlace},
         {"cadence replay is deterministic", testDeterministicReplay},
     };
 

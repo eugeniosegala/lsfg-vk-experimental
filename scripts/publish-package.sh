@@ -133,12 +133,12 @@ HDR10 input is converted from BT.2020/PQ into linear scRGB before the model and 
 ### Important limitations
 
 - Adaptive Frame Generation is experimental and opt-in. This independent Vulkan-layer scheduler varies between zero and three generated frames per real frame toward the configured average target. It cannot reduce a native framerate already above the target, exceed the selected 4x maximum, guarantee an unreachable target, or provide the Windows Queue Target modes.
-- The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. This fork provides a separate live synthesis switch that preserves the selected Fixed or Adaptive mode. Use \`DISABLE_LSFGVK=1\` or remove the launch wrapper and restart the game when the layer itself must be disabled.
+- The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. This fork provides a separate live synthesis switch that preserves the selected Fixed or Adaptive mode. Use \`DISABLE_LSFGVK_EXPERIMENTAL=1\` or remove the launch wrapper and restart the game when the experimental layer itself must be disabled.
 - Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so test it per game.
 - HDR10 conversion adds one full-resolution decode dispatch per real frame and one encode dispatch per generated frame. It is correctness work, not a universal performance claim; measure the overhead on target hardware.
 - HLG, Dolby Vision, and unvalidated wide-colour combinations intentionally use real-frame passthrough. A game still needs its own HDR renderer and an HDR-capable SteamOS/Gamescope session.
 - Lossless Scaling and \`Lossless.dll\` must already be installed through Steam; neither release archive includes or modifies it.
-- \`LSFGVK_PRESENT_RECOVERY_RECREATE=1\` is an opt-in Adaptive recovery path for direct engine users. The first isolated recovery stays in-place; a repeated recovery may rebuild the swapchain and can briefly pause or flicker. The Decky experimental wrapper enables the tested timeout and guarded policy automatically.
+- Generated-image timeout recovery remains inside the existing context. The layer does not force a game-owned swapchain recreation for a setting change or recovery decision.
 - Flatpak extensions for 23.08, 24.08, and 25.08 are packaged separately in \`$(basename "$flatpak_archive")\` under a dedicated experimental ID that can coexist with the public Flathub layer.
 
 ### Included files

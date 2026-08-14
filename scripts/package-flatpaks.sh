@@ -57,7 +57,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
         '
 fi
 
-for command in flatpak flatpak-builder tar; do
+for command in flatpak flatpak-builder strings tar; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command not found: $command" >&2
         exit 1
@@ -121,8 +121,8 @@ for runtime_version in 23.08 24.08 25.08; do
     # launch either a 64-bit or genuine 32-bit Vulkan process, and each process
     # must find a manifest and library with matching bitness.
     for required_path in \
-        "files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json" \
-        "files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json" \
+        "files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.json" \
+        "files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.x86.json" \
         "files/lib64/liblsfg-vk-layer.so" \
         "files/lib/i386-linux-gnu/liblsfg-vk-layer.so"; do
         if [[ ! -f "$build_dir/$required_path" ]]; then
@@ -134,26 +134,47 @@ for runtime_version in 23.08 24.08 25.08; do
     verify_elf_class "$build_dir/files/lib64/liblsfg-vk-layer.so" 2
     verify_elf_class "$build_dir/files/lib/i386-linux-gnu/liblsfg-vk-layer.so" 1
 
+    for layer_binary in \
+            "$build_dir/files/lib64/liblsfg-vk-layer.so" \
+            "$build_dir/files/lib/i386-linux-gnu/liblsfg-vk-layer.so"; do
+        if ! strings "$layer_binary" |
+                grep -F "lsfg-vk: experimental layer active; identity=VK_LAYER_LSFGVK_experimental_frame_generation; build=$version" >/dev/null; then
+            echo "Flatpak packaging failed: layer build identity is missing for $runtime_version" >&2
+            exit 1
+        fi
+    done
+
+    manifest64="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.json"
+    manifest32="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.x86.json"
+
     if ! grep -Fq "/usr/lib/extensions/vulkan/lsfgvkexperimental/lib64/liblsfg-vk-layer.so" \
-        "$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"; then
+        "$manifest64"; then
         echo "Flatpak packaging failed: 64-bit manifest path is incorrect for $runtime_version" >&2
         exit 1
     fi
     if ! grep -Fq '"library_arch": "64"' \
-        "$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"; then
+        "$manifest64"; then
         echo "Flatpak packaging failed: 64-bit manifest architecture is incorrect for $runtime_version" >&2
         exit 1
     fi
     if ! grep -Fq "/usr/lib/extensions/vulkan/lsfgvkexperimental/lib/i386-linux-gnu/liblsfg-vk-layer.so" \
-        "$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json"; then
+        "$manifest32"; then
         echo "Flatpak packaging failed: 32-bit manifest path is incorrect for $runtime_version" >&2
         exit 1
     fi
     if ! grep -Fq '"library_arch": "32"' \
-        "$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json"; then
+        "$manifest32"; then
         echo "Flatpak packaging failed: 32-bit manifest architecture is incorrect for $runtime_version" >&2
         exit 1
     fi
+    for manifest in "$manifest64" "$manifest32"; do
+        if ! grep -Fq '"name": "VK_LAYER_LSFGVK_experimental_frame_generation"' "$manifest" ||
+                ! grep -Fq '"ENABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest" ||
+                ! grep -Fq '"DISABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest"; then
+            echo "Flatpak packaging failed: experimental layer gating is incorrect for $runtime_version" >&2
+            exit 1
+        fi
+    done
 
     flatpak build-bundle "$repo_dir" "$bundle" "$extension_id" "$runtime_version" --runtime
 
@@ -168,8 +189,8 @@ for runtime_version in 23.08 24.08 25.08; do
     # time.
     flatpak install --user --noninteractive "$bundle" >/dev/null
     deployed_dir="$(flatpak info --user --show-location "$extension_id//$runtime_version")"
-    deployed_manifest64="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.json"
-    deployed_manifest32="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.x86.json"
+    deployed_manifest64="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.json"
+    deployed_manifest32="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.x86.json"
 
     if [[ ! -f "$deployed_dir/files/lib64/liblsfg-vk-layer.so" ]]; then
         echo "Flatpak packaging failed: deployed 64-bit library is missing for $runtime_version" >&2
@@ -182,6 +203,16 @@ for runtime_version in 23.08 24.08 25.08; do
 
     verify_elf_class "$deployed_dir/files/lib64/liblsfg-vk-layer.so" 2
     verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/liblsfg-vk-layer.so" 1
+
+    for layer_binary in \
+            "$deployed_dir/files/lib64/liblsfg-vk-layer.so" \
+            "$deployed_dir/files/lib/i386-linux-gnu/liblsfg-vk-layer.so"; do
+        if ! strings "$layer_binary" |
+                grep -F "lsfg-vk: experimental layer active; identity=VK_LAYER_LSFGVK_experimental_frame_generation; build=$version" >/dev/null; then
+            echo "Flatpak packaging failed: deployed layer build identity is missing for $runtime_version" >&2
+            exit 1
+        fi
+    done
 
     if ! grep -Fq "/usr/lib/extensions/vulkan/lsfgvkexperimental/lib64/liblsfg-vk-layer.so" \
         "$deployed_manifest64"; then

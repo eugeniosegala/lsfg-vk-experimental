@@ -365,15 +365,14 @@ namespace {
         if (configurationUpdate.reloaded) {
             std::cerr << "lsfg-vk: updated lsfg-vk configuration in place; contexts="
                       << configurationUpdate.liveContextsUpdated << '\n';
-            if (configurationUpdate.deferredContexts > 0 ||
-                    configurationUpdate.globalChangeDeferred) {
+            if (configurationUpdate.deferredContexts > 0)
                 std::cerr << "lsfg-vk: configuration changes requiring GPU resource "
-                             "reconstruction were deferred until normal swapchain "
-                             "recreation; contexts="
-                          << configurationUpdate.deferredContexts
-                          << "; global="
-                          << configurationUpdate.globalChangeDeferred << '\n';
-            }
+                             "reconstruction remain pending until a natural game-owned "
+                             "swapchain recreation; no recreation was forced; contexts="
+                          << configurationUpdate.deferredContexts << '\n';
+            if (configurationUpdate.globalChangeDeferred)
+                std::cerr << "lsfg-vk: global backend construction changed; "
+                             "the new DLL or FP16 setting applies on process restart\n";
         }
 
         // present each swapchain
@@ -418,9 +417,9 @@ namespace {
                 swapchainOutOfDate = true;
         }
 
-        // A recovery policy may deliberately request recreation of one
-        // game-owned swapchain. Present any remaining swapchains from the
-        // same call, then preserve the recreation signal in the overall result.
+        // Preserve a genuine game/driver out-of-date result across a
+        // multi-swapchain present. LSFG itself does not manufacture this
+        // result for configuration or recovery transitions.
         return swapchainOutOfDate ? VK_ERROR_OUT_OF_DATE_KHR : result;
 #pragma clang diagnostic pop
     }

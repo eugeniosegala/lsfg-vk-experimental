@@ -3,6 +3,12 @@ project(lsfg-vk LANGUAGES CXX)
 include(GNUInstallDirs)
 include(CTest)
 
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" LSFGVK_VERSION LIMIT_COUNT 1)
+string(STRIP "${LSFGVK_VERSION}" LSFGVK_VERSION)
+if(LSFGVK_VERSION STREQUAL "")
+    message(FATAL_ERROR "VERSION must contain a build identity")
+endif()
+
 # === READ HERE FOR BUILD OPTIONS ===
 option(LSFGVK_BUILD_VK_LAYER     "Build the Vulkan layer"            ON)
 option(LSFGVK_BUILD_UI           "Build the user interface"         OFF)
