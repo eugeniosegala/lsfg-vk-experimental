@@ -90,6 +90,8 @@ The following environment variables affect lsfg-vk:
   sets both so only its private engine is active for the wrapped game.
 - `LSFGVK_CONFIG`: Path to the configuration file.
 - `LSFGVK_PROFILE`: Name of the profile to use. If set, this will override automatic profile detection.
+- `LSFGVK_EXPERIMENTAL_HDR`: Set to `1` only by an explicit experimental-HDR launch. It permits the guarded Gamescope
+  output/format bootstrap when app HDR feedback is absent; it does not promote 8-bit SDR or enable an SDR output.
 - `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS`: Optional timeout for generated-image acquisition. A timeout enters the
   Gamescope presentation fallback; unset or `0` keeps the normal unbounded acquisition path.
 - `LSFGVK_PRESENT_DIAGNOSTICS`: Set to `1` to log slow presentation operations.

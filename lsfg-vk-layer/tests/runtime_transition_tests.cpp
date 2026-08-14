@@ -83,6 +83,99 @@ int main() {
             displays),
         "server zero from another Gamescope process must be rejected");
 
+    // Gamescope starts with app-HDR cached false and can therefore leave its
+    // Boolean property absent. Prefer explicit app evidence, accept metadata
+    // as an equivalent positive signal, and keep the release-compatible
+    // bootstrap behind the existing experimental HDR launch boundary.
+    const auto confirmedHdr = decideGamescopeHdrActivation({
+        .appWantsHdr = true,
+        .outputHdrEnabled = true,
+        .gamescopeDetected = true,
+    });
+    expect(confirmedHdr.active && *confirmedHdr.active &&
+            confirmedHdr.source == "gamescope-app-colorspace",
+        "confirmed Gamescope app HDR should be authoritative");
+
+    const auto confirmedSdr = decideGamescopeHdrActivation({
+        .appWantsHdr = false,
+        .outputHdrEnabled = true,
+        .appHdrMetadataPresent = true,
+        .experimentalHdrRequested = true,
+        .gamescopeDetected = true,
+    });
+    expect(confirmedSdr.active && !*confirmedSdr.active,
+        "confirmed SDR must override stale metadata and the bootstrap");
+
+    const auto metadataHdr = decideGamescopeHdrActivation({
+        .outputHdrEnabled = true,
+        .appHdrMetadataPresent = true,
+        .gamescopeDetected = true,
+    });
+    expect(metadataHdr.active && *metadataHdr.active &&
+            metadataHdr.source == "gamescope-app-hdr-metadata",
+        "valid app HDR metadata should recover an unset Boolean property");
+
+    const auto automaticSdr = decideGamescopeHdrActivation({
+        .outputHdrEnabled = true,
+        .gamescopeDetected = true,
+    });
+    expect(!automaticSdr.active,
+        "an HDR display alone must not promote an automatic SDR launch");
+
+    const auto optedInHdr = decideGamescopeHdrActivation({
+        .outputHdrEnabled = true,
+        .experimentalHdrRequested = true,
+        .gamescopeDetected = true,
+    });
+    expect(optedInHdr.active && *optedInHdr.active &&
+            optedInHdr.source == "experimental-hdr-output-bootstrap",
+        "an explicit experimental HDR launch should recover property-unset Gamescope");
+
+    const auto noHdrOutput = decideGamescopeHdrActivation({
+        .outputHdrEnabled = false,
+        .experimentalHdrRequested = true,
+        .gamescopeDetected = true,
+    });
+    expect(!noHdrOutput.active,
+        "the compatibility bootstrap must require an active HDR output");
+
+    const auto blockedHdr = decideGamescopeHdrActivation({
+        .appWantsHdr = true,
+        .outputHdrEnabled = true,
+        .appHdrMetadataPresent = true,
+        .experimentalHdrRequested = true,
+        .hdrExposureDisabled = true,
+        .gamescopeDetected = true,
+    });
+    expect(blockedHdr.active && !*blockedHdr.active &&
+            blockedHdr.source == "hdr-exposure-disabled",
+        "the SDR compatibility boundary must disable every HDR evidence path");
+
+    const GamescopeHdrFeedbackSample bootstrapStartup{
+        .active = true,
+        .outputHdrEnabled = true,
+        .experimentalHdrRequested = true,
+        .gamescopeDetected = true,
+        .status = "feedback-property-unset",
+        .activationSource = "experimental-hdr-output-bootstrap",
+    };
+    expect(initialGamescopeHdrActivation(bootstrapStartup) == true,
+        "the explicit output-gated bootstrap must initialize HDR before the first swapchain");
+
+    auto ordinaryGamescopeStartup = bootstrapStartup;
+    ordinaryGamescopeStartup.activationSource = "gamescope-app-colorspace";
+    expect(!initialGamescopeHdrActivation(ordinaryGamescopeStartup),
+        "ordinary Gamescope app feedback must retain its startup settling guard");
+
+    const GamescopeHdrFeedbackSample blockedStartup{
+        .active = false,
+        .gamescopeDetected = true,
+        .status = "hdr-exposure-disabled",
+        .activationSource = "hdr-exposure-disabled",
+    };
+    expect(initialGamescopeHdrActivation(blockedStartup) == false,
+        "blocked HDR exposure must initialize the proven SDR path immediately");
+
     std::cout << "runtime transition tests passed\n";
     return 0;
 }

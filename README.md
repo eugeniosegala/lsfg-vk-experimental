@@ -29,13 +29,16 @@ it does not introduce a separate frame-generation model. For the established 1.x
   useful throughput, and waits for sustained evidence before trying a more expensive multiplier.
 - **Optional Smooth Cadence:** Suitable fractional targets can prefer a validated constant interpolation cadence.
   This can look smoother but may lower real-frame cadence and responsiveness, so it is disabled by default.
-- **Automatic HDR colour pipeline:** Swapchain format and colour space are classified together. Standard Gamescope
-  HDR10/PQ input is decoded from BT.2020/PQ into linear scRGB before frame generation and encoded back afterward;
+- **Experimental HDR support:** The HDR10/PQ and linear-scRGB path remains under development and should be enabled only
+  for games that have been tested successfully. Swapchain format and colour space are classified together. Standard
+  Gamescope HDR10/PQ input is decoded from BT.2020/PQ into linear scRGB before frame generation and encoded back afterward;
   linear scRGB uses the model directly. When Gamescope's Wine WSI bridge normalizes its driver-facing colour space to
   sRGB, the engine recovers HDR semantics only from an exact packed-10-bit or float format after Gamescope's live
-  application feedback confirms that the game is presenting HDR. Unsupported HDR encodings use real-frame
+  application colour-space feedback or HDR metadata confirms the game is presenting HDR. The Decky experimental-HDR
+  launch may additionally bootstrap Gamescope's known property-unset state, but only on an HDR output; the default
+  blocked SDR launch cannot enter that path. Unsupported HDR encodings use real-frame
   passthrough instead of synthesized frames with incorrect colours. HDR processing and live HDR/SDR transitions are
-  automatic; there is no engine HDR toggle. On devices that validate the required Vulkan image-sharing and storage
+  automatic within that restart-time exposure boundary; there is no force-HDR engine toggle. On devices that validate the required Vulkan image-sharing and storage
   features, HDR10 boundary images are also kept in their native packed 10-bit representation. The model continues to
   run in linear 16-bit-float HDR, while the smaller boundary images reduce exchange-memory pressure without changing
   the colour model or Adaptive policy.
@@ -200,12 +203,15 @@ Run the built-in frame-generation benchmark with:
 
 The default duration is 10 seconds. Add `-h` to list the available options.
 
-## In-game considerations
+## 🎮 In-game considerations
 
-Every game, renderer, and display setup behaves differently. For the best experience, try Fixed and Adaptive Frame
-Generation, enable or disable the game's V-Sync, and compare fullscreen, borderless, and windowed modes. Change one
-setting at a time, restart after major display or frame-generation changes, and keep the configuration that feels best
-for that game.
+> [!TIP]
+> **Try the game's V-Sync setting first.** In many games it can materially improve frame pacing and the perceived
+> smoothness of frame generation. Test it both enabled and disabled before making deeper adjustments.
+
+Every game, renderer, and display setup behaves differently. Also compare Fixed and Adaptive Frame Generation, then
+fullscreen, borderless, and windowed modes. Change one setting at a time, restart after major display or
+frame-generation changes, and keep the configuration that feels best for that game.
 
 ## Build and publish a release
 

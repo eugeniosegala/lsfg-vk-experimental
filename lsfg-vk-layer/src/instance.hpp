@@ -98,6 +98,7 @@ namespace lsfgvk::layer {
         bool gamescopeManaged{false};
         std::optional<uint32_t> gamescopeRefreshHz;
         std::optional<bool> lastHdrFeedbackSample;
+        std::string lastHdrActivationSource;
         std::optional<uint32_t> lastGamescopeRefreshHz;
         std::string lastHdrFeedbackDiagnosticKey;
         std::optional<std::chrono::steady_clock::time_point> lastHdrFeedbackPoll;

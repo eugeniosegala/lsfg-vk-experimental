@@ -127,6 +127,11 @@ For HDR10, `HDR10 transport: mode=packed-10-bit` confirms that both Vulkan devic
 `nominal_bytes_saved` is the exact reduction across the private transport images for that context; it is not a claimed
 whole-engine VRAM reduction. `mode=rgba16f` with either support field at `0` means the engine retained the validated
 float transport automatically. The model and its temporal working images remain 16-bit float in both cases.
+`activation_source=gamescope-app-colorspace` is the preferred Gamescope signal;
+`gamescope-app-hdr-metadata` is equivalent positive application evidence. The experimental Decky launch can report
+`experimental-hdr-output-bootstrap` when Gamescope leaves its cached Boolean property unset. That compatibility source
+requires both the explicit launch opt-in and an HDR output, and colour classification still refuses to promote an
+ordinary 8-bit SDR swapchain.
 For a live-compatible in-game configuration change, `runtime-state-applied transition=live` records the requested state
 revision and the active mode. If a change needs different private GPU resources or HDR encoding,
 `runtime-transition-pending action=wait-for-natural-swapchain-recreation` records that it was deliberately not forced;

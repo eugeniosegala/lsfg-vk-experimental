@@ -40,6 +40,10 @@ namespace {
     constexpr char gamescopeServerIdProperty[] = "GAMESCOPE_XWAYLAND_SERVER_ID";
     constexpr char gamescopeHdrProperty[] =
         "GAMESCOPE_COLOR_APP_WANTS_HDR_FEEDBACK";
+    constexpr char gamescopeHdrMetadataProperty[] =
+        "GAMESCOPE_COLOR_APP_HDR_METADATA_FEEDBACK";
+    constexpr char gamescopeHdrOutputProperty[] =
+        "GAMESCOPE_HDR_OUTPUT_FEEDBACK";
     constexpr char gamescopeRefreshProperty[] =
         "GAMESCOPE_DISPLAY_REFRESH_RATE_FEEDBACK";
 
@@ -109,6 +113,31 @@ struct GamescopeHdrFeedbackReader::Impl {
         if (data)
             this->freeData(data);
         return value;
+    }
+
+    bool hasCardinalData(Display* sourceDisplay,
+            const Window sourceRoot, const char* propertyName) {
+        const Atom property = this->internAtom(
+            sourceDisplay, propertyName, True
+        );
+        if (property == None)
+            return false;
+
+        Atom actualType{None};
+        int actualFormat{};
+        unsigned long itemCount{};
+        unsigned long bytesAfter{};
+        unsigned char* data{nullptr};
+        const int result = this->getWindowProperty(
+            sourceDisplay, sourceRoot, property, 0, 64, False, XA_CARDINAL,
+            &actualType, &actualFormat, &itemCount, &bytesAfter, &data
+        );
+        const bool present = result == Success &&
+            actualType == XA_CARDINAL && actualFormat == 32 &&
+            itemCount > 0 && data;
+        if (data)
+            this->freeData(data);
+        return present;
     }
 
     GamescopeXwaylandDisplay identifyDisplay(
@@ -399,13 +428,32 @@ struct GamescopeHdrFeedbackReader::Impl {
         sample.refreshHz = this->readCardinal(
             this->display, this->root, gamescopeRefreshProperty
         );
+        if (const auto outputHdr = this->readCardinal(
+                this->display, this->root, gamescopeHdrOutputProperty)) {
+            sample.outputHdrEnabled = *outputHdr != 0;
+        }
+        sample.appHdrMetadataPresent = this->hasCardinalData(
+            this->display, this->root, gamescopeHdrMetadataProperty
+        );
+        sample.experimentalHdrRequested = environmentFlagEnabled(
+            std::getenv("LSFGVK_EXPERIMENTAL_HDR")
+        );
 
         if (hdrExposureDisabled) {
-            sample.active = false;
+            const auto decision = decideGamescopeHdrActivation({
+                .outputHdrEnabled = sample.outputHdrEnabled,
+                .appHdrMetadataPresent = sample.appHdrMetadataPresent,
+                .experimentalHdrRequested = sample.experimentalHdrRequested,
+                .hdrExposureDisabled = true,
+                .gamescopeDetected = sample.gamescopeDetected,
+            });
+            sample.active = decision.active;
+            sample.activationSource = decision.source;
             sample.status = "hdr-exposure-disabled";
             return sample;
         }
 
+        std::optional<bool> appWantsHdr;
         if (this->feedbackAtom == None) {
             this->feedbackAtom = this->internAtom(
                 this->display,
@@ -414,44 +462,55 @@ struct GamescopeHdrFeedbackReader::Impl {
             );
             if (this->feedbackAtom == None) {
                 sample.status = "feedback-atom-unavailable";
-                return sample;
             }
         }
 
-        Atom actualType{None};
-        int actualFormat{};
-        unsigned long itemCount{};
-        unsigned long bytesAfter{};
-        unsigned char* data{nullptr};
-        const int result = this->getWindowProperty(
-            this->display,
-            this->root,
-            this->feedbackAtom,
-            0,
-            1,
-            False,
-            XA_CARDINAL,
-            &actualType,
-            &actualFormat,
-            &itemCount,
-            &bytesAfter,
-            &data
-        );
+        if (this->feedbackAtom != None) {
+            Atom actualType{None};
+            int actualFormat{};
+            unsigned long itemCount{};
+            unsigned long bytesAfter{};
+            unsigned char* data{nullptr};
+            const int result = this->getWindowProperty(
+                this->display,
+                this->root,
+                this->feedbackAtom,
+                0,
+                1,
+                False,
+                XA_CARDINAL,
+                &actualType,
+                &actualFormat,
+                &itemCount,
+                &bytesAfter,
+                &data
+            );
 
-        if (result == Success && actualType == XA_CARDINAL &&
-                actualFormat == 32 && itemCount == 1 && data) {
-            const auto raw = *reinterpret_cast<const unsigned long*>(data);
-            sample.active = raw != 0;
-            sample.status = "confirmed";
-        } else if (result != Success) {
-            sample.status = "property-read-failed";
-        } else if (actualType == None || itemCount == 0) {
-            sample.status = "feedback-property-unset";
-        } else {
-            sample.status = "feedback-property-invalid";
+            if (result == Success && actualType == XA_CARDINAL &&
+                    actualFormat == 32 && itemCount == 1 && data) {
+                const auto raw = *reinterpret_cast<const unsigned long*>(data);
+                appWantsHdr = raw != 0;
+                sample.status = "confirmed";
+            } else if (result != Success) {
+                sample.status = "property-read-failed";
+            } else if (actualType == None || itemCount == 0) {
+                sample.status = "feedback-property-unset";
+            } else {
+                sample.status = "feedback-property-invalid";
+            }
+            if (data)
+                this->freeData(data);
         }
-        if (data)
-            this->freeData(data);
+
+        const auto decision = decideGamescopeHdrActivation({
+            .appWantsHdr = appWantsHdr,
+            .outputHdrEnabled = sample.outputHdrEnabled,
+            .appHdrMetadataPresent = sample.appHdrMetadataPresent,
+            .experimentalHdrRequested = sample.experimentalHdrRequested,
+            .gamescopeDetected = sample.gamescopeDetected,
+        });
+        sample.active = decision.active;
+        sample.activationSource = decision.source;
         return sample;
     }
 #else

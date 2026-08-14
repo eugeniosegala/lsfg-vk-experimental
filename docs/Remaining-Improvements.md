@@ -61,6 +61,11 @@ stability, or recovery regression.
 - Treat linear scRGB as the model's canonical HDR working space. Keep HDR10
   BT.2020/PQ decoding before the model and encoding after it explicit; never
   infer HDR from a numeric `VkFormat` range.
+- A/B the current PQ-to-linear model input against the v1 release-compatible
+  encoded-PQ model input in an isolated test build. The v1 implementation
+  enabled the model's HDR constants while retaining encoded component values;
+  do not change the production path until matched colour ramps and real-game
+  captures establish which representation the proprietary model expects.
 - Validate native Gamescope HDR10 swapchains in both packed 10-bit channel
   orders and validate `R16G16B16A16_SFLOAT` linear scRGB independently.
 - Measure the two full-resolution colour-conversion dispatches on Steam Deck.
