@@ -150,3 +150,31 @@ layer::SwapchainColorPipeline layer::classifySwapchainColor(
         .reason = "the swapchain format has no validated LSFG transport",
     };
 }
+
+bool layer::enablePackedHdr10Transport(
+        SwapchainColorPipeline& pipeline,
+        const bool applicationDeviceSupported,
+        const bool backendDeviceSupported) {
+    if (pipeline.encoding != backend::FrameEncoding::Hdr10Pq ||
+            !applicationDeviceSupported || !backendDeviceSupported)
+        return false;
+
+    pipeline.encoding = backend::FrameEncoding::Hdr10PqPacked;
+    pipeline.exchangeFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    pipeline.packedHdr10Transport = true;
+    return true;
+}
+
+size_t layer::transportBytesPerPixel(
+        const backend::FrameEncoding encoding) {
+    switch (encoding) {
+        case backend::FrameEncoding::Sdr8:
+        case backend::FrameEncoding::Hdr10PqPacked:
+            return 4;
+        case backend::FrameEncoding::SdrHighPrecision:
+        case backend::FrameEncoding::ScRgbLinear:
+        case backend::FrameEncoding::Hdr10Pq:
+            return 8;
+    }
+    return 8;
+}

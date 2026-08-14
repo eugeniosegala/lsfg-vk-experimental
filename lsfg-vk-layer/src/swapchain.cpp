@@ -841,6 +841,37 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
 
     const VkExtent2D extent = this->info.extent;
 
+    bool applicationPackedHdr10Supported = false;
+    bool backendPackedHdr10Supported = false;
+    if (this->colorPipeline.encoding == backend::FrameEncoding::Hdr10Pq) {
+        applicationPackedHdr10Supported =
+            vk.supportsExternalImageFormat(
+                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
+            ) &&
+            vk.supportsOptimalTilingFormatFeatures(
+                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                VK_FORMAT_FEATURE_BLIT_DST_BIT
+            ) &&
+            vk.supportsExternalImageFormat(
+                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
+            ) &&
+            vk.supportsOptimalTilingFormatFeatures(
+                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                VK_FORMAT_FEATURE_BLIT_SRC_BIT
+            );
+        backendPackedHdr10Supported =
+            backend.supportsPackedHdr10Transport();
+        static_cast<void>(enablePackedHdr10Transport(
+            this->colorPipeline,
+            applicationPackedHdr10Supported,
+            backendPackedHdr10Supported
+        ));
+    }
+
     if (presentDiagnosticsEnabled()) {
         std::cerr << "lsfg-vk: present diagnostics: operation=runtime-state-applied"
                   << " context=" << this->diagnosticsContextId
@@ -863,9 +894,38 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
               << "; source="
               << (this->colorPipeline.gamescopeColorSpaceRecovered
                     ? "gamescope-normalized" : "application")
+              << "; transport="
+              << (this->colorPipeline.packedHdr10Transport
+                    ? "packed-hdr10-32-bit"
+                    : (transportBytesPerPixel(this->colorPipeline.encoding) == 8
+                        ? "rgba16f-64-bit" : "rgba8-32-bit"))
               << "; frame-generation="
               << (this->colorPipeline.generationSupported ? "supported" : "passthrough")
               << '\n';
+
+    if (this->colorPipeline.encoding == backend::FrameEncoding::Hdr10Pq ||
+            this->colorPipeline.encoding ==
+                backend::FrameEncoding::Hdr10PqPacked) {
+        const uint64_t transportImageCount = 2 +
+            generatedFrameCapacity(this->profile);
+        const uint64_t floatTransportBytes =
+            static_cast<uint64_t>(extent.width) * extent.height *
+            transportImageCount * 8;
+        const uint64_t selectedTransportBytes =
+            static_cast<uint64_t>(extent.width) * extent.height *
+            transportImageCount *
+            transportBytesPerPixel(this->colorPipeline.encoding);
+        std::cerr << "lsfg-vk: HDR10 transport: mode="
+                  << (this->colorPipeline.packedHdr10Transport
+                        ? "packed-10-bit" : "rgba16f")
+                  << "; nominal_bytes=" << selectedTransportBytes
+                  << "; nominal_bytes_saved="
+                  << (floatTransportBytes - selectedTransportBytes)
+                  << "; application_device_supported="
+                  << applicationPackedHdr10Supported
+                  << "; backend_device_supported="
+                  << backendPackedHdr10Supported << '\n';
+    }
 
     if (!this->colorPipeline.generationSupported) {
         std::cerr << "lsfg-vk: frame generation disabled for this swapchain: "
@@ -1109,7 +1169,7 @@ bool Swapchain::updateGamescopeHdrState(
     const auto desiredPipeline = classifySwapchainColor(
         this->info.format, this->info.colorSpace, active
     );
-    if (desiredPipeline.encoding == this->colorPipeline.encoding &&
+    if (desiredPipeline.name == this->colorPipeline.name &&
             desiredPipeline.generationSupported ==
                 this->colorPipeline.generationSupported) {
         return false;

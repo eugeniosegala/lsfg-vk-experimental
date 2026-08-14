@@ -63,6 +63,11 @@ Next is a list of all available **profile** configuration options:
 
 "Frame Generation", Fixed/Adaptive mode, "Multiplier", "Adaptive Target", "Maximum Adaptive Multiplier", and "Smooth Cadence" can be **hot-reloaded** when the active context has the required reserved capacity. Fixed and Adaptive share one private output set, so these ordinary controls do not invalidate or recreate the game-owned swapchain. Flow Scale, Performance Mode, GPU selection, a capacity increase beyond the reserved set, and an HDR encoding change remain pending until the game naturally recreates its swapchain; restart the game when an immediate deterministic change is required. The layer never returns an out-of-date result merely because a Decky setting changed. Global DLL and FP16 changes still require a process restart because they alter the shared backend instance.
 
+HDR10 transport packing is automatic and has no setting. When both the application and backend Vulkan devices report
+the exact external-image and packed-storage capabilities required by the engine, the private source/output exchange
+images use 32-bit packed HDR10 instead of 64-bit float. PQ decoding, the LSFG model, and all temporal working images
+remain linear 16-bit float. If either capability check fails, the validated float HDR10 transport remains in use.
+
 ### Pacing Modes
 
 **Pacing modes** determine how lsfg-vk synchronizes frame generation with the application's frame rate.

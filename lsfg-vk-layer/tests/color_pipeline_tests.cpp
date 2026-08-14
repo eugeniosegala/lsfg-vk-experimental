@@ -2,6 +2,7 @@
 
 #include "color_pipeline.hpp"
 
+#include <cstddef>
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
@@ -47,6 +48,42 @@ int main() {
         "Gamescope-normalized packed 10-bit should be classified as HDR");
     expect(gamescopeHdr10.gamescopeColorSpaceRecovered,
         "Gamescope-normalized HDR10 should identify its recovered source");
+
+    auto packedGamescopeHdr10 = gamescopeHdr10;
+    expect(!layer::enablePackedHdr10Transport(
+            packedGamescopeHdr10, true, false),
+        "Packed HDR10 must not activate when the backend cannot import it");
+    expect(packedGamescopeHdr10.encoding == backend::FrameEncoding::Hdr10Pq,
+        "An unsupported packed path must preserve float HDR10 transport");
+    expect(layer::enablePackedHdr10Transport(
+            packedGamescopeHdr10, true, true),
+        "Packed HDR10 should activate when both Vulkan devices support it");
+    expect(packedGamescopeHdr10.encoding ==
+            backend::FrameEncoding::Hdr10PqPacked,
+        "Packed HDR10 selected the wrong backend encoding");
+    expect(packedGamescopeHdr10.exchangeFormat ==
+            VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+        "Packed HDR10 must use the canonical 32-bit exchange format");
+    expect(packedGamescopeHdr10.packedHdr10Transport,
+        "Packed HDR10 should be visible in runtime diagnostics");
+    expect(layer::transportBytesPerPixel(
+            backend::FrameEncoding::Hdr10PqPacked) == 4 &&
+            layer::transportBytesPerPixel(
+                backend::FrameEncoding::Hdr10Pq) == 8,
+        "Packed HDR10 must halve nominal transport bytes per pixel");
+
+    constexpr size_t steamDeckPixels = 1280 * 800;
+    constexpr size_t adaptiveThreeXTransportImages = 2 + 2;
+    const size_t packedBytes = steamDeckPixels *
+        adaptiveThreeXTransportImages *
+        layer::transportBytesPerPixel(
+            backend::FrameEncoding::Hdr10PqPacked
+        );
+    const size_t floatBytes = steamDeckPixels *
+        adaptiveThreeXTransportImages *
+        layer::transportBytesPerPixel(backend::FrameEncoding::Hdr10Pq);
+    expect(floatBytes - packedBytes == 16'384'000,
+        "Steam Deck Adaptive 3x transport should save 16.384 MB nominally");
 
     const auto gamescopeScrgb = layer::classifySwapchainColor(
         VK_FORMAT_R16G16B16A16_SFLOAT,

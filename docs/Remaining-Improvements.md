@@ -64,9 +64,11 @@ stability, or recovery regression.
 - Validate native Gamescope HDR10 swapchains in both packed 10-bit channel
   orders and validate `R16G16B16A16_SFLOAT` linear scRGB independently.
 - Measure the two full-resolution colour-conversion dispatches on Steam Deck.
-  Optimize only with matched colour patches, highlight ramps, and real-device
-  GPU timestamps; transfer-function precision cannot be traded for an
-  unmeasured performance claim.
+  The experimental engine now capability-gates a packed HDR10 boundary path,
+  while keeping the transfer functions and model working images at 16-bit
+  float. Validate it with matched colour patches, highlight ramps, real-device
+  GPU timestamps, and A/B frametime captures before treating the nominal
+  transport-byte reduction as a measured performance gain.
 - Keep unvalidated colour spaces, including HLG and Dolby Vision, on automatic
   real-frame passthrough. Add a format only with a deterministic classifier
   test, a transfer-function test, and hardware evidence that presentation is

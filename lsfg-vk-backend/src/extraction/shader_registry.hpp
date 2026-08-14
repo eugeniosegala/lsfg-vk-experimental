@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -23,7 +24,9 @@ namespace lsfgvk::backend {
     struct ShaderRegistry {
         vk::Shader mipmaps;
         vk::Shader generate, generate_hdr;
-        vk::Shader hdr10_pq_to_scrgb, scrgb_to_hdr10_pq;
+        vk::Shader hdr10_pq_to_scrgb;
+        vk::Shader scrgb_to_hdr10_pq;
+        std::optional<vk::Shader> scrgb_to_hdr10_pq_packed;
         Shaders quality;
         Shaders performance;
 

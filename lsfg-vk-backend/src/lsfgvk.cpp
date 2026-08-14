@@ -211,6 +211,19 @@ Instance::Instance(
     );
 }
 
+bool Instance::supportsPackedHdr10Transport() const {
+    const auto& vk = this->m_impl->getVulkan();
+    constexpr VkImageUsageFlags usage =
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    return this->m_impl->getShaderRegistry().scrgb_to_hdr10_pq_packed.has_value() &&
+        vk.supportsStorageImageExtendedFormats() &&
+        vk.supportsExternalImageFormat(
+            VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+            usage,
+            VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT
+        );
+}
+
 namespace {
     constexpr uint64_t previousWorkFenceTimeoutNs = 250'000'000ULL;
     constexpr size_t maximumRetiredContextCount = 2;
@@ -386,17 +399,31 @@ namespace {
         }
     }
     /// create context data
-    bool usesHighPrecisionTransport(const FrameEncoding encoding) {
+    bool usesHighPrecisionModel(const FrameEncoding encoding) {
         return encoding != FrameEncoding::Sdr8;
+    }
+
+    bool usesPackedHdr10Transport(const FrameEncoding encoding) {
+        return encoding == FrameEncoding::Hdr10PqPacked;
+    }
+
+    VkFormat transportFormat(const FrameEncoding encoding) {
+        if (encoding == FrameEncoding::Sdr8)
+            return VK_FORMAT_R8G8B8A8_UNORM;
+        if (usesPackedHdr10Transport(encoding))
+            return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
     }
 
     bool usesHdrModel(const FrameEncoding encoding) {
         return encoding == FrameEncoding::ScRgbLinear ||
-            encoding == FrameEncoding::Hdr10Pq;
+            encoding == FrameEncoding::Hdr10Pq ||
+            encoding == FrameEncoding::Hdr10PqPacked;
     }
 
     bool requiresPqConversion(const FrameEncoding encoding) {
-        return encoding == FrameEncoding::Hdr10Pq;
+        return encoding == FrameEncoding::Hdr10Pq ||
+            encoding == FrameEncoding::Hdr10PqPacked;
     }
 
     std::optional<std::pair<vk::Image, vk::Image>> createWorkingSourceImages(
@@ -449,13 +476,16 @@ namespace {
     }
 
     std::optional<ColorConversion> createDestColorConversion(
-            const Ctx& ctx, const FrameEncoding encoding,
+            const Ctx& ctx, const ShaderRegistry& shaders,
+            const FrameEncoding encoding,
             const std::optional<std::vector<vk::Image>>& workingImages,
             const std::vector<vk::Image>& transportImages) {
         if (!requiresPqConversion(encoding))
             return std::nullopt;
         return std::optional<ColorConversion>(std::in_place,
-            ctx, ctx.shaders.get().scrgb_to_hdr10_pq,
+            ctx, usesPackedHdr10Transport(encoding)
+                ? shaders.scrgb_to_hdr10_pq_packed.value()
+                : shaders.scrgb_to_hdr10_pq,
             workingImages.value(), transportImages
         );
     }
@@ -494,7 +524,7 @@ namespace {
                     .width = static_cast<uint32_t>(static_cast<float>(extent.width) / flow),
                     .height = static_cast<uint32_t>(static_cast<float>(extent.height) / flow)
                 },
-                .highPrecision = usesHighPrecisionTransport(encoding),
+                .highPrecision = usesHighPrecisionModel(encoding),
                 .hdr = usesHdrModel(encoding),
                 .flow = flow,
                 .perf = perf,
@@ -510,13 +540,9 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
             std::pair<int, int> sourceFds, const std::vector<int>& destFds, int syncFd,
             VkExtent2D extent, const FrameEncoding encoding, float flow, bool perf) :
         sourceImages(importImages(instance.getVulkan(), sourceFds,
-            extent, usesHighPrecisionTransport(encoding)
-                ? VK_FORMAT_R16G16B16A16_SFLOAT
-                : VK_FORMAT_R8G8B8A8_UNORM)),
+            extent, transportFormat(encoding))),
         destImages(importImages(instance.getVulkan(), destFds,
-            extent, usesHighPrecisionTransport(encoding)
-                ? VK_FORMAT_R16G16B16A16_SFLOAT
-                : VK_FORMAT_R8G8B8A8_UNORM)),
+            extent, transportFormat(encoding))),
         workingSourceImages(createWorkingSourceImages(
             instance.getVulkan(), extent, encoding
         )),
@@ -533,7 +559,8 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
             ctx, encoding, sourceImages, workingSourceImages
         )),
         destColorConversion(createDestColorConversion(
-            ctx, encoding, workingDestImages, destImages
+            ctx, instance.getShaderRegistry(), encoding,
+            workingDestImages, destImages
         )),
         mipmaps(ctx, selectModelSourceImages(sourceImages, workingSourceImages)),
         alpha0{

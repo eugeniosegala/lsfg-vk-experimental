@@ -25,6 +25,8 @@ namespace vk {
         PFN_vkGetPhysicalDeviceProperties2 GetPhysicalDeviceProperties2;
         PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties;
         PFN_vkGetPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2;
+        PFN_vkGetPhysicalDeviceFormatProperties GetPhysicalDeviceFormatProperties;
+        PFN_vkGetPhysicalDeviceImageFormatProperties2 GetPhysicalDeviceImageFormatProperties2;
         PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties;
         PFN_vkCreateDevice CreateDevice;
         PFN_vkGetDeviceProcAddr GetDeviceProcAddr;
@@ -187,6 +189,25 @@ namespace vk {
         /// @return the memory type index
         [[nodiscard]] std::optional<uint32_t> findMemoryTypeIndex(
             std::bitset<32> validTypes, bool hostVisibility) const;
+
+        /// Check whether an optimal-tiled image can be shared through an
+        /// opaque file descriptor with the requested usage and direction.
+        [[nodiscard]] bool supportsExternalImageFormat(
+            VkFormat format,
+            VkImageUsageFlags usage,
+            VkExternalMemoryFeatureFlags requiredExternalFeatures
+        ) const;
+
+        /// Check the optimal-tiled feature bits used by transfer operations
+        /// that are not represented by VkImageUsageFlags alone.
+        [[nodiscard]] bool supportsOptimalTilingFormatFeatures(
+            VkFormat format,
+            VkFormatFeatureFlags requiredFeatures
+        ) const;
+
+        /// Check whether this physical device exposes the extended storage
+        /// image formats required by packed RGB10A2 compute output.
+        [[nodiscard]] bool supportsStorageImageExtendedFormats() const;
 
         /// persist the pipeline cache to file, silently failing on error
         void persistPipelineCache() const noexcept;

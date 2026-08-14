@@ -21,6 +21,7 @@ namespace lsfgvk::backend {
         SdrHighPrecision,
         ScRgbLinear,
         Hdr10Pq,
+        Hdr10PqPacked,
     };
 
     class [[gnu::visibility("default")]] ContextImpl;
@@ -87,6 +88,7 @@ namespace lsfgvk::backend {
         ///
         /// The VkFormat of the exchanged images is inferred from encoding:
         /// - Sdr8: VK_FORMAT_R8G8B8A8_UNORM
+        /// - Hdr10PqPacked: VK_FORMAT_A2B10G10R10_UNORM_PACK32
         /// - all other encodings: VK_FORMAT_R16G16B16A16_SFLOAT
         ///
         /// The application and library must keep track of the frame index. When the next frame
@@ -115,6 +117,10 @@ namespace lsfgvk::backend {
             uint32_t width, uint32_t height,
             FrameEncoding encoding, float flow, bool perf
         );
+
+        /// Return whether the backend device can import and write the packed
+        /// RGB10A2 images used by the low-bandwidth HDR10 transport path.
+        [[nodiscard]] bool supportsPackedHdr10Transport() const;
 
         ///
         /// Schedule a new set of generated frames.

@@ -137,16 +137,26 @@ namespace {
     }
 
     /// check for fp16 support
-    bool checkFP16(const VulkanInstanceFuncs& fi, VkPhysicalDevice physdev) {
+    VkPhysicalDeviceFeatures2 queryFeatures(
+            const VulkanInstanceFuncs& fi, VkPhysicalDevice physdev,
+            VkPhysicalDeviceVulkan12Features* vulkan12 = nullptr) {
         VkPhysicalDeviceVulkan12Features supportedFeaturesVulkan12{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
         };
         VkPhysicalDeviceFeatures2 supportedFeatures{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-            .pNext = &supportedFeaturesVulkan12
+            .pNext = vulkan12 ? vulkan12 : &supportedFeaturesVulkan12
         };
         fi.GetPhysicalDeviceFeatures2(physdev, &supportedFeatures);
-        return supportedFeaturesVulkan12.shaderFloat16 == VK_TRUE;
+        return supportedFeatures;
+    }
+
+    bool checkFP16(const VulkanInstanceFuncs& fi, VkPhysicalDevice physdev) {
+        VkPhysicalDeviceVulkan12Features vulkan12{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
+        };
+        static_cast<void>(queryFeatures(fi, physdev, &vulkan12));
+        return vulkan12.shaderFloat16 == VK_TRUE;
     }
 
     template<typename T>
@@ -169,6 +179,11 @@ namespace {
             .shaderFloat16 = fp16,
             .timelineSemaphore = VK_TRUE
         };
+        const auto supportedFeatures = queryFeatures(fi, physdev);
+        const VkPhysicalDeviceFeatures requestedFeatures{
+            .shaderStorageImageExtendedFormats =
+                supportedFeatures.features.shaderStorageImageExtendedFormats,
+        };
         const VkDeviceQueueCreateInfo requestedQueueInfo{
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
             .queueFamilyIndex = cfi,
@@ -186,7 +201,8 @@ namespace {
             .queueCreateInfoCount = 1,
             .pQueueCreateInfos = &requestedQueueInfo,
             .enabledExtensionCount = static_cast<uint32_t>(requestedExtensions.size()),
-            .ppEnabledExtensionNames = requestedExtensions.data()
+            .ppEnabledExtensionNames = requestedExtensions.data(),
+            .pEnabledFeatures = &requestedFeatures,
         };
         auto res = fi.CreateDevice(physdev, &deviceInfo, VK_NULL_HANDLE, &handle);
         if (res != VK_SUCCESS)
@@ -300,6 +316,12 @@ VulkanInstanceFuncs vk::initVulkanInstanceFuncs(VkInstance i, PFN_vkGetInstanceP
                 "vkGetPhysicalDeviceQueueFamilyProperties"),
         .GetPhysicalDeviceFeatures2 = graphical ?
             nullptr : ipa<PFN_vkGetPhysicalDeviceFeatures2>(mpa, i, "vkGetPhysicalDeviceFeatures2"),
+        .GetPhysicalDeviceFormatProperties =
+            ipa<PFN_vkGetPhysicalDeviceFormatProperties>(mpa, i,
+                "vkGetPhysicalDeviceFormatProperties"),
+        .GetPhysicalDeviceImageFormatProperties2 =
+            ipa<PFN_vkGetPhysicalDeviceImageFormatProperties2>(mpa, i,
+                "vkGetPhysicalDeviceImageFormatProperties2"),
         .GetPhysicalDeviceMemoryProperties = ipa<PFN_vkGetPhysicalDeviceMemoryProperties>(mpa, i,
             "vkGetPhysicalDeviceMemoryProperties"),
         .CreateDevice = ipa<PFN_vkCreateDevice>(mpa, i, "vkCreateDevice"),
@@ -480,6 +502,63 @@ std::optional<uint32_t> Vulkan::findMemoryTypeIndex(
             return i;
 
     return std::nullopt;
+}
+
+bool Vulkan::supportsExternalImageFormat(
+        const VkFormat format,
+        const VkImageUsageFlags usage,
+        const VkExternalMemoryFeatureFlags requiredExternalFeatures) const {
+    const VkPhysicalDeviceExternalImageFormatInfo externalInfo{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR,
+    };
+    const VkPhysicalDeviceImageFormatInfo2 formatInfo{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+        .pNext = &externalInfo,
+        .format = format,
+        .type = VK_IMAGE_TYPE_2D,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = usage,
+    };
+    VkExternalImageFormatProperties externalProperties{
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
+    };
+    VkImageFormatProperties2 properties{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+        .pNext = &externalProperties,
+    };
+    const auto result = this->instance_funcs.GetPhysicalDeviceImageFormatProperties2(
+        this->phys_dev, &formatInfo, &properties
+    );
+    if (result != VK_SUCCESS)
+        return false;
+
+    const auto& memoryProperties =
+        externalProperties.externalMemoryProperties;
+    return (memoryProperties.compatibleHandleTypes &
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR) != 0 &&
+        (memoryProperties.externalMemoryFeatures & requiredExternalFeatures) ==
+            requiredExternalFeatures;
+}
+
+bool Vulkan::supportsOptimalTilingFormatFeatures(
+        const VkFormat format,
+        const VkFormatFeatureFlags requiredFeatures) const {
+    VkFormatProperties properties{};
+    this->instance_funcs.GetPhysicalDeviceFormatProperties(
+        this->phys_dev, format, &properties
+    );
+    return (properties.optimalTilingFeatures & requiredFeatures) ==
+        requiredFeatures;
+}
+
+bool Vulkan::supportsStorageImageExtendedFormats() const {
+    if (!this->instance_funcs.GetPhysicalDeviceFeatures2)
+        return false;
+    const auto features = queryFeatures(
+        this->instance_funcs, this->phys_dev
+    );
+    return features.features.shaderStorageImageExtendedFormats == VK_TRUE;
 }
 
 void Vulkan::persistPipelineCache() const noexcept {

@@ -123,6 +123,10 @@ and refreshed temporal history instead of entering the longer menu/focus recover
 Every presentation-diagnostic record includes a `context=<ID>` field. Use it to separate concurrent or replacement
 swapchains before comparing ramp, recovery, and presentation events; records with different context IDs may describe
 different windows or an old context being destroyed while its replacement starts.
+For HDR10, `HDR10 transport: mode=packed-10-bit` confirms that both Vulkan devices accepted the compact exchange path.
+`nominal_bytes_saved` is the exact reduction across the private transport images for that context; it is not a claimed
+whole-engine VRAM reduction. `mode=rgba16f` with either support field at `0` means the engine retained the validated
+float transport automatically. The model and its temporal working images remain 16-bit float in both cases.
 For a live-compatible in-game configuration change, `runtime-state-applied transition=live` records the requested state
 revision and the active mode. If a change needs different private GPU resources or HDR encoding,
 `runtime-transition-pending action=wait-for-natural-swapchain-recreation` records that it was deliberately not forced;

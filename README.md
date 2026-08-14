@@ -35,7 +35,10 @@ it does not introduce a separate frame-generation model. For the established 1.x
   sRGB, the engine recovers HDR semantics only from an exact packed-10-bit or float format after Gamescope's live
   application feedback confirms that the game is presenting HDR. Unsupported HDR encodings use real-frame
   passthrough instead of synthesized frames with incorrect colours. HDR processing and live HDR/SDR transitions are
-  automatic; there is no engine HDR toggle.
+  automatic; there is no engine HDR toggle. On devices that validate the required Vulkan image-sharing and storage
+  features, HDR10 boundary images are also kept in their native packed 10-bit representation. The model continues to
+  run in linear 16-bit-float HDR, while the smaller boundary images reduce exchange-memory pressure without changing
+  the colour model or Adaptive policy.
 - **Safe live mode transitions:** Fixed and Adaptive reserve one compatible private output set, so live generation,
   Fixed 2x/3x/4x (within the reserved capacity), Adaptive mode, target, ceiling, and Smooth Cadence can change without
   invalidating the game's swapchain. Backend-model and HDR-encoding changes wait for a natural game-owned recreation;

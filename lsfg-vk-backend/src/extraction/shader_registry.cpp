@@ -100,6 +100,11 @@ ShaderRegistry backend::buildShaderRegistry(const vk::Vulkan& vk, bool fp16,
         .scrgb_to_hdr10_pq = vk::Shader(
             vk, embedded::scRgbToHdr10PqSpirv, 1, 1, 0, 1
         ),
+        .scrgb_to_hdr10_pq_packed =
+            vk.supportsStorageImageExtendedFormats()
+                ? std::optional<vk::Shader>(std::in_place,
+                    vk, embedded::scRgbToHdr10PqPackedSpirv, 1, 1, 0, 1)
+                : std::nullopt,
         .quality = {
             .alpha = {
                 SHADER(267, 1, 2, 0, 1),

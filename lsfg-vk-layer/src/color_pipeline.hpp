@@ -4,6 +4,7 @@
 
 #include "lsfg-vk-backend/lsfgvk.hpp"
 
+#include <cstddef>
 #include <string_view>
 
 #include <vulkan/vulkan_core.h>
@@ -17,6 +18,7 @@ namespace lsfgvk::layer {
         bool generationSupported{true};
         bool hdr{false};
         bool gamescopeColorSpaceRecovered{false};
+        bool packedHdr10Transport{false};
         std::string_view name{"sdr-8-bit"};
         std::string_view reason{};
     };
@@ -25,6 +27,18 @@ namespace lsfgvk::layer {
     [[nodiscard]] SwapchainColorPipeline classifySwapchainColor(
         VkFormat format, VkColorSpaceKHR colorSpace,
         bool gamescopeHdrActive = false
+    );
+
+    /// Select the compact HDR10 boundary representation only when the game
+    /// device can export it and the backend device can import/write it.
+    [[nodiscard]] bool enablePackedHdr10Transport(
+        SwapchainColorPipeline& pipeline,
+        bool applicationDeviceSupported,
+        bool backendDeviceSupported
+    );
+
+    [[nodiscard]] size_t transportBytesPerPixel(
+        backend::FrameEncoding encoding
     );
 
 }
