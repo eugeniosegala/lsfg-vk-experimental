@@ -34,9 +34,9 @@ it does not introduce a separate frame-generation model. For the established 1.x
   Gamescope HDR10/PQ input is decoded from BT.2020/PQ into linear scRGB before frame generation and encoded back afterward;
   linear scRGB uses the model directly. When Gamescope's Wine WSI bridge normalizes its driver-facing colour space to
   sRGB, the engine recovers HDR semantics only from an exact packed-10-bit or float format after Gamescope's live
-  application colour-space feedback or HDR metadata confirms the game is presenting HDR. The Decky experimental-HDR
-  launch may additionally bootstrap Gamescope's known property-unset state, but only on an HDR output; the default
-  blocked SDR launch cannot enter that path. Unsupported HDR encodings use real-frame
+  application colour-space feedback or HDR metadata confirms the game is presenting HDR. Gamescope output-HDR
+  capability is logged as an exposure prerequisite, but is never treated as application HDR intent; the default
+  blocked SDR launch cannot enter the HDR path. Unsupported HDR encodings use real-frame
   passthrough instead of synthesized frames with incorrect colours. HDR processing and live HDR/SDR transitions are
   automatic within that restart-time exposure boundary; there is no force-HDR engine toggle. On devices that validate the required Vulkan image-sharing and storage
   features, HDR10 boundary images are also kept in their native packed 10-bit representation. The model continues to

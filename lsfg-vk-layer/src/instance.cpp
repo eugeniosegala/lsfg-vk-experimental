@@ -46,15 +46,6 @@ namespace {
                 throw ls::error("unable to set environment override: " + this->name);
         }
 
-        explicit ScopedEnvironmentOverride(std::string name) :
-                name(std::move(name)) {
-            if (const char* current = std::getenv(this->name.c_str()))
-                this->previousValue = current;
-
-            if (unsetenv(this->name.c_str()) != 0)
-                throw ls::error("unable to unset environment override: " + this->name);
-        }
-
         ~ScopedEnvironmentOverride() {
             if (this->previousValue)
                 static_cast<void>(setenv(
@@ -92,9 +83,7 @@ namespace {
             (sample.outputHdrEnabled
                 ? (*sample.outputHdrEnabled ? "output-hdr" : "output-sdr")
                 : "output-unknown") + '\n' +
-            (sample.appHdrMetadataPresent ? "metadata" : "no-metadata") + '\n' +
-            (sample.experimentalHdrRequested
-                ? "experimental-requested" : "experimental-not-requested");
+            (sample.appHdrMetadataPresent ? "metadata" : "no-metadata");
     }
 
     void logHdrFeedbackDiagnostic(
@@ -129,8 +118,6 @@ namespace {
         std::cerr
                   << "; app_hdr_metadata="
                   << (sample.appHdrMetadataPresent ? 1 : 0)
-                  << "; experimental_hdr_requested="
-                  << (sample.experimentalHdrRequested ? 1 : 0)
                   << "; candidates="
                   << (sample.resolverCandidates.empty()
                         ? "(none)" : sample.resolverCandidates)
@@ -171,10 +158,8 @@ Root::Root() {
     );
     // Gamescope's per-application root properties can still describe the
     // previous held commit while a new process creates its first swapchain, so
-    // those values retain the settling window. The explicit HDR bootstrap is
-    // process-local and output-gated, however, and must initialize HDR before
-    // swapchain construction; otherwise the first context is needlessly born
-    // as passthrough and relies on a later private-resource transition.
+    // those values retain the settling window. Output HDR capability is logged
+    // separately and never promoted to application HDR intent.
     this->gamescopeHdrActive = initialGamescopeHdrActivation(
         initialHdrFeedback
     );
@@ -208,8 +193,6 @@ Root::Root() {
             std::cerr << "unknown";
         std::cerr << "; app_hdr_metadata="
                   << (initialHdrFeedback.appHdrMetadataPresent ? 1 : 0)
-                  << "; experimental_hdr_requested="
-                  << (initialHdrFeedback.experimentalHdrRequested ? 1 : 0)
                   << "; gamescope_pid="
                   << initialHdrFeedback.gamescopePid.value_or(UINT32_MAX)
                   << "; server_id="
@@ -469,17 +452,6 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
             const ScopedEnvironmentOverride disableLegacy(
                 "DISABLE_LSFG", "1"
             );
-            // Experimental HDR uses a complete, explicitly ordered
-            // Gamescope -> LSFG application stack so implicit-manifest
-            // enumeration cannot randomly move LSFG above the Wine WSI
-            // bridge. VK_INSTANCE_LAYERS is inherited by the backend's
-            // private Vulkan instance and explicit layers ignore LSFG's
-            // implicit disable gate, so temporarily remove it here. Without
-            // this guard the private backend can recursively enter this layer.
-            const ScopedEnvironmentOverride clearOrderedApplicationLayers(
-                "VK_INSTANCE_LAYERS"
-            );
-
             std::string dll{};
             if (global.dll.has_value())
                 dll = *global.dll;

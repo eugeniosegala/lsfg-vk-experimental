@@ -435,15 +435,10 @@ struct GamescopeHdrFeedbackReader::Impl {
         sample.appHdrMetadataPresent = this->hasCardinalData(
             this->display, this->root, gamescopeHdrMetadataProperty
         );
-        sample.experimentalHdrRequested = environmentFlagEnabled(
-            std::getenv("LSFGVK_EXPERIMENTAL_HDR")
-        );
-
         if (hdrExposureDisabled) {
             const auto decision = decideGamescopeHdrActivation({
                 .outputHdrEnabled = sample.outputHdrEnabled,
                 .appHdrMetadataPresent = sample.appHdrMetadataPresent,
-                .experimentalHdrRequested = sample.experimentalHdrRequested,
                 .hdrExposureDisabled = true,
                 .gamescopeDetected = sample.gamescopeDetected,
             });
@@ -506,7 +501,6 @@ struct GamescopeHdrFeedbackReader::Impl {
             .appWantsHdr = appWantsHdr,
             .outputHdrEnabled = sample.outputHdrEnabled,
             .appHdrMetadataPresent = sample.appHdrMetadataPresent,
-            .experimentalHdrRequested = sample.experimentalHdrRequested,
             .gamescopeDetected = sample.gamescopeDetected,
         });
         sample.active = decision.active;

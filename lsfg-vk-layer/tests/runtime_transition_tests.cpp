@@ -84,9 +84,9 @@ int main() {
         "server zero from another Gamescope process must be rejected");
 
     // Gamescope starts with app-HDR cached false and can therefore leave its
-    // Boolean property absent. Prefer explicit app evidence, accept metadata
-    // as an equivalent positive signal, and keep the release-compatible
-    // bootstrap behind the existing experimental HDR launch boundary.
+    // Boolean property absent. Prefer explicit app evidence and accept app HDR
+    // metadata as an equivalent positive signal. Output capability is never
+    // application intent.
     const auto confirmedHdr = decideGamescopeHdrActivation({
         .appWantsHdr = true,
         .outputHdrEnabled = true,
@@ -100,11 +100,10 @@ int main() {
         .appWantsHdr = false,
         .outputHdrEnabled = true,
         .appHdrMetadataPresent = true,
-        .experimentalHdrRequested = true,
         .gamescopeDetected = true,
     });
     expect(confirmedSdr.active && !*confirmedSdr.active,
-        "confirmed SDR must override stale metadata and the bootstrap");
+        "confirmed SDR must override stale metadata");
 
     const auto metadataHdr = decideGamescopeHdrActivation({
         .outputHdrEnabled = true,
@@ -122,28 +121,10 @@ int main() {
     expect(!automaticSdr.active,
         "an HDR display alone must not promote an automatic SDR launch");
 
-    const auto optedInHdr = decideGamescopeHdrActivation({
-        .outputHdrEnabled = true,
-        .experimentalHdrRequested = true,
-        .gamescopeDetected = true,
-    });
-    expect(optedInHdr.active && *optedInHdr.active &&
-            optedInHdr.source == "experimental-hdr-output-bootstrap",
-        "an explicit experimental HDR launch should recover property-unset Gamescope");
-
-    const auto noHdrOutput = decideGamescopeHdrActivation({
-        .outputHdrEnabled = false,
-        .experimentalHdrRequested = true,
-        .gamescopeDetected = true,
-    });
-    expect(!noHdrOutput.active,
-        "the compatibility bootstrap must require an active HDR output");
-
     const auto blockedHdr = decideGamescopeHdrActivation({
         .appWantsHdr = true,
         .outputHdrEnabled = true,
         .appHdrMetadataPresent = true,
-        .experimentalHdrRequested = true,
         .hdrExposureDisabled = true,
         .gamescopeDetected = true,
     });
@@ -151,21 +132,24 @@ int main() {
             blockedHdr.source == "hdr-exposure-disabled",
         "the SDR compatibility boundary must disable every HDR evidence path");
 
-    const GamescopeHdrFeedbackSample bootstrapStartup{
+    const GamescopeHdrFeedbackSample ordinaryGamescopeStartup{
         .active = true,
         .outputHdrEnabled = true,
-        .experimentalHdrRequested = true,
         .gamescopeDetected = true,
-        .status = "feedback-property-unset",
-        .activationSource = "experimental-hdr-output-bootstrap",
+        .status = "confirmed",
+        .activationSource = "gamescope-app-colorspace",
     };
-    expect(initialGamescopeHdrActivation(bootstrapStartup) == true,
-        "the explicit output-gated bootstrap must initialize HDR before the first swapchain");
-
-    auto ordinaryGamescopeStartup = bootstrapStartup;
-    ordinaryGamescopeStartup.activationSource = "gamescope-app-colorspace";
     expect(!initialGamescopeHdrActivation(ordinaryGamescopeStartup),
         "ordinary Gamescope app feedback must retain its startup settling guard");
+
+    const GamescopeHdrFeedbackSample outputOnlyStartup{
+        .outputHdrEnabled = true,
+        .gamescopeDetected = true,
+        .status = "feedback-property-unset",
+        .activationSource = "unavailable",
+    };
+    expect(!initialGamescopeHdrActivation(outputOnlyStartup),
+        "an HDR-capable output must not initialize the application HDR pipeline");
 
     const GamescopeHdrFeedbackSample blockedStartup{
         .active = false,
