@@ -200,6 +200,13 @@ Run the built-in frame-generation benchmark with:
 
 The default duration is 10 seconds. Add `-h` to list the available options.
 
+## In-game considerations
+
+Every game, renderer, and display setup behaves differently. For the best experience, try Fixed and Adaptive Frame
+Generation, enable or disable the game's V-Sync, and compare fullscreen, borderless, and windowed modes. Change one
+setting at a time, restart after major display or frame-generation changes, and keep the configuration that feels best
+for that game.
+
 ## Build and publish a release
 
 This repository builds and publishes locally without GitHub Actions. Install the dependencies from
