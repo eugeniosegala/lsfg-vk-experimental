@@ -33,7 +33,7 @@ it does not introduce a separate frame-generation model. For the established 1.x
   of working HDR frame generation across games. Decky sets `LSFGVK_DISABLE_HDR_EXPOSURE=1` as the engine's hard SDR
   boundary and leaves DXVK at its normal SDR default; direct launchers can set the same LSFG variable. The engine
   activates HDR only
-  after live application colour-space feedback or HDR metadata—not display capability alone—and uses real-frame
+  after live application colour-space feedback or HDR metadata, not display capability alone, and uses real-frame
   passthrough for unsupported encodings. Validated HDR10 paths use packed 10-bit exchange images to reduce memory
   pressure while the model continues to work in linear 16-bit float.
 - **Safe live mode transitions:** Fixed and Adaptive reserve one compatible private output set, so live generation,
@@ -200,7 +200,7 @@ The default duration is 10 seconds. Add `-h` to list the available options.
 > **Try the game's V-Sync setting first.** It can give the layer a steadier real-frame cadence. On lsfg-vk's normal
 > SDR path, the layer then uses an ordered FIFO presentation sequence for real and generated images, reducing bursts,
 > skipped output, and uneven frame times. V-Sync does not create extra GPU headroom and can add latency or interact
-> poorly with a game's limiter, VRR, or compositor—test it both enabled and disabled before making deeper adjustments.
+> poorly with a game's limiter, VRR, or compositor. Test it both enabled and disabled before making deeper adjustments.
 
 Every game, renderer, and display setup behaves differently. Also compare Fixed and Adaptive Frame Generation, then
 fullscreen, borderless, and windowed modes. Change one setting at a time, restart after major display or
