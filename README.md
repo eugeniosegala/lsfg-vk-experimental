@@ -29,22 +29,12 @@ it does not introduce a separate frame-generation model. For the established 1.x
   useful throughput, and waits for sustained evidence before trying a more expensive multiplier.
 - **Optional Smooth Cadence:** Suitable fractional targets can prefer a validated constant interpolation cadence.
   This can look smoother but may lower real-frame cadence and responsiveness, so it is disabled by default.
-- **HDR pipeline foundation (disabled by default in Decky):** This release includes the HDR10/PQ and linear-scRGB
-  architecture for continued testing; it is not a claim of working HDR frame generation across games. The companion
-  Decky plugin keeps `LSFGVK_DISABLE_HDR_EXPOSURE=1` and `DXVK_HDR=0` enabled by default so its established SDR path
-  remains isolated. Swapchain format and colour space are classified together. Standard
-  Gamescope HDR10/PQ input is decoded from BT.2020/PQ into linear scRGB before frame generation and encoded back afterward;
-  linear scRGB uses the model directly. When Gamescope's Wine WSI bridge normalizes its driver-facing colour space to
-  sRGB, the engine recovers HDR semantics only from an exact packed-10-bit or float format after Gamescope's live
-  application colour-space feedback or HDR metadata confirms the game is presenting HDR. Gamescope output-HDR
-  capability is logged as an exposure prerequisite, but is never treated as application HDR intent; the default
-  blocked SDR launch cannot enter the HDR path. Direct launchers can use `LSFGVK_DISABLE_HDR_EXPOSURE=1` for the same
-  hard boundary. Unsupported HDR encodings use real-frame
-  passthrough instead of synthesized frames with incorrect colours. HDR processing and live HDR/SDR transitions are
-  automatic within that restart-time exposure boundary; there is no force-HDR engine toggle. On devices that validate the required Vulkan image-sharing and storage
-  features, HDR10 boundary images are also kept in their native packed 10-bit representation. The model continues to
-  run in linear 16-bit-float HDR, while the smaller boundary images reduce exchange-memory pressure without changing
-  the colour model or Adaptive policy.
+- **HDR pipeline foundation (disabled by default in Decky):** Adds HDR10/PQ and linear-scRGB groundwork, not a promise
+  of working HDR frame generation across games. Decky defaults to `LSFGVK_DISABLE_HDR_EXPOSURE=1` and `DXVK_HDR=0` to
+  retain its established isolated SDR path; direct launchers can use the same boundary. The engine activates HDR only
+  after live application colour-space feedback or HDR metadata—not display capability alone—and uses real-frame
+  passthrough for unsupported encodings. Validated HDR10 paths use packed 10-bit exchange images to reduce memory
+  pressure while the model continues to work in linear 16-bit float.
 - **Safe live mode transitions:** Fixed and Adaptive reserve one compatible private output set, so live generation,
   Fixed 2x/3x/4x (within the reserved capacity), Adaptive mode, target, ceiling, and Smooth Cadence can change without
   invalidating the game's swapchain. Backend-model and HDR-encoding changes wait for a natural game-owned recreation;
