@@ -24,6 +24,9 @@ namespace {
 int main() {
     const auto start = StableBooleanFeedback::TimePoint{};
 
+    // A live SDR<->HDR resource transition requires 750 ms of continuous
+    // feedback. Flapping or resolver outages must not rebuild the pipeline or
+    // inherit time accumulated by an earlier candidate.
     StableBooleanFeedback feedback(750ms);
     feedback.seed(false);
     expect(feedback.value() == false, "The initial Gamescope feedback should be seeded");
@@ -41,6 +44,24 @@ int main() {
     expect(!feedback.observe(true, start + 2s),
         "Repeated confirmed feedback must not produce another transition");
 
+    feedback.seed(false);
+    expect(!feedback.observe(true, start + 3s),
+        "a new HDR candidate should remain provisional");
+    expect(!feedback.observe(std::nullopt, start + 4s),
+        "unknown feedback must not alter the confirmed SDR state");
+    expect(!feedback.observe(true, start + 5s),
+        "feedback after an outage must start a fresh settling window");
+    expect(!feedback.observe(true, start + 5749ms),
+        "an interrupted candidate settled before a complete fresh window");
+    const auto hdrEnabledAfterOutage = feedback.observe(
+        true, start + 5750ms
+    );
+    expect(hdrEnabledAfterOutage && *hdrEnabledAfterOutage,
+        "stable feedback did not recover after an interrupted candidate");
+
+    // The application normally runs on a nested Xwayland server, while the HDR
+    // feedback atom belongs to server zero of the same Gamescope process. Never
+    // borrow another compositor's root display merely because it is visible.
     const GamescopeXwaylandDisplay gameDisplay{
         .display = ":1", .gamescopePid = 42, .serverId = 1,
     };
@@ -53,6 +74,14 @@ int main() {
     expect(!selectGamescopeRootDisplay(
             {.display = ":8"}, displays),
         "an unrelated X11 display must not be guessed as Gamescope root");
+    expect(selectGamescopeRootDisplay(
+            {.display = ":7", .gamescopePid = 42, .serverId = 0},
+            displays) == ":7",
+        "a game already on server zero must keep its current display");
+    expect(!selectGamescopeRootDisplay(
+            {.display = ":1", .gamescopePid = 43, .serverId = 1},
+            displays),
+        "server zero from another Gamescope process must be rejected");
 
     std::cout << "runtime transition tests passed\n";
     return 0;

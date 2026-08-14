@@ -7,6 +7,10 @@
 
 namespace lsfgvk::layer {
 
+    /// Debounce asynchronous compositor feedback before rebuilding private
+    /// colour resources. The last confirmed SDR/HDR state remains usable while
+    /// a candidate settles; an unknown sample breaks candidate continuity so a
+    /// resolver outage cannot turn one stale sample into a live transition.
     class StableBooleanFeedback {
     public:
         using Clock = std::chrono::steady_clock;
@@ -25,8 +29,14 @@ namespace lsfgvk::layer {
 
         [[nodiscard]] std::optional<bool> observe(
                 const std::optional<bool> value, const TimePoint now) {
-            if (!value)
+            if (!value) {
+                // An unavailable resolver/property sample breaks continuity.
+                // Keep the last confirmed state, but require a fresh full
+                // settling interval before accepting a later candidate.
+                this->candidate.reset();
+                this->candidateSince.reset();
                 return std::nullopt;
+            }
 
             if (this->confirmed && *this->confirmed == *value) {
                 this->candidate.reset();

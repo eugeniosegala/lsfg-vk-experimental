@@ -83,6 +83,13 @@ if(BUILD_TESTING)
         COMMAND lsfg-vk-adaptive-matrix)
 
     if(LSFGVK_BUILD_VK_LAYER)
+        add_executable(lsfg-vk-pnext-chain-tests
+            "tests/pnext_chain_tests.cpp")
+        target_include_directories(lsfg-vk-pnext-chain-tests
+            PRIVATE "src")
+        add_test(NAME pnext-chain
+            COMMAND lsfg-vk-pnext-chain-tests)
+
         add_executable(lsfg-vk-color-tests
             "tests/color_pipeline_tests.cpp")
         target_link_libraries(lsfg-vk-color-tests

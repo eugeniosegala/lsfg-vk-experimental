@@ -4,7 +4,43 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version="$(tr -d '[:space:]' < "$repo_root/VERSION")"
 default_output="$repo_root/out/lsfg-vk-experimental-linux.tar.xz"
-output_path="${1:-$default_output}"
+output_path=""
+build_32_bit=true
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/package-local.sh [--64-bit-only] [output-path]
+
+Build and verify a local Linux engine archive. --64-bit-only omits the 32-bit
+layer and manifest for faster native 64-bit Deck/Steam Machine test builds.
+EOF
+}
+
+while (($#)); do
+    case "$1" in
+        --64-bit-only)
+            build_32_bit=false
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --*)
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            if [[ -n "$output_path" ]]; then
+                echo "Only one output path may be specified" >&2
+                exit 2
+            fi
+            output_path="$1"
+            ;;
+    esac
+    shift
+done
+output_path="${output_path:-$default_output}"
 
 if [[ "$output_path" != /* ]]; then
     output_path="$PWD/$output_path"
@@ -32,7 +68,12 @@ if [[ "$(uname -s)" != "Linux" ]]; then
     esac
 
     echo "Using local linux/amd64 Docker packaging environment..."
+    docker_64_only=0
+    if [[ "$build_32_bit" == false ]]; then
+        docker_64_only=1
+    fi
     exec docker run --rm --platform linux/amd64 \
+        -e LSFGVK_PACKAGE_64_ONLY="$docker_64_only" \
         -v "$repo_root:/workspace" \
         -w /workspace \
         ubuntu:22.04 \
@@ -58,7 +99,11 @@ if [[ "$(uname -s)" != "Linux" ]]; then
                 https://github.com/KhronosGroup/Vulkan-Headers /tmp/vkh
             rm -rf /usr/include/vulkan /usr/include/vk_video
             cp -a /tmp/vkh/include/vulkan /tmp/vkh/include/vk_video /usr/include/
-            scripts/package-local.sh "/workspace/'"$output_relative"'"
+            package_args=()
+            if [[ "${LSFGVK_PACKAGE_64_ONLY:-0}" == "1" ]]; then
+                package_args+=(--64-bit-only)
+            fi
+            scripts/package-local.sh "${package_args[@]}" "/workspace/'"$output_relative"'"
         '
 fi
 
@@ -95,40 +140,49 @@ cmake --build "$build64_dir" --target \
     lsfg-vk-config-tests lsfg-vk-profile-update-tests \
     lsfg-vk-runtime-transition-tests \
     lsfg-vk-presentation-policy-tests \
-    lsfg-vk-adaptive-tests lsfg-vk-adaptive-matrix lsfg-vk-color-tests \
+    lsfg-vk-adaptive-tests lsfg-vk-adaptive-matrix \
+    lsfg-vk-pnext-chain-tests lsfg-vk-color-tests \
     lsfg-vk-hdr-color-math-tests
 ctest --test-dir "$build64_dir" --output-on-failure
 cmake --build "$build64_dir"
 cmake --install "$build64_dir"
 
-# A Vulkan layer is loaded into the application's process. Build a second copy
-# for genuine 32-bit games; the loader selects it through library_arch without
-# requiring the launcher to inspect the game executable.
-cmake -S "$repo_root" -B "$build32_dir" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$install_dir" \
-    -DCMAKE_CXX_COMPILER=clang++ \
-    -DCMAKE_CXX_FLAGS=-m32 \
-    -DCMAKE_SHARED_LINKER_FLAGS=-m32 \
-    -DCMAKE_INSTALL_LIBDIR=lib32 \
-    -DBUILD_TESTING=OFF \
-    -DLSFGVK_BUILD_VK_LAYER=ON \
-    -DLSFGVK_BUILD_UI=OFF \
-    -DLSFGVK_BUILD_CLI=OFF \
-    -DLSFGVK_INSTALL_XDG_FILES=OFF \
-    -DLSFGVK_LAYER_MANIFEST_SUFFIX=.x86 \
-    -DLSFGVK_LAYER_LIBRARY_PATH="../../../lib32/liblsfg-vk-layer.so"
+if [[ "$build_32_bit" == true ]]; then
+    # A Vulkan layer is loaded into the application's process. Release archives
+    # retain the second copy for genuine 32-bit games; local 64-bit-only builds
+    # skip it to shorten the edit/test cycle.
+    cmake -S "$repo_root" -B "$build32_dir" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$install_dir" \
+        -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_CXX_FLAGS=-m32 \
+        -DCMAKE_SHARED_LINKER_FLAGS=-m32 \
+        -DCMAKE_INSTALL_LIBDIR=lib32 \
+        -DBUILD_TESTING=OFF \
+        -DLSFGVK_BUILD_VK_LAYER=ON \
+        -DLSFGVK_BUILD_UI=OFF \
+        -DLSFGVK_BUILD_CLI=OFF \
+        -DLSFGVK_INSTALL_XDG_FILES=OFF \
+        -DLSFGVK_LAYER_MANIFEST_SUFFIX=.x86 \
+        -DLSFGVK_LAYER_LIBRARY_PATH="../../../lib32/liblsfg-vk-layer.so"
 
-cmake --build "$build32_dir" --target lsfg-vk-layer
-cmake --install "$build32_dir"
+    cmake --build "$build32_dir" --target lsfg-vk-layer
+    cmake --install "$build32_dir"
+fi
 
-for required_path in \
+required_paths=(
     "bin/lsfg-vk-cli" \
     "bin/lsfg-vk-ui" \
     "lib/liblsfg-vk-layer.so" \
-    "lib32/liblsfg-vk-layer.so" \
-    "share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.json" \
-    "share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.x86.json"; do
+    "share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.json"
+)
+if [[ "$build_32_bit" == true ]]; then
+    required_paths+=(
+        "lib32/liblsfg-vk-layer.so"
+        "share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.x86.json"
+    )
+fi
+for required_path in "${required_paths[@]}"; do
     if [[ ! -e "$install_dir/$required_path" ]]; then
         echo "Packaging failed: missing $required_path" >&2
         exit 1
@@ -147,10 +201,11 @@ verify_elf_class() {
 }
 
 verify_elf_class "$install_dir/lib/liblsfg-vk-layer.so" 2
-verify_elf_class "$install_dir/lib32/liblsfg-vk-layer.so" 1
+if [[ "$build_32_bit" == true ]]; then
+    verify_elf_class "$install_dir/lib32/liblsfg-vk-layer.so" 1
+fi
 
 manifest64="$install_dir/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.json"
-manifest32="$install_dir/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.x86.json"
 if ! grep -Fq '"library_arch": "64"' "$manifest64" ||
         ! grep -Fq '../../../lib/liblsfg-vk-layer.so' "$manifest64" ||
         ! grep -Fq '"name": "VK_LAYER_LSFGVK_experimental_frame_generation"' "$manifest64" ||
@@ -159,18 +214,23 @@ if ! grep -Fq '"library_arch": "64"' "$manifest64" ||
     echo "Packaging failed: 64-bit Vulkan manifest is incorrect" >&2
     exit 1
 fi
-if ! grep -Fq '"library_arch": "32"' "$manifest32" ||
-        ! grep -Fq '../../../lib32/liblsfg-vk-layer.so' "$manifest32" ||
-        ! grep -Fq '"name": "VK_LAYER_LSFGVK_experimental_frame_generation"' "$manifest32" ||
-        ! grep -Fq '"ENABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest32" ||
-        ! grep -Fq '"DISABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest32"; then
-    echo "Packaging failed: 32-bit Vulkan manifest is incorrect" >&2
-    exit 1
+if [[ "$build_32_bit" == true ]]; then
+    manifest32="$install_dir/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_experimental_frame_generation.x86.json"
+    if ! grep -Fq '"library_arch": "32"' "$manifest32" ||
+            ! grep -Fq '../../../lib32/liblsfg-vk-layer.so' "$manifest32" ||
+            ! grep -Fq '"name": "VK_LAYER_LSFGVK_experimental_frame_generation"' "$manifest32" ||
+            ! grep -Fq '"ENABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest32" ||
+            ! grep -Fq '"DISABLE_LSFGVK_EXPERIMENTAL": "1"' "$manifest32"; then
+        echo "Packaging failed: 32-bit Vulkan manifest is incorrect" >&2
+        exit 1
+    fi
 fi
 
-for layer_binary in \
-        "$install_dir/lib/liblsfg-vk-layer.so" \
-        "$install_dir/lib32/liblsfg-vk-layer.so"; do
+layer_binaries=("$install_dir/lib/liblsfg-vk-layer.so")
+if [[ "$build_32_bit" == true ]]; then
+    layer_binaries+=("$install_dir/lib32/liblsfg-vk-layer.so")
+fi
+for layer_binary in "${layer_binaries[@]}"; do
     if ! strings "$layer_binary" |
             grep -F "lsfg-vk: experimental layer active; identity=VK_LAYER_LSFGVK_experimental_frame_generation; build=$version" >/dev/null; then
         echo "Packaging failed: layer build identity diagnostic is missing from $layer_binary" >&2
@@ -182,3 +242,4 @@ tar -C "$install_dir" -cJf "$output_path" .
 
 echo "Created and verified: $output_path"
 echo "Version: $version"
+echo "Architectures: $([[ "$build_32_bit" == true ]] && printf '64,32' || printf '64')"

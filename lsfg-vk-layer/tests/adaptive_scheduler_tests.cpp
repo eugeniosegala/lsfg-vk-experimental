@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "adaptive_scheduler.hpp"
+#include "presentation_policy.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -159,6 +160,26 @@ namespace {
             });
         }
 
+        void cadenceRefresh(std::string_view reason, size_t retainedLimit,
+                size_t historyFrames) override {
+            this->events.push_back({
+                .operation = "cadence-refresh",
+                .reason = std::string(reason),
+                .previousLimit = retainedLimit,
+                .testedLimit = historyFrames,
+            });
+        }
+
+        void loadShed(size_t previousLimit, size_t resumedLimit,
+                double, double, std::string_view reason) override {
+            this->events.push_back({
+                .operation = "load-shed",
+                .reason = std::string(reason),
+                .previousLimit = previousLimit,
+                .testedLimit = resumedLimit,
+            });
+        }
+
         void stableCadence(const std::string_view operation, size_t, double,
                 double, const std::string_view reason) override {
             this->events.push_back({
@@ -229,13 +250,16 @@ namespace {
         TimePoint now{};
 
         Harness(const uint32_t targetFps, const size_t maximumMultiplier,
-                const bool stableCadence = false) :
+                const bool stableCadence = false,
+                const AdaptiveRecoveryPolicy recoveryPolicy =
+                    AdaptiveRecoveryPolicy::ConservativeHdr) :
             scheduler(
                 AdaptiveSchedulerConfig{
                     .targetFps = targetFps,
                     .maximumMultiplier = maximumMultiplier,
                     .generatedFrameCapacity = 3,
                     .stableCadence = stableCadence,
+                    .recoveryPolicy = recoveryPolicy,
                 },
                 &this->diagnostics
             ) {}
@@ -303,6 +327,43 @@ namespace {
             "scheduler left startup stabilization too early");
     }
 
+    void testBusyWarmupNotificationIsIdempotent() {
+        Harness harness(120, 3);
+        harness.scheduler.consumeHistoryWarmupFrame(harness.now + 16ms);
+        require(harness.scheduler.historyWarmupRemaining() == 2,
+            "precondition failed: initial warm-up did not advance");
+        harness.scheduler.ensureHistoryWarmup(3, true);
+        require(harness.scheduler.historyWarmupRemaining() == 2,
+            "a repeated busy notification restarted active warm-up");
+        harness.scheduler.consumeHistoryWarmupFrame(harness.now + 32ms);
+        require(harness.scheduler.historyWarmupRemaining() == 1,
+            "warm-up did not continue after an intermittent busy frame");
+    }
+
+    void testTransientBusyFrameDoesNotRearmCompletedWarmup() {
+        Harness harness(120, 3);
+        PipelineBusyRecovery pipelineBusy;
+
+        for (size_t frame = 0;
+                frame < AdaptiveScheduler::historyWarmupFrameCount(); ++frame) {
+            harness.now += 16ms;
+            harness.scheduler.consumeHistoryWarmupFrame(harness.now);
+
+            const auto busy = pipelineBusy.reportBusy(harness.now + 8ms);
+            if (busy.requestHistoryWarmup) {
+                harness.scheduler.ensureHistoryWarmup(
+                    AdaptiveScheduler::historyWarmupFrameCount(), true
+                );
+            }
+            static_cast<void>(pipelineBusy.reportReady(harness.now + 16ms));
+        }
+
+        require(!harness.scheduler.historyWarmupActive(),
+            "normal GPU overlap rearmed a completed Adaptive warm-up");
+        require(harness.scheduler.historyWarmupRemaining() == 0,
+            "Adaptive warm-up did not reach a generation-eligible state");
+    }
+
     void testInvalidConfigurationIsRejectedAtBoundary() {
         bool invalidTargetRejected = false;
         try {
@@ -363,7 +424,7 @@ namespace {
             "steady 2x policy remained in a transient probe");
     }
 
-    void testLateGeneratedFrameRejectsRamp() {
+    void testIsolatedGeneratedFrameMissDoesNotRejectRamp() {
         Harness harness(120, 2);
         harness.start();
         bool reportedMiss = false;
@@ -384,10 +445,35 @@ namespace {
                 break;
         }
         const auto* result = harness.diagnostics.last("ramp-result");
-        require(reportedMiss && result && !result->accepted,
-            "a missed generated-frame deadline did not reject the ramp");
+        require(reportedMiss && result && result->accepted,
+            "one isolated compositor admission miss rejected a healthy ramp");
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 1,
+            "healthy delivery with one isolated miss was not validated");
+    }
+
+    void testPersistentGeneratedFrameMissesRejectRamp() {
+        Harness harness(120, 2);
+        harness.start();
+        bool reportedPressure = false;
+        for (size_t frame = 0; frame < 600; ++frame) {
+            const auto plan = harness.frameAtFps(60.0);
+            if (harness.scheduler.snapshot().rampEvaluationActive &&
+                    !plan.empty()) {
+                harness.scheduler.reportGeneratedFrameDelivery(plan.size(), 0);
+                reportedPressure = true;
+            } else {
+                harness.scheduler.reportGeneratedFrameDelivery(
+                    plan.size(), plan.size()
+                );
+            }
+            if (reportedPressure && harness.diagnostics.contains("ramp-result"))
+                break;
+        }
+        const auto* result = harness.diagnostics.last("ramp-result");
+        require(reportedPressure && result && !result->accepted,
+            "persistent compositor admission loss did not reject the ramp");
         require(harness.scheduler.snapshot().validatedGenerationLimit == 0,
-            "late delivery was retained as a validated multiplier");
+            "persistent delivery loss was retained as a validated multiplier");
     }
 
     void testFourXPlanUsesEvenInterpolationTimestamps() {
@@ -453,7 +539,10 @@ namespace {
             "short 2x hitch recovery was not observable");
     }
 
-    void testLongHitchUsesConservativeDiscontinuityRecovery() {
+    // On the Gamescope HDR transport a long gap is ambiguous: it can be a
+    // menu/focus transition, a colour-pipeline transition, or compositor
+    // admission pressure. Do not resume generated work until cadence is proven.
+    void testHdrLongHitchUsesConservativeDiscontinuityRecovery() {
         Harness harness(90, 2);
         harness.start();
         harness.runAtFps(45.0, 7s);
@@ -530,6 +619,61 @@ namespace {
             "ordinary gameplay cadence drop was mistaken for a menu discontinuity");
         require(snapshot.generationLimit == 0,
             "cadence rebase retained load before measuring the new scene");
+    }
+
+    void testSdrLongHitchRefreshesHistoryWithoutDroppingValidatedLevel() {
+        // Ordered FIFO delivery makes an SDR hitch a temporal-history problem,
+        // not evidence that the previously validated multiplier is unsafe.
+        Harness harness(90, 2, false, AdaptiveRecoveryPolicy::OrderedSdr);
+        harness.start();
+        harness.runAtFps(45.0, 7s);
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 1,
+            "precondition failed: SDR 2x was not validated");
+
+        require(harness.frame(400ms).empty(),
+            "SDR cadence refresh generated from stale history");
+        auto snapshot = harness.scheduler.snapshot();
+        require(!snapshot.discontinuityRecoveryActive,
+            "ordinary SDR hitch entered HDR-style discontinuity recovery");
+        require(snapshot.validatedGenerationLimit == 1,
+            "ordinary SDR hitch discarded the validated 2x level");
+        require(snapshot.historyWarmupRemaining == 2,
+            "ordinary SDR hitch did not request the short history refresh");
+        const auto* refresh = harness.diagnostics.last("cadence-refresh");
+        require(refresh && refresh->reason == "cadence-stall" &&
+                refresh->previousLimit == 1 && refresh->testedLimit == 2,
+            "SDR cadence refresh was not reported accurately");
+
+        harness.now += 22ms;
+        harness.scheduler.consumeHistoryWarmupFrame(harness.now);
+        harness.now += 22ms;
+        harness.scheduler.consumeHistoryWarmupFrame(harness.now);
+        const auto firstResumedPlan = harness.frameAtFps(45.0);
+        const auto secondResumedPlan = harness.frameAtFps(45.0);
+        require(firstResumedPlan.size() == 1 || secondResumedPlan.size() == 1,
+            "SDR did not resume its validated 2x level after two history frames");
+    }
+
+    void testSdrCadenceDropRefreshesHistoryWithoutFullStabilization() {
+        Harness harness(120, 3, false, AdaptiveRecoveryPolicy::OrderedSdr);
+        harness.start();
+        harness.runAtFps(60.0, 7s);
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 1,
+            "precondition failed: SDR 2x was not validated");
+
+        harness.frameAtFps(30.0);
+        harness.frameAtFps(30.0);
+        harness.frameAtFps(30.0);
+        const auto snapshot = harness.scheduler.snapshot();
+        require(snapshot.phase == AdaptiveSchedulerPhase::HistoryWarmup,
+            "SDR cadence drop did not use a short history refresh");
+        require(snapshot.validatedGenerationLimit == 1,
+            "SDR cadence drop discarded the validated multiplier");
+        require(!snapshot.discontinuityRecoveryActive,
+            "SDR cadence drop entered discontinuity recovery");
+        const auto* refresh = harness.diagnostics.last("cadence-refresh");
+        require(refresh && refresh->reason == "cadence-drop",
+            "SDR cadence-drop refresh was not observable");
     }
 
     void testImpossibleFastBurstDoesNotCorruptCadence() {
@@ -675,35 +819,35 @@ namespace {
             "Smooth Cadence acceptance was not observable");
     }
 
-    void testLateDeliveryRejectsSmoothCadenceProbe() {
+    void testPersistentDeliveryLossRejectsSmoothCadenceProbe() {
         Harness harness(90, 2, true);
         harness.start();
-        bool reportedMiss = false;
+        bool reportedPressure = false;
         for (size_t frame = 0; frame < 1000; ++frame) {
             const auto plan = harness.frameAtFps(47.0);
             const bool probeStarted = harness.diagnostics.contains(
                 "adaptive-stable-cadence-probe"
             );
-            if (probeStarted && !reportedMiss && !plan.empty()) {
+            if (probeStarted && !plan.empty()) {
                 harness.scheduler.reportGeneratedFrameDelivery(
                     plan.size(), 0
                 );
-                reportedMiss = true;
+                reportedPressure = true;
             } else {
                 harness.scheduler.reportGeneratedFrameDelivery(
                     plan.size(), plan.size()
                 );
             }
-            if (reportedMiss && harness.diagnostics.contains(
+            if (reportedPressure && harness.diagnostics.contains(
                     "adaptive-stable-cadence-rejected"))
                 break;
         }
-        require(reportedMiss && harness.diagnostics.contains(
+        require(reportedPressure && harness.diagnostics.contains(
                 "adaptive-stable-cadence-rejected"),
-            "a missed display deadline did not reject Smooth Cadence");
+            "persistent display admission loss did not reject Smooth Cadence");
         require(harness.scheduler.snapshot().phase !=
                 AdaptiveSchedulerPhase::StableCadence,
-            "Smooth Cadence retained a delivery-late multiplier");
+            "Smooth Cadence retained a persistently delivery-late multiplier");
     }
 
     void testSmoothCadenceReturnsToTargetAfterBaseRecovery() {
@@ -761,7 +905,9 @@ namespace {
             "oscillating load repeatedly toggled Smooth Cadence workload");
     }
 
-    void testStrictLoadCollapseRestoresCheaperProvenLevel() {
+    // The HDR bridge measures real-only cadence before deciding whether a
+    // collapse was model load or compositor/colour-pipeline pressure.
+    void testHdrStrictLoadCollapseMeasuresBeforeFallback() {
         Harness harness(180, 3);
         harness.start();
         harness.runAtFps(60.0, 10s);
@@ -787,6 +933,58 @@ namespace {
             "real-only throughput recovery did not select the cheaper proven level");
         require(harness.scheduler.snapshot().validatedGenerationLimit == 1,
             "strict-load rescue did not restore the validated lower load");
+    }
+
+    void testSdrStrictLoadCollapseKeepsGeneratedFallbackActive() {
+        // SDR's ordered transport can shed directly to the lower proven load;
+        // a real-only second would be the visible 120-to-60 FPS regression.
+        Harness harness(180, 3, false, AdaptiveRecoveryPolicy::OrderedSdr);
+        harness.start();
+        harness.runAtFps(60.0, 10s);
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 2,
+            "precondition failed: SDR 3x was not validated");
+
+        AdaptiveFramePlan plan;
+        for (size_t frame = 0;
+                frame < 160 && !harness.diagnostics.contains("load-shed");
+                ++frame) {
+            plan = harness.frameAtFps(40.0);
+        }
+        const auto* loadShed = harness.diagnostics.last("load-shed");
+        require(loadShed && loadShed->reason == "sdr-direct-fallback" &&
+                loadShed->previousLimit == 2 && loadShed->testedLimit == 1,
+            "SDR collapse did not select its cheaper proven multiplier");
+        require(harness.scheduler.snapshot().phase !=
+                AdaptiveSchedulerPhase::RescueMeasurement,
+            "SDR collapse entered a disruptive real-only measurement");
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 1,
+            "SDR collapse did not retain the proven generated fallback");
+        require(plan.size() == 1,
+            "SDR load shed dropped the transition frame to native-only");
+    }
+
+    void testSdrTwoXCollapseRetainsMinimumGeneratedPolicy() {
+        Harness harness(180, 2, false, AdaptiveRecoveryPolicy::OrderedSdr);
+        harness.start();
+        harness.runAtFps(60.0, 10s);
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 1,
+            "precondition failed: SDR 2x was not validated");
+
+        AdaptiveFramePlan plan;
+        for (size_t frame = 0;
+                frame < 160 && !harness.diagnostics.contains("load-shed");
+                ++frame) {
+            plan = harness.frameAtFps(30.0);
+        }
+        const auto* loadShed = harness.diagnostics.last("load-shed");
+        require(loadShed && loadShed->reason == "sdr-retain-2x" &&
+                loadShed->previousLimit == 1 && loadShed->testedLimit == 1,
+            "SDR 2x collapse did not retain its minimum generated policy");
+        require(harness.scheduler.snapshot().phase !=
+                AdaptiveSchedulerPhase::RescueMeasurement,
+            "SDR 2x collapse entered a disruptive real-only measurement");
+        require(plan.size() == 1,
+            "SDR 2x collapse dropped the transition frame to native-only");
     }
 
     void testSmoothCadenceCollapseUsesRealOnlyMeasurement() {
@@ -925,27 +1123,34 @@ namespace {
 int main() {
     const std::vector<TestCase> tests{
         {"startup warm-up is explicit", testStartupWarmupIsExplicit},
+        {"busy warm-up notification is idempotent", testBusyWarmupNotificationIsIdempotent},
+        {"transient busy frame does not rearm warm-up", testTransientBusyFrameDoesNotRearmCompletedWarmup},
         {"invalid configuration is rejected", testInvalidConfigurationIsRejectedAtBoundary},
         {"60 to 120 settles at 2x", testSteadySixtyRampsToTwoXFor120Target},
-        {"late delivery rejects ramp", testLateGeneratedFrameRejectsRamp},
+        {"isolated delivery miss keeps ramp", testIsolatedGeneratedFrameMissDoesNotRejectRamp},
+        {"persistent delivery loss rejects ramp", testPersistentGeneratedFrameMissesRejectRamp},
         {"4x timestamps remain evenly spaced", testFourXPlanUsesEvenInterpolationTimestamps},
         {"above-target cadence remains real-only", testSchedulerCannotReduceAboveTargetCadence},
         {"acquire backoff freezes policy", testAcquireBackoffDoesNotAdvancePolicy},
         {"validated 2x survives short hitch", testValidatedTwoXSurvivesShortGameplayHitch},
-        {"long hitch uses discontinuity recovery", testLongHitchUsesConservativeDiscontinuityRecovery},
+        {"HDR long hitch uses conservative recovery", testHdrLongHitchUsesConservativeDiscontinuityRecovery},
         {"healthy cadence restores validated level", testRecoveredCadenceRestoresValidatedLevel},
         {"discontinuity timeout restarts from zero", testDiscontinuityRecoveryTimesOutToFreshRamp},
         {"gameplay cadence drop rebases", testSustainedCadenceDropRebasesWithoutMenuRecovery},
+        {"SDR long hitch keeps validated level", testSdrLongHitchRefreshesHistoryWithoutDroppingValidatedLevel},
+        {"SDR cadence drop uses short refresh", testSdrCadenceDropRefreshesHistoryWithoutFullStabilization},
         {"fast-present burst preserves cadence", testImpossibleFastBurstDoesNotCorruptCadence},
         {"harmful first probe enters rearm", testRejectedFirstProbeEntersBoundedRearm},
         {"interrupted probe rearms promptly", testInterruptedProbeRearmsWithoutFailurePenalty},
         {"bridge probe handles misleading first step", testBridgeProbeCanRecoverMisleadingFirstStep},
         {"rejected higher level backs off", testRejectedHigherLevelRetainsProvenLoadAndBacksOff},
         {"Smooth Cadence settles near integer demand", testSmoothCadenceSettlesNearIntegerDemand},
-        {"late delivery rejects Smooth Cadence", testLateDeliveryRejectsSmoothCadenceProbe},
+        {"persistent loss rejects Smooth Cadence", testPersistentDeliveryLossRejectsSmoothCadenceProbe},
         {"Smooth Cadence exits after native recovery", testSmoothCadenceReturnsToTargetAfterBaseRecovery},
         {"Smooth Cadence resists oscillating-load chatter", testSmoothCadenceDoesNotChatterOnOscillatingLoad},
-        {"strict load collapse restores lower level", testStrictLoadCollapseRestoresCheaperProvenLevel},
+        {"HDR strict load collapse measures real-only", testHdrStrictLoadCollapseMeasuresBeforeFallback},
+        {"SDR load shed keeps generated fallback", testSdrStrictLoadCollapseKeepsGeneratedFallbackActive},
+        {"SDR 2x load shed stays generated", testSdrTwoXCollapseRetainsMinimumGeneratedPolicy},
         {"Smooth Cadence collapse measures real-only", testSmoothCadenceCollapseUsesRealOnlyMeasurement},
         {"restored load keeps collapse guard", testRestoredDiscontinuityLoadRetainsCollapseGuard},
         {"image recovery keeps collapse guard", testGeneratedImageRecoveryRetainsCollapseGuard},

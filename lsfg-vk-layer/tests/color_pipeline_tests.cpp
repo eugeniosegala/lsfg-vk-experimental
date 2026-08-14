@@ -19,6 +19,8 @@ namespace {
 }
 
 int main() {
+    // Native 8-bit and 10-bit sRGB are both SDR. This guards against treating
+    // "more bits" as HDR and producing the washed-out transfer-function bug.
     const auto sdr = layer::classifySwapchainColor(
         VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
     );
@@ -35,6 +37,9 @@ int main() {
         "10-bit SDR must not activate HDR model semantics");
     expect(!sdr10.hdr, "10-bit SDR should not be classified as HDR");
 
+    // Below Gamescope the colour space can already be normalized to sRGB.
+    // Confirmed compositor feedback plus an HDR-capable format recovers PQ;
+    // the later 8-bit case proves feedback cannot leak HDR into normal SDR.
     const auto gamescopeHdr10 = layer::classifySwapchainColor(
         VK_FORMAT_A2B10G10R10_UNORM_PACK32,
         VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
@@ -49,6 +54,9 @@ int main() {
     expect(gamescopeHdr10.gamescopeColorSpaceRecovered,
         "Gamescope-normalized HDR10 should identify its recovered source");
 
+    // Compression is allowed only across the device boundary and only when
+    // both Vulkan devices support the packed format. Float remains the safe
+    // fallback and the internal model representation.
     auto packedGamescopeHdr10 = gamescopeHdr10;
     expect(!layer::enablePackedHdr10Transport(
             packedGamescopeHdr10, true, false),
@@ -85,6 +93,8 @@ int main() {
     expect(floatBytes - packedBytes == 16'384'000,
         "Steam Deck Adaptive 3x transport should save 16.384 MB nominally");
 
+    // scRGB is already linear float HDR and therefore does not use the PQ pack
+    // conversion used by HDR10.
     const auto gamescopeScrgb = layer::classifySwapchainColor(
         VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,

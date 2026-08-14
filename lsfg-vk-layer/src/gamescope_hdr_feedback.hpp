@@ -19,6 +19,8 @@ namespace lsfgvk::layer {
         std::optional<uint32_t> xwaylandServerId;
         std::string status;
         std::string display;
+        std::string resolverStatus;
+        std::string resolverCandidates;
     };
 
     struct GamescopeXwaylandDisplay {

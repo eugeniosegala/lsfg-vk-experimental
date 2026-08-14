@@ -18,11 +18,28 @@ namespace lsfgvk::layer {
         double baseFps{0.0};
     };
 
+    /// Cadence recovery follows the presentation transport selected when the
+    /// swapchain was created; it is not selected from live HDR feedback.
+    ///
+    /// Ordered SDR has FIFO ordering/backpressure under LSFG's control, so a
+    /// discontinuity only needs a short temporal-history refresh and can keep
+    /// the last multiplier that was proven stable. The Gamescope HDR bridge
+    /// preserves Gamescope's lower transport and admits synthetic images
+    /// opportunistically. A discontinuity there can also mean compositor or
+    /// colour-pipeline pressure, so it deliberately remeasures more cautiously.
+    enum class AdaptiveRecoveryPolicy : uint8_t {
+        OrderedSdr,
+        ConservativeHdr,
+    };
+
     struct AdaptiveSchedulerConfig {
         uint32_t targetFps{120};
         size_t maximumMultiplier{3};
         size_t generatedFrameCapacity{0};
         bool stableCadence{false};
+        AdaptiveRecoveryPolicy recoveryPolicy{
+            AdaptiveRecoveryPolicy::ConservativeHdr
+        };
     };
 
     class AdaptiveScheduler;
@@ -139,6 +156,9 @@ namespace lsfgvk::layer {
             std::string_view) {}
         virtual void twoXGameplayHitchRecovery(size_t, double,
             std::chrono::steady_clock::duration) {}
+        virtual void cadenceRefresh(std::string_view, size_t, size_t) {}
+        virtual void loadShed(size_t, size_t, double, double,
+            std::string_view) {}
     };
 
     /// Pure adaptive frame-generation policy.
@@ -181,6 +201,7 @@ namespace lsfgvk::layer {
             return this->adaptiveHistoryWarmupIsRecovery;
         }
         void beginHistoryWarmup(size_t frames, bool recovery);
+        void ensureHistoryWarmup(size_t frames, bool recovery);
         void cancelHistoryWarmup();
         void consumeHistoryWarmupFrame(TimePoint now);
         void reportGeneratedFrameDelivery(size_t planned, size_t onTime);
@@ -226,6 +247,7 @@ namespace lsfgvk::layer {
         static Clock::duration stableRearmDuration();
 
     private:
+        void beginCadenceRefresh(TimePoint now, std::string_view reason);
         void scheduleRearm(TimePoint now, std::string_view reason,
             size_t fallbackLimit = 0, double baselineBaseFps = 0.0);
         void updateGenerationLimit(TimePoint now, double baseFps);

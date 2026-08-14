@@ -10,6 +10,7 @@
 #include "lsfg-vk-common/vulkan/image.hpp"
 #include "lsfg-vk-common/vulkan/semaphore.hpp"
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
+#include "pnext_chain.hpp"
 
 #include <algorithm>
 #include <array>
@@ -179,9 +180,6 @@ namespace {
         }();
         return timeout;
     }
-
-    constexpr auto generatedImageAcquireBoundedProbeInterval =
-        std::chrono::milliseconds(250);
 
     double elapsedMilliseconds(const DiagnosticsClock::time_point start) {
         return std::chrono::duration<double, std::milli>(
@@ -616,6 +614,37 @@ namespace {
                   << '\n';
     }
 
+    void logAdaptiveCadenceRefresh(std::string_view reason,
+            size_t retainedGenerationLimit, size_t historyFrames) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << "adaptive-cadence-refresh"
+                  << " context=" << activeDiagnosticsContextId
+                  << " reason=" << reason
+                  << " retained_generated_limit=" << retainedGenerationLimit
+                  << " history_warmup_frames=" << historyFrames
+                  << " policy=sdr-fast-resume\n";
+    }
+
+    void logAdaptiveLoadShed(size_t previousLimit, size_t resumedLimit,
+            double baselineBaseFps, double currentBaseFps,
+            std::string_view reason) {
+        if (!presentDiagnosticsEnabled())
+            return;
+
+        std::cerr << "lsfg-vk: present diagnostics: operation="
+                  << "adaptive-load-shed"
+                  << " context=" << activeDiagnosticsContextId
+                  << " previous_generated_limit=" << previousLimit
+                  << " resumed_generated_limit=" << resumedLimit
+                  << " baseline_base_fps=" << baselineBaseFps
+                  << " current_base_fps=" << currentBaseFps
+                  << " reason=" << reason
+                  << " action=retain-generated-output\n";
+    }
+
     class SwapchainAdaptiveSchedulerDiagnostics final :
             public AdaptiveSchedulerDiagnostics {
     public:
@@ -782,6 +811,21 @@ namespace {
                 generationLimit, baselineBaseFps, rawInterval
             );
         }
+        void cadenceRefresh(std::string_view reason,
+                size_t retainedGenerationLimit,
+                size_t historyFrames) override {
+            logAdaptiveCadenceRefresh(
+                reason, retainedGenerationLimit, historyFrames
+            );
+        }
+        void loadShed(size_t previousLimit, size_t resumedLimit,
+                double baselineBaseFps, double currentBaseFps,
+                std::string_view reason) override {
+            logAdaptiveLoadShed(
+                previousLimit, resumedLimit, baselineBaseFps,
+                currentBaseFps, reason
+            );
+        }
     };
 
     SwapchainAdaptiveSchedulerDiagnostics adaptiveSchedulerDiagnostics;
@@ -822,34 +866,8 @@ namespace {
     }
 }
 
-namespace {
-
-    /// force every present mode in the chain to FIFO
-    ///
-    /// The swapchain is always created as FIFO when pacing is off, so a game asking for a
-    /// different mode at present time has to be brought back in line.
-    ///
-    /// @param next_chain next chain pointer from the present info (WARN: shared!)
-    void forceFifoPresentModes(void* next_chain) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunknown-warning-option"
-#pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
-        auto* info = reinterpret_cast<VkSwapchainPresentModeInfoEXT*>(next_chain);
-        while (info) {
-            if (info->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT) {
-                for (size_t i = 0; i < info->swapchainCount; i++)
-                    const_cast<VkPresentModeKHR*>(info->pPresentModes)[i] =
-                        VK_PRESENT_MODE_FIFO_KHR;
-            }
-
-            info = reinterpret_cast<VkSwapchainPresentModeInfoEXT*>(const_cast<void*>(info->pNext));
-        }
-#pragma clang diagnostic pop
-    }
-
-}
-
-void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
+bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
+        uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo, const bool gamescopeHdrActive,
         const bool gamescopeManaged) {
     const auto colorPipeline = classifySwapchainColor(
@@ -857,7 +875,7 @@ void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint3
         gamescopeHdrActive
     );
     if (!colorPipeline.generationSupported)
-        return;
+        return false;
 
     createInfo.imageUsage |=
         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -872,13 +890,27 @@ void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint3
             if (maxImages && createInfo.minImageCount > maxImages)
                 createInfo.minImageCount = maxImages;
 
-            // Gamescope WSI deliberately uses a MAILBOX driver swapchain and
-            // implements the application's FIFO contract in the compositor.
-            // Running below it means LSFG must preserve that downstream mode.
-            if (!gamescopeManaged)
+            const bool hdrCapableSwapchain = colorPipeline.hdr ||
+                colorPipeline.encoding == backend::FrameEncoding::SdrHighPrecision;
+            const auto transport = selectPresentationTransport(
+                gamescopeManaged, hdrCapableSwapchain
+            );
+
+            // This is a create-time transport choice, not the current HDR on/off
+            // state. Plain SDR keeps the fork's known-good FIFO ordering. An
+            // HDR-capable Gamescope swapchain preserves Gamescope's lower WSI
+            // contract even while live HDR feedback says inactive, because
+            // that feedback may turn on later without a swapchain replacement.
+            // Forcing this HDR bridge to FIFO caused every generated/original
+            // lower present to block for 30-40 ms.
+            if (transport == PresentationTransport::OrderedSdr) {
                 createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-            break;
+                return true;
+            }
+            return false;
     }
+
+    return false;
 }
 
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
@@ -889,6 +921,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             const uint64_t runtimeStateRevision) :
         instance(backend),
         gamescopeManaged(gamescopeManaged),
+        privateOrderedTransport(info.privateOrderedTransport),
         gamescopeRefreshHz(gamescopeRefreshHz),
         colorPipeline(initialColorPipeline(
             info.format, info.colorSpace, gamescopeHdrActive, gamescopeManaged
@@ -898,7 +931,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     const DiagnosticsContextScope diagnosticsContext(
         this->diagnosticsContextId
     );
-
     const VkExtent2D extent = this->info.extent;
 
     bool applicationPackedHdr10Supported = false;
@@ -938,6 +970,11 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
               << "; frame-generation="
               << (this->colorPipeline.generationSupported ? "supported" : "passthrough")
               << '\n';
+    if (this->gamescopeManaged && this->privateOrderedTransport) {
+        std::cerr << "lsfg-vk: Gamescope SDR presentation transport: "
+                     "mode=fifo-ordered; source=fork-develop; "
+                     "dynamic-mode-switch=filtered\n";
+    }
 
     if (this->colorPipeline.encoding == backend::FrameEncoding::Hdr10Pq ||
             this->colorPipeline.encoding ==
@@ -994,6 +1031,9 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
                     .maximumMultiplier = this->profile.adaptive_max_multiplier,
                     .generatedFrameCapacity = this->destinationImages.size(),
                     .stableCadence = this->profile.adaptive_stable_cadence,
+                    .recoveryPolicy = this->privateOrderedTransport
+                        ? AdaptiveRecoveryPolicy::OrderedSdr
+                        : AdaptiveRecoveryPolicy::ConservativeHdr,
                 },
                 &adaptiveSchedulerDiagnostics
             );
@@ -1053,10 +1093,18 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
                       << "; slow operation threshold is "
                       << presentDiagnosticsThresholdMs() << " ms\n";
         }
-        if (const auto timeout = generatedImageAcquireTimeoutNs()) {
+        if (this->gamescopeManaged && !this->privateOrderedTransport) {
+            std::cerr << "lsfg-vk: Gamescope HDR generated-image admission is "
+                         "nonblocking; native presentation is never held for "
+                         "a synthetic destination\n";
+        } else if (this->gamescopeManaged) {
+            std::cerr << "lsfg-vk: Gamescope SDR uses the fork's ordered "
+                         "presentation path\n";
+        } else if (const auto timeout = generatedImageAcquireTimeoutNs()) {
             std::cerr << "lsfg-vk: generated-image acquire timeout enabled at "
                       << static_cast<double>(*timeout) / 1'000'000.0
-                      << " ms; stalled generated frames will be skipped\n";
+                      << " ms for the legacy non-Gamescope path; stalled "
+                         "generated frames will be skipped\n";
         }
         if (this->profile.adaptive) {
             std::cerr << "lsfg-vk: adaptive frame generation enabled; target="
@@ -1195,9 +1243,8 @@ void Swapchain::rebuildPrivateResources(const vk::Vulkan& vk,
     this->backendFrameIndex = 0;
     this->renderFenceInFlight = false;
     this->backendRecoveryPending = false;
-    this->generatedImageAcquireBackoff = false;
-    this->generatedImageAcquireBypassCount = 0;
-    this->generatedImageAcquireLastBoundedProbe.reset();
+    this->generatedImageAdmission.reset();
+    this->pipelineBusyRecovery.reset();
     this->fixedRefreshBudget.reset();
     this->fixedFrameTimestamps = buildFixedFrameTimestamps(
         this->profile.multiplier, this->destinationImages.size()
@@ -1214,6 +1261,9 @@ void Swapchain::rebuildPrivateResources(const vk::Vulkan& vk,
                 .maximumMultiplier = this->profile.adaptive_max_multiplier,
                 .generatedFrameCapacity = this->destinationImages.size(),
                 .stableCadence = this->profile.adaptive_stable_cadence,
+                .recoveryPolicy = this->privateOrderedTransport
+                    ? AdaptiveRecoveryPolicy::OrderedSdr
+                    : AdaptiveRecoveryPolicy::ConservativeHdr,
             },
             &adaptiveSchedulerDiagnostics
         );
@@ -1379,9 +1429,8 @@ ProfileUpdateAction Swapchain::updateProfile(
     }
 
     if (enabling) {
-        this->generatedImageAcquireBackoff = false;
-        this->generatedImageAcquireBypassCount = 0;
-        this->generatedImageAcquireLastBoundedProbe.reset();
+        this->generatedImageAdmission.reset();
+        this->pipelineBusyRecovery.reset();
         this->configurationHistoryWarmupRemaining = this->profile.adaptive
             ? 0
             : AdaptiveScheduler::historyWarmupFrameCount();
@@ -1396,6 +1445,9 @@ ProfileUpdateAction Swapchain::updateProfile(
                 .maximumMultiplier = this->profile.adaptive_max_multiplier,
                 .generatedFrameCapacity = this->destinationImages.size(),
                 .stableCadence = this->profile.adaptive_stable_cadence,
+                .recoveryPolicy = this->privateOrderedTransport
+                    ? AdaptiveRecoveryPolicy::OrderedSdr
+                    : AdaptiveRecoveryPolicy::ConservativeHdr,
             },
             &adaptiveSchedulerDiagnostics
         );
@@ -1480,6 +1532,156 @@ void Swapchain::disableFrameGeneration() {
         this->adaptiveScheduler->cancelHistoryWarmup();
 }
 
+VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
+        const VkQueue queue, const VkSwapchainKHR swapchain,
+        const void* nextChain, const uint32_t originalImageIndex,
+        const std::vector<VkSemaphore>& applicationWaitSemaphores,
+        const std::span<const uint32_t> acquiredImageIndices,
+        const VkImage originalImage) {
+    if (acquiredImageIndices.empty())
+        throw ls::error("attempted to retire an empty acquired-image batch");
+
+    this->renderFence->reset(vk);
+    const size_t semaphoreBase = (
+        this->idx + acquiredImageIndices.size() + 1
+    ) % this->postCopySemaphores.size();
+
+    for (size_t i = 0; i < acquiredImageIndices.size(); ++i) {
+        const bool first = i == 0;
+        const bool last = i + 1 == acquiredImageIndices.size();
+        const size_t semaphoreIndex =
+            (semaphoreBase + i) % this->postCopySemaphores.size();
+        auto& pcs = this->postCopySemaphores.at(semaphoreIndex);
+        auto& pass = this->passes.at(i);
+        const auto acquiredImage = this->info.images.at(
+            acquiredImageIndices[i]
+        );
+
+        std::vector<vk::Barrier> preBarriers;
+        if (first) {
+            preBarriers.push_back(barrierHelper(
+                originalImage,
+                VK_ACCESS_NONE,
+                VK_ACCESS_TRANSFER_READ_BIT,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+            ));
+        }
+        preBarriers.push_back(barrierHelper(
+            acquiredImage,
+            VK_ACCESS_NONE,
+            VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        ));
+
+        std::vector<vk::Barrier> postBarriers{
+            barrierHelper(
+                acquiredImage,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_ACCESS_MEMORY_READ_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            )
+        };
+        if (last) {
+            postBarriers.push_back(barrierHelper(
+                originalImage,
+                VK_ACCESS_TRANSFER_READ_BIT,
+                VK_ACCESS_MEMORY_READ_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            ));
+        }
+
+        auto& commandBuffer = pass.commandBuffer;
+        commandBuffer.begin(vk);
+        commandBuffer.blitImage(
+            vk, preBarriers, {originalImage, acquiredImage},
+            this->info.extent, postBarriers
+        );
+        commandBuffer.end(vk);
+
+        std::vector<VkSemaphore> waits{
+            pass.acquireSemaphore.handle()
+        };
+        if (first) {
+            waits.insert(
+                waits.end(), applicationWaitSemaphores.begin(),
+                applicationWaitSemaphores.end()
+            );
+        } else {
+            const size_t previousSemaphoreIndex =
+                (semaphoreBase + i - 1) % this->postCopySemaphores.size();
+            waits.push_back(
+                this->postCopySemaphores.at(previousSemaphoreIndex)
+                    .second.handle()
+            );
+        }
+        commandBuffer.submit(
+            vk, waits, VK_NULL_HANDLE, 0,
+            {pcs.first.handle(), pcs.second.handle()},
+            VK_NULL_HANDLE, 0,
+            last ? this->renderFence->handle() : VK_NULL_HANDLE
+        );
+    }
+    this->renderFenceInFlight = true;
+
+    for (size_t i = 0; i < acquiredImageIndices.size(); ++i) {
+        const size_t semaphoreIndex =
+            (semaphoreBase + i) % this->postCopySemaphores.size();
+        const VkSemaphore waitSemaphore =
+            this->postCopySemaphores.at(semaphoreIndex).first.handle();
+        const uint32_t acquiredImageIndex = acquiredImageIndices[i];
+        const VkPresentInfoKHR acquiredPresentInfo{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = nullptr,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &waitSemaphore,
+            .swapchainCount = 1,
+            .pSwapchains = &swapchain,
+            .pImageIndices = &acquiredImageIndex,
+        };
+        const auto acquiredResult = vk.df().QueuePresentKHR(
+            queue, &acquiredPresentInfo
+        );
+        if (acquiredResult != VK_SUCCESS &&
+                acquiredResult != VK_SUBOPTIMAL_KHR) {
+            throw ls::vulkan_error(
+                acquiredResult, "vkQueuePresentKHR() failed"
+            );
+        }
+    }
+
+    const size_t lastSemaphoreIndex = (
+        semaphoreBase + acquiredImageIndices.size() - 1
+    ) % this->postCopySemaphores.size();
+    const VkSemaphore originalWaitSemaphore =
+        this->postCopySemaphores.at(lastSemaphoreIndex).second.handle();
+    const VkPresentInfoKHR originalPresentInfo{
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = nextChain,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &originalWaitSemaphore,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &originalImageIndex,
+    };
+    const auto result = vk.df().QueuePresentKHR(queue, &originalPresentInfo);
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+        throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
+
+    if (presentDiagnosticsEnabled()) {
+        std::cerr << "lsfg-vk: present diagnostics: "
+                     "operation=retire-acquired-images"
+                  << " context=" << this->diagnosticsContextId
+                  << " images=" << acquiredImageIndices.size()
+                  << " reason=backend-schedule-failure\n";
+    }
+    this->fidx++;
+    return result;
+}
+
 VkResult Swapchain::present(const vk::Vulkan& vk,
         VkQueue queue, VkSwapchainKHR swapchain,
         void* next_chain, uint32_t imageIdx,
@@ -1487,6 +1689,17 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const DiagnosticsContextScope diagnosticsContext(
         this->diagnosticsContextId
     );
+    const void* lowerNextChain = next_chain;
+    // Match the immutable create-time choice. Ordered SDR filters Gamescope's
+    // dynamic MAILBOX override so the lower FIFO swapchain stays ordered. HDR
+    // preserves it. Never decide this from live colourPipeline.hdr: a feedback
+    // transition cannot change the VkSwapchainKHR's creation contract.
+    ScopedPNextRemoval presentMode(
+        lowerNextChain, VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT,
+        this->privateOrderedTransport
+    );
+    const bool gamescopeHdrTransport =
+        this->gamescopeManaged && !this->privateOrderedTransport;
 
     const auto presentNow = DiagnosticsClock::now();
     const auto presentStarted = startPresentDiagnostic();
@@ -1543,14 +1756,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
 
     const auto presentNativeFrame = [&]() {
-        if (!this->gamescopeManaged &&
-                this->colorPipeline.generationSupported &&
-                this->profile.pacing == ls::Pacing::None)
-            forceFifoPresentModes(next_chain);
-
         const VkPresentInfoKHR presentInfo{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .pNext = next_chain,
+            .pNext = lowerNextChain,
             .waitSemaphoreCount = static_cast<uint32_t>(semaphores.size()),
             .pWaitSemaphores = semaphores.data(),
             .swapchainCount = 1,
@@ -1589,9 +1797,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             return presentNativeFrame();
 
         this->backendRecoveryPending = false;
-        this->generatedImageAcquireBackoff = false;
-        this->generatedImageAcquireBypassCount = 0;
-        this->generatedImageAcquireLastBoundedProbe.reset();
+        this->generatedImageAdmission.reset();
+        this->pipelineBusyRecovery.reset();
         if (this->profile.adaptive) {
             this->adaptiveScheduler.emplace(
                 AdaptiveSchedulerConfig{
@@ -1599,6 +1806,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                     .maximumMultiplier = this->profile.adaptive_max_multiplier,
                     .generatedFrameCapacity = this->destinationImages.size(),
                     .stableCadence = this->profile.adaptive_stable_cadence,
+                    .recoveryPolicy = this->privateOrderedTransport
+                        ? AdaptiveRecoveryPolicy::OrderedSdr
+                        : AdaptiveRecoveryPolicy::ConservativeHdr,
                 },
                 &adaptiveSchedulerDiagnostics
             );
@@ -1625,12 +1835,12 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         (this->adaptiveScheduler && this->adaptiveScheduler->historyWarmupActive());
     const auto generatedFramePlan = this->profile.adaptive && !historyWarmupActive
         ? this->adaptiveScheduler->planFrame(
-            presentNow, this->generatedImageAcquireBackoff
+            presentNow, false
         )
         : AdaptiveFramePlan{};
     const size_t fixedGeneratedFrameCount = this->profile.adaptive
         ? 0
-        : (this->gamescopeManaged
+        : (gamescopeHdrTransport
             ? this->fixedRefreshBudget.plan(
                 presentNow, this->gamescopeRefreshHz,
                 this->fixedFrameTimestamps.size()
@@ -1643,273 +1853,252 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
     const size_t generatedFrameCount = this->profile.adaptive
         ? generatedFramePlan.size() : fixedGeneratedFrameCount;
-    std::array<float, 3> budgetedFixedTimestamps{};
-    std::span<const float> fixedTimestamps = this->fixedFrameTimestamps;
-    if (!this->profile.adaptive &&
-            fixedGeneratedFrameCount != this->fixedFrameTimestamps.size()) {
-        for (size_t i = 0; i < fixedGeneratedFrameCount; ++i) {
-            budgetedFixedTimestamps.at(i) =
-                static_cast<float>(i + 1) /
-                static_cast<float>(fixedGeneratedFrameCount + 1);
-        }
-        fixedTimestamps = {
-            budgetedFixedTimestamps.data(), fixedGeneratedFrameCount
-        };
-    }
-
     const auto configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
-    const std::optional<uint64_t> effectiveAcquireTimeout =
-        this->gamescopeManaged
-        ? std::optional<uint64_t>(generatedImageDeadlineNs(
-            this->gamescopeRefreshHz,
-            this->recentRealInterval,
-            generatedFrameCount + 1,
-            configuredAcquireTimeout
-        ))
-        : configuredAcquireTimeout;
     bool renderFencePrepared = false;
-    bool bypassGeneratedFrames = historyWarmupActive || generatedFrameCount == 0;
-    bool generatedImageUnavailable = false;
-    bool boundedRecoveryProbe = false;
-    std::optional<uint32_t> preacquiredGeneratedImage;
-    std::optional<uint32_t> recoveryWarmupImage;
+    std::array<uint32_t, 3> preacquiredGeneratedImages{};
+    size_t admittedGeneratedFrameCount = generatedFrameCount;
+
+    const auto presentOriginalImage = [&](const VkSemaphore waitSemaphore,
+            const void* presentNextChain) {
+        const VkPresentInfoKHR presentInfo{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = presentNextChain,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &waitSemaphore,
+            .swapchainCount = 1,
+            .pSwapchains = &swapchain,
+            .pImageIndices = &imageIdx,
+        };
+        const auto originalPresentStarted = startPresentDiagnostic();
+        const auto result = vk.df().QueuePresentKHR(queue, &presentInfo);
+        logSlowPresentOperation(
+            "present-original-image", this->fidx, this->idx,
+            originalPresentStarted, result, std::nullopt, imageIdx
+        );
+        return result;
+    };
+
+    const auto ensureHistoryWarmup = [&]() {
+        const size_t warmupFrames = AdaptiveScheduler::historyWarmupFrameCount();
+        if (this->adaptiveScheduler) {
+            this->adaptiveScheduler->ensureHistoryWarmup(
+                warmupFrames, true
+            );
+        } else if (this->configurationHistoryWarmupRemaining == 0) {
+            this->configurationHistoryWarmupRemaining = warmupFrames;
+        }
+    };
+
+    // The Gamescope HDR bridge is native-first: never hold the application's
+    // real present behind unfinished private work. Ordered SDR deliberately
+    // retains the fork's synchronous FIFO/fence behavior. Applying this HDR
+    // readiness bypass to SDR caused Deck-class GPUs to skip generated work on
+    // ordinary one-frame overlap and made frame generation appear inactive.
+    bool pipelineReady = true;
+    if (gamescopeHdrTransport && this->renderFenceInFlight) {
+        pipelineReady = this->renderFence->wait(vk, 0);
+        if (pipelineReady)
+            this->renderFenceInFlight = false;
+    }
+    if (gamescopeHdrTransport && pipelineReady) {
+        try {
+            pipelineReady = this->instance.get().contextReady(this->ctx.get());
+        } catch (const std::exception& e) {
+            std::cerr << "lsfg-vk: backend readiness poll failed; native "
+                         "presentation retained: " << e.what() << '\n';
+            this->backendRecoveryPending = true;
+            pipelineReady = false;
+        }
+    }
+    if (gamescopeHdrTransport && !pipelineReady) {
+        if (this->adaptiveScheduler)
+            this->adaptiveScheduler->reportGeneratedFrameDelivery(
+                generatedFrameCount, 0
+            );
+        if (!this->profile.adaptive)
+            this->fixedDiagnosticSkippedFrames += generatedFrameCount;
+        const auto busy = this->pipelineBusyRecovery.reportBusy(presentNow);
+        if (busy.requestHistoryWarmup)
+            ensureHistoryWarmup();
+        if (presentDiagnosticsEnabled() && busy.diagnostic) {
+            std::cerr << "lsfg-vk: present diagnostics: "
+                         "operation=pipeline-busy-bypass"
+                      << " context=" << this->diagnosticsContextId
+                      << " consecutive_frames=" << busy.consecutiveFrames
+                      << " total_bypassed_frames="
+                      << busy.totalBypassedFrames
+                      << " duration_ms="
+                      << std::chrono::duration<double, std::milli>(
+                             busy.duration
+                         ).count()
+                      << " planned=" << generatedFrameCount
+                      << " history_action="
+                      << (busy.requestHistoryWarmup
+                          ? "warmup-requested" : "preserved")
+                      << " action=native-present\n";
+        }
+        return presentNativeFrame();
+    }
+    const auto pipelineRecovery =
+        this->pipelineBusyRecovery.reportReady(presentNow);
+    if (pipelineRecovery.resumed && pipelineRecovery.diagnostic) {
+        if (presentDiagnosticsEnabled()) {
+            std::cerr << "lsfg-vk: present diagnostics: "
+                         "operation=pipeline-busy-recovered"
+                      << " context=" << this->diagnosticsContextId
+                      << " bypassed_frames="
+                      << pipelineRecovery.bypassedFrames
+                      << " total_recoveries="
+                      << pipelineRecovery.totalRecoveries
+                      << " duration_ms="
+                      << std::chrono::duration<double, std::milli>(
+                             pipelineRecovery.duration
+                         ).count()
+                      << " history_warmup_requested="
+                      << pipelineRecovery.historyWarmupRequested
+                      << '\n';
+        }
+    }
 
     const auto prepareRenderFence = [&]() {
         if (renderFencePrepared)
             return;
-
         if (this->renderFenceInFlight) {
-            const auto fenceWaitStarted = startPresentDiagnostic();
-            const bool fenceSignaled = this->renderFence->wait(vk, 150ULL * 1000 * 1000);
-            logSlowPresentOperation(
-                "wait-render-fence", this->fidx, this->idx, fenceWaitStarted,
-                fenceSignaled ? VK_SUCCESS : VK_TIMEOUT
+            const bool fenceSignaled = this->renderFence->wait(
+                vk, 150ULL * 1000 * 1000
             );
-            if (!fenceSignaled)
-                throw ls::vulkan_error(VK_TIMEOUT, "vkWaitForFences() failed");
+            if (!fenceSignaled) {
+                throw ls::error(
+                    "timed out waiting for the previous render fence"
+                );
+            }
             this->renderFenceInFlight = false;
         }
         this->renderFence->reset(vk);
         renderFencePrepared = true;
     };
 
-    // Reserve the first generated-image slot before submitting model work. A
-    // frame which cannot obtain a slot before its display deadline is already
-    // too late to improve motion, even when Vulkan would eventually return
-    // VK_SUCCESS. Preserve the real frame and advance history instead.
-    if (effectiveAcquireTimeout && !this->generatedImageAcquireBackoff &&
-            generatedFrameCount > 0 && !bypassGeneratedFrames) {
-        prepareRenderFence();
-        auto& preflightPass = this->passes.front();
-        uint32_t preflightImageIndex{};
-        const auto acquireStarted = startPresentDiagnostic();
-        const auto acquireResult = vk.df().AcquireNextImageKHR(
-            vk.dev(), swapchain, *effectiveAcquireTimeout,
-            preflightPass.acquireSemaphore.handle(), VK_NULL_HANDLE,
-            &preflightImageIndex
-        );
-        logSlowPresentOperation(
-            "acquire-generated-image", this->fidx, this->idx,
-            acquireStarted, acquireResult, 0, preflightImageIndex
-        );
-        if (acquireResult == VK_TIMEOUT || acquireResult == VK_NOT_READY) {
-            this->generatedImageAcquireBackoff = true;
-            this->generatedImageAcquireBypassCount = 0;
-            this->generatedImageAcquireLastBoundedProbe = presentNow;
-            generatedImageUnavailable = true;
-            bypassGeneratedFrames = true;
-            if (!this->profile.adaptive)
-                this->fixedDiagnosticSkippedFrames += generatedFrameCount;
-            if (this->adaptiveScheduler) {
-                this->adaptiveScheduler->reportGeneratedFrameDelivery(
-                    generatedFrameCount, 0
-                );
-                this->adaptiveScheduler->cancelHistoryWarmup();
-                this->adaptiveScheduler->resetTiming(presentNow);
+    // HDR bridge admission is nonblocking. Reserve every generated destination
+    // before model work, then schedule only the contiguous admitted prefix.
+    // A miss is compositor pressure, not a detach/history failure; the original
+    // is presented natively and admission is retried next frame. This removes
+    // the schedule-then-wait feedback loop measured at 90/120 Hz. Ordered SDR
+    // intentionally does not enter this branch because FIFO owns its pacing.
+    if (gamescopeHdrTransport && !historyWarmupActive &&
+            generatedFrameCount > 0) {
+        admittedGeneratedFrameCount = 0;
+        bool logPressure = false;
+        VkResult lastAcquireResult = VK_SUCCESS;
+        for (size_t i = 0; i < generatedFrameCount; ++i) {
+            uint32_t acquiredImage{};
+            const auto acquireStarted = startPresentDiagnostic();
+            lastAcquireResult = vk.df().AcquireNextImageKHR(
+                vk.dev(), swapchain,
+                generatedImageAcquireTimeout(true, configuredAcquireTimeout),
+                this->passes.at(i).acquireSemaphore.handle(), VK_NULL_HANDLE,
+                &acquiredImage
+            );
+            if (lastAcquireResult == VK_SUCCESS ||
+                    lastAcquireResult == VK_SUBOPTIMAL_KHR) {
+                preacquiredGeneratedImages.at(admittedGeneratedFrameCount++) =
+                    acquiredImage;
+                continue;
             }
-            if (presentDiagnosticsEnabled()) {
+            if (lastAcquireResult == VK_NOT_READY ||
+                    lastAcquireResult == VK_TIMEOUT) {
+                logPressure = this->generatedImageAdmission.reportUnavailable();
+                if (logPressure) {
+                    logSlowPresentOperation(
+                        "acquire-generated-image", this->fidx, this->idx,
+                        acquireStarted, lastAcquireResult, i, acquiredImage
+                    );
+                }
+                break;
+            }
+            throw ls::vulkan_error(
+                lastAcquireResult, "vkAcquireNextImageKHR() failed"
+            );
+        }
+
+        if (admittedGeneratedFrameCount == generatedFrameCount) {
+            const auto recovery = this->generatedImageAdmission.reportAvailable();
+            if (recovery.resumed && presentDiagnosticsEnabled()) {
                 std::cerr << "lsfg-vk: present diagnostics: "
-                             "operation=generated-delivery-miss"
+                             "operation=generated-admission-recovered"
+                          << " context=" << this->diagnosticsContextId
+                          << " missed_attempts=" << recovery.missedAttempts
+                          << " bypassed_frames=" << recovery.bypassedFrames
+                          << '\n';
+            }
+        } else {
+            this->generatedImageAdmission.reportBypassedFrame();
+            if (!this->profile.adaptive) {
+                this->fixedDiagnosticSkippedFrames +=
+                    generatedFrameCount - admittedGeneratedFrameCount;
+            }
+            if (logPressure && presentDiagnosticsEnabled()) {
+                std::cerr << "lsfg-vk: present diagnostics: "
+                             "operation=generated-admission-pressure"
                           << " context=" << this->diagnosticsContextId
                           << " planned=" << generatedFrameCount
-                          << " on_time=0"
-                          << " deadline_ms="
-                          << static_cast<double>(*effectiveAcquireTimeout) /
-                                1'000'000.0 << '\n';
+                          << " admitted=" << admittedGeneratedFrameCount
+                          << " acquire_timeout_ns=0"
+                          << " action=native-first\n";
             }
-            logPresentFallback(
-                this->fidx, this->idx, 0, generatedFrameCount,
-                this->idx, "preflight-deadline", "not-scheduled"
-            );
-        } else if (acquireResult == VK_SUCCESS ||
-                acquireResult == VK_SUBOPTIMAL_KHR) {
-            preacquiredGeneratedImage = preflightImageIndex;
-        } else {
-            throw ls::vulkan_error(
-                acquireResult, "vkAcquireNextImageKHR() failed"
-            );
         }
     }
 
-    // Once generated-image acquisition has timed out, probe availability
-    // before scheduling more output work. If Gamescope still has no image, the
-    // real frame is copied and presented below while a shared history pre-pass
-    // keeps temporal features and timeline indices current.
-    if (effectiveAcquireTimeout && this->generatedImageAcquireBackoff &&
-            generatedFrameCount > 0 && !generatedImageUnavailable) {
-        prepareRenderFence();
-
-        auto& recoveryPass = this->passes.front();
-        uint32_t recoveryImageIndex{};
-        const auto now = DiagnosticsClock::now();
-        boundedRecoveryProbe = !this->generatedImageAcquireLastBoundedProbe ||
-            now - *this->generatedImageAcquireLastBoundedProbe >=
-                generatedImageAcquireBoundedProbeInterval;
-        const uint64_t recoveryTimeout = boundedRecoveryProbe
-            ? *effectiveAcquireTimeout : 0;
-        if (boundedRecoveryProbe)
-            this->generatedImageAcquireLastBoundedProbe = now;
-        const auto acquireStarted = startPresentDiagnostic();
-        const auto acquireResult = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
-            recoveryTimeout, recoveryPass.acquireSemaphore.handle(), VK_NULL_HANDLE,
-            &recoveryImageIndex
+    const size_t scheduledGeneratedFrameCount = gamescopeHdrTransport
+        ? admittedGeneratedFrameCount : generatedFrameCount;
+    bool bypassGeneratedFrames =
+        historyWarmupActive || scheduledGeneratedFrameCount == 0;
+    if (historyWarmupActive && !this->profile.adaptive)
+        this->fixedDiagnosticSkippedFrames += generatedFrameCount;
+    std::array<float, 3> scheduledTimestamps{};
+    for (size_t i = 0; i < scheduledGeneratedFrameCount; ++i) {
+        scheduledTimestamps.at(i) = fixedFrameTimestamp(
+            i, scheduledGeneratedFrameCount + 1
         );
-
-        if (acquireResult == VK_TIMEOUT || acquireResult == VK_NOT_READY) {
-            if (!this->generatedImageAcquireBypassCount || boundedRecoveryProbe) {
-                logSlowPresentOperation(
-                    "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
-                    0, recoveryImageIndex
-                );
-            }
-            bypassGeneratedFrames = true;
-            generatedImageUnavailable = true;
-        } else if (acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR) {
-            logSlowPresentOperation(
-                "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
-                0, recoveryImageIndex
-            );
-            this->generatedImageAcquireBackoff = false;
-            this->generatedImageAcquireLastBoundedProbe.reset();
-            const bool discontinuityRecoveryActive =
-                this->profile.adaptive &&
-                this->adaptiveScheduler->discontinuityRecoveryActive();
-            size_t recoveryGenerationLimit = 0;
-            AdaptiveGenerationLoadBaseline recoveryLoadBaseline;
-            if (this->profile.adaptive) {
-                recoveryGenerationLimit = discontinuityRecoveryActive
-                    ? this->adaptiveScheduler->discontinuityGenerationLimit()
-                    : this->adaptiveScheduler->validatedGenerationLimit();
-                recoveryLoadBaseline =
-                    this->adaptiveScheduler->generationLoadBaseline();
-            }
-            const bool useSoftDiscontinuityRecovery =
-                discontinuityRecoveryActive &&
-                !this->adaptiveScheduler->discontinuitySoftRecoveryAttempted();
-            if (useSoftDiscontinuityRecovery) {
-                this->adaptiveScheduler->markDiscontinuitySoftRecoveryAttempted();
-                logAdaptiveDiscontinuitySoftRecovery(recoveryGenerationLimit);
-            }
-            if (this->profile.adaptive && !useSoftDiscontinuityRecovery) {
-                logSwapchainRecreationSuppressed(
-                    "in-place-only", 0.0
-                );
-            }
-            const size_t recoveryWarmupFrames = this->profile.adaptive
-                ? AdaptiveScheduler::historyWarmupFrameCount()
-                : 0;
-            logPresentRecovery(
-                this->fidx, this->idx, 0, recoveryImageIndex,
-                this->generatedImageAcquireBypassCount,
-                boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry",
-                recoveryWarmupFrames
-            );
-            this->generatedImageAcquireBypassCount = 0;
-            if (this->profile.adaptive) {
-                const auto recoveryNow = DiagnosticsClock::now();
-                this->adaptiveScheduler->beginStabilization(
-                    recoveryNow, "generated-image-recovery"
-                );
-                if (!discontinuityRecoveryActive) {
-                    this->adaptiveScheduler->restoreGenerationLimit(
-                        recoveryNow,
-                        recoveryGenerationLimit,
-                        "generated-image-recovery",
-                        recoveryLoadBaseline.fallbackGenerationLimit,
-                        recoveryLoadBaseline.baseFps
-                    );
-                }
-            } else {
-                if (this->adaptiveScheduler)
-                    this->adaptiveScheduler->resetTiming(DiagnosticsClock::now());
-            }
-            if (recoveryWarmupFrames) {
-                // The successful probe owns a swapchain image. Copy the real
-                // image into it and present it below before warming the
-                // current private context in place.
-                recoveryWarmupImage = recoveryImageIndex;
-                if (this->adaptiveScheduler) {
-                    this->adaptiveScheduler->beginHistoryWarmup(
-                        recoveryWarmupFrames, true
-                    );
-                }
-                bypassGeneratedFrames = true;
-            } else {
-                preacquiredGeneratedImage = recoveryImageIndex;
-            }
-        } else {
-            logSlowPresentOperation(
-                "acquire-generated-image", this->fidx, this->idx, acquireStarted, acquireResult,
-                0, recoveryImageIndex
-            );
-            throw ls::vulkan_error(acquireResult, "vkAcquireNextImageKHR() failed");
-        }
     }
+    const std::span<const float> timestamps{
+        scheduledTimestamps.data(), scheduledGeneratedFrameCount
+    };
 
     // schedule frame generation
-    bool backendScheduleFailedWithAcquiredImage = false;
     if (!bypassGeneratedFrames) {
         const auto scheduleStarted = startPresentDiagnostic();
         try {
-            if (this->profile.adaptive)
-                this->instance.get().scheduleFrames(
-                    this->ctx.get(), generatedFramePlan.timestamps()
-                );
-            else
-                this->instance.get().scheduleFrames(
-                    this->ctx.get(), fixedTimestamps
-                );
+            this->instance.get().scheduleFrames(this->ctx.get(), timestamps);
         } catch (const std::exception& e) {
-            // Do not turn a bounded backend stall into a game-visible present
-            // error. This frame has not consumed the game's wait semaphores yet,
-            // so generation can be disabled and the real image presented safely.
             std::cerr << "lsfg-vk: temporarily bypassing frame generation after "
                          "backend scheduling failure; native presentation retained: "
                       << e.what() << '\n';
             this->backendRecoveryPending = true;
             this->configurationHistoryWarmupRemaining = 0;
-            if (this->adaptiveScheduler)
+            if (this->adaptiveScheduler) {
+                this->adaptiveScheduler->reportGeneratedFrameDelivery(
+                    generatedFrameCount, 0
+                );
                 this->adaptiveScheduler->cancelHistoryWarmup();
-            if (!preacquiredGeneratedImage)
+            } else {
+                this->fixedDiagnosticSkippedFrames +=
+                    admittedGeneratedFrameCount;
+            }
+            if (!gamescopeHdrTransport ||
+                    admittedGeneratedFrameCount == 0)
                 return presentNativeFrame();
-
-            // The deadline preflight already owns a game swapchain image and
-            // its acquire semaphore. Retire that image through the normal
-            // real-frame fallback before returning; otherwise the image is
-            // permanently detached from the swapchain and the fence reset by
-            // the preflight is never signaled.
-            recoveryWarmupImage = preacquiredGeneratedImage;
-            bypassGeneratedFrames = true;
-            backendScheduleFailedWithAcquiredImage = true;
+            return this->retireAcquiredImagesAndPresent(
+                vk, queue, swapchain, lowerNextChain, imageIdx, semaphores,
+                std::span<const uint32_t>(
+                    preacquiredGeneratedImages.data(),
+                    admittedGeneratedFrameCount
+                ),
+                swapchainImage
+            );
         }
-        if (!backendScheduleFailedWithAcquiredImage)
-            this->backendFrameIndex++;
+        this->backendFrameIndex++;
         logSlowPresentOperation("schedule-frames", this->fidx, this->idx, scheduleStarted);
     }
-
-    // update present mode when not using pacing
-    if (!this->gamescopeManaged && this->profile.pacing == ls::Pacing::None)
-        forceFifoPresentModes(next_chain);
 
     // wait for completion of previous frame
     prepareRenderFence();
@@ -1953,25 +2142,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     );
     logSlowPresentOperation("submit-source-copy", this->fidx, this->idx, sourceSubmitStarted);
 
-    const auto presentOriginalImage = [&](VkSemaphore waitSemaphore, void* presentNextChain) {
-        const VkPresentInfoKHR presentInfo{
-            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .pNext = presentNextChain,
-            .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &waitSemaphore,
-            .swapchainCount = 1,
-            .pSwapchains = &swapchain,
-            .pImageIndices = &imageIdx,
-        };
-        const auto originalPresentStarted = startPresentDiagnostic();
-        const auto result = vk.df().QueuePresentKHR(queue, &presentInfo);
-        logSlowPresentOperation(
-            "present-original-image", this->fidx, this->idx, originalPresentStarted, result,
-            std::nullopt, imageIdx
-        );
-        return result;
-    };
-
     if (bypassGeneratedFrames) {
         const uint64_t sourceTimelineValue = this->idx - 1;
         auto& fallbackPass = this->passes.front();
@@ -1982,60 +2152,16 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
         auto& fallbackCommandBuffer = fallbackPass.commandBuffer;
         fallbackCommandBuffer.begin(vk);
-        if (recoveryWarmupImage) {
-            const auto& recoveryImage = this->info.images.at(*recoveryWarmupImage);
-            fallbackCommandBuffer.blitImage(vk,
-                {
-                    barrierHelper(swapchainImage,
-                        VK_ACCESS_MEMORY_READ_BIT,
-                        VK_ACCESS_TRANSFER_READ_BIT,
-                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-                    ),
-                    barrierHelper(recoveryImage,
-                        VK_ACCESS_NONE,
-                        VK_ACCESS_TRANSFER_WRITE_BIT,
-                        VK_IMAGE_LAYOUT_UNDEFINED,
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-                    ),
-                },
-                { swapchainImage, recoveryImage },
-                this->info.extent,
-                {
-                    barrierHelper(swapchainImage,
-                        VK_ACCESS_TRANSFER_READ_BIT,
-                        VK_ACCESS_MEMORY_READ_BIT,
-                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                    ),
-                    barrierHelper(recoveryImage,
-                        VK_ACCESS_TRANSFER_WRITE_BIT,
-                        VK_ACCESS_MEMORY_READ_BIT,
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                    ),
-                }
-            );
-        }
         fallbackCommandBuffer.end(vk);
-        const std::vector<VkSemaphore> fallbackWaitSemaphores = recoveryWarmupImage
-            ? std::vector<VkSemaphore>{fallbackPass.acquireSemaphore.handle()}
-            : std::vector<VkSemaphore>{};
-        const std::vector<VkSemaphore> fallbackSignalSemaphores = recoveryWarmupImage
-            ? std::vector<VkSemaphore>{
-                fallbackSemaphores.first.handle(), fallbackSemaphore.handle()
-            }
-            : std::vector<VkSemaphore>{fallbackSemaphore.handle()};
         fallbackCommandBuffer.submit(vk,
-            fallbackWaitSemaphores, this->syncSemaphore->handle(), sourceTimelineValue,
-            fallbackSignalSemaphores, VK_NULL_HANDLE, 0,
+            {}, this->syncSemaphore->handle(), sourceTimelineValue,
+            {fallbackSemaphore.handle()}, VK_NULL_HANDLE, 0,
             this->renderFence->handle()
         );
         this->renderFenceInFlight = true;
 
         try {
-            if (!backendScheduleFailedWithAcquiredImage)
-                this->instance.get().scheduleFrameHistory(this->ctx.get());
+            this->instance.get().scheduleFrameHistory(this->ctx.get());
         } catch (const std::exception& e) {
             // The fallback copy is already queued and signals
             // fallbackSemaphore. Present the real image through that semaphore
@@ -2048,37 +2174,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             if (this->adaptiveScheduler)
                 this->adaptiveScheduler->cancelHistoryWarmup();
 
-            void* fallbackNextChain = next_chain;
-            if (recoveryWarmupImage) {
-                // The recovery probe already acquired this image. Retire it
-                // before presenting the game's original image so no swapchain
-                // image remains permanently owned by the failed FG path.
-                const VkSemaphore recoveryWaitSemaphore =
-                    fallbackSemaphores.first.handle();
-                const VkPresentInfoKHR recoveryPresentInfo{
-                    .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                    .pNext = this->gamescopeManaged ? nullptr : next_chain,
-                    .waitSemaphoreCount = 1,
-                    .pWaitSemaphores = &recoveryWaitSemaphore,
-                    .swapchainCount = 1,
-                    .pSwapchains = &swapchain,
-                    .pImageIndices = &*recoveryWarmupImage,
-                };
-                const auto recoveryResult = vk.df().QueuePresentKHR(
-                    queue, &recoveryPresentInfo
-                );
-                if (recoveryResult != VK_SUCCESS &&
-                        recoveryResult != VK_SUBOPTIMAL_KHR) {
-                    throw ls::vulkan_error(
-                        recoveryResult, "vkQueuePresentKHR() failed"
-                    );
-                }
-                fallbackNextChain = this->gamescopeManaged
-                    ? next_chain : nullptr;
-            }
-
             const auto fallbackResult = presentOriginalImage(
-                fallbackSemaphore.handle(), fallbackNextChain
+                fallbackSemaphore.handle(), lowerNextChain
             );
             if (fallbackResult != VK_SUCCESS &&
                     fallbackResult != VK_SUBOPTIMAL_KHR) {
@@ -2093,17 +2190,19 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->fidx++;
             return fallbackResult;
         }
-        if (!backendScheduleFailedWithAcquiredImage)
-            this->backendFrameIndex++;
-        if (generatedImageUnavailable &&
-                (!this->generatedImageAcquireBypassCount || boundedRecoveryProbe)) {
+        this->backendFrameIndex++;
+        if (generatedFrameCount > admittedGeneratedFrameCount) {
             logPresentFallback(
-                this->fidx, this->idx, 0, generatedFrameCount, sourceTimelineValue,
-                boundedRecoveryProbe ? "bounded-retry" : "nonblocking-retry", "history-only"
+                this->fidx, this->idx, 0,
+                generatedFrameCount - admittedGeneratedFrameCount,
+                sourceTimelineValue, "nonblocking-admission", "history-only"
             );
         }
-        if (generatedImageUnavailable)
-            this->generatedImageAcquireBypassCount++;
+        if (this->adaptiveScheduler && generatedFrameCount > 0) {
+            this->adaptiveScheduler->reportGeneratedFrameDelivery(
+                generatedFrameCount, admittedGeneratedFrameCount
+            );
+        }
 
         if (this->adaptiveScheduler &&
                 this->adaptiveScheduler->historyWarmupActive()) {
@@ -2111,7 +2210,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 this->fidx, this->idx,
                 this->adaptiveScheduler->historyWarmupRemaining(),
                 this->adaptiveScheduler->historyWarmupIsRecovery(),
-                recoveryWarmupImage
+                std::nullopt
             );
             this->adaptiveScheduler->consumeHistoryWarmupFrame(
                 DiagnosticsClock::now()
@@ -2120,36 +2219,14 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             logHistoryWarmup(
                 this->fidx, this->idx,
                 this->configurationHistoryWarmupRemaining,
-                false, recoveryWarmupImage
+                false, std::nullopt
             );
             this->configurationHistoryWarmupRemaining--;
         }
 
-        void* originalNextChain = next_chain;
-        if (recoveryWarmupImage) {
-            const VkSemaphore recoveryWaitSemaphore = fallbackSemaphores.first.handle();
-            const VkPresentInfoKHR recoveryPresentInfo{
-                .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                .pNext = this->gamescopeManaged ? nullptr : next_chain,
-                .waitSemaphoreCount = 1,
-                .pWaitSemaphores = &recoveryWaitSemaphore,
-                .swapchainCount = 1,
-                .pSwapchains = &swapchain,
-                .pImageIndices = &*recoveryWarmupImage,
-            };
-            const auto recoveryPresentStarted = startPresentDiagnostic();
-            const auto recoveryResult = vk.df().QueuePresentKHR(queue, &recoveryPresentInfo);
-            logSlowPresentOperation(
-                "present-recovery-warmup-image", this->fidx, this->idx,
-                recoveryPresentStarted, recoveryResult, 0, *recoveryWarmupImage
-            );
-            if (recoveryResult != VK_SUCCESS && recoveryResult != VK_SUBOPTIMAL_KHR)
-                throw ls::vulkan_error(recoveryResult, "vkQueuePresentKHR() failed");
-            originalNextChain = this->gamescopeManaged
-                ? next_chain : nullptr;
-        }
-
-        const auto res = presentOriginalImage(fallbackSemaphore.handle(), originalNextChain);
+        const auto res = presentOriginalImage(
+            fallbackSemaphore.handle(), lowerNextChain
+        );
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
@@ -2158,7 +2235,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         return res;
     }
 
-    for (size_t i = 0; i < generatedFrameCount; i++) {
+    for (size_t i = 0; i < scheduledGeneratedFrameCount; i++) {
         auto& pcs = this->postCopySemaphores.at(this->idx % this->postCopySemaphores.size());
         auto& destinationImage = this->destinationImages.at(i);
         auto& pass = this->passes.at(i);
@@ -2166,15 +2243,14 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // acquire swapchain image
         uint32_t aqImageIdx{};
         VkResult res{};
-        const bool usePreacquiredImage = i == 0 && preacquiredGeneratedImage.has_value();
-        if (usePreacquiredImage) {
-            aqImageIdx = *preacquiredGeneratedImage;
+        if (gamescopeHdrTransport) {
+            aqImageIdx = preacquiredGeneratedImages.at(i);
             res = VK_SUCCESS;
         } else {
             const auto acquireStarted = startPresentDiagnostic();
-            const uint64_t acquireTimeout = effectiveAcquireTimeout
-                ? *effectiveAcquireTimeout
-                : UINT64_MAX;
+            const uint64_t acquireTimeout = generatedImageAcquireTimeout(
+                false, configuredAcquireTimeout
+            );
             res = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
                 acquireTimeout, pass.acquireSemaphore.handle(),
                 VK_NULL_HANDLE,
@@ -2185,27 +2261,20 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 i, aqImageIdx
             );
         }
-        if (effectiveAcquireTimeout &&
+        if (configuredAcquireTimeout &&
                 (res == VK_TIMEOUT || res == VK_NOT_READY)) {
-            // Gamescope can temporarily stop releasing the extra swapchain images used for generated frames while
-            // an overlay is visible. Do not block the game indefinitely. The backend has already scheduled every
-            // generated frame for this sequence, so wait for its final timeline value before presenting the original
-            // image and advancing both sides to the next sequence.
-            const size_t skippedFrames = generatedFrameCount - i;
+            // The explicit legacy timeout is an anti-freeze ceiling. Backend
+            // work is already scheduled on this non-Gamescope path, so drain
+            // its final timeline value without reclassifying the miss as an
+            // adaptive timing discontinuity.
+            const size_t skippedFrames = scheduledGeneratedFrameCount - i;
             if (!this->profile.adaptive)
                 this->fixedDiagnosticSkippedFrames += skippedFrames;
             const uint64_t finalGeneratedTimelineValue = this->idx + skippedFrames - 1;
             auto& fallbackSemaphore = pcs.second;
-            this->generatedImageAcquireBackoff = true;
-            this->generatedImageAcquireBypassCount = 0;
-            this->generatedImageAcquireLastBoundedProbe = DiagnosticsClock::now();
             if (this->adaptiveScheduler) {
                 this->adaptiveScheduler->reportGeneratedFrameDelivery(
                     generatedFrameCount, i
-                );
-                this->adaptiveScheduler->cancelHistoryWarmup();
-                this->adaptiveScheduler->resetTiming(
-                    this->generatedImageAcquireLastBoundedProbe.value()
                 );
             }
 
@@ -2217,6 +2286,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 { fallbackSemaphore.handle() }, VK_NULL_HANDLE, 0,
                 this->renderFence->handle()
             );
+            this->renderFenceInFlight = true;
 
             logPresentFallback(
                 this->fidx, this->idx, i, skippedFrames, finalGeneratedTimelineValue,
@@ -2226,7 +2296,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
             res = presentOriginalImage(
                 fallbackSemaphore.handle(),
-                this->gamescopeManaged || i == 0 ? next_chain : nullptr
+                this->gamescopeManaged || i == 0 ? lowerNextChain : nullptr
             );
             if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
                 throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
@@ -2239,7 +2309,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                           << " planned=" << generatedFrameCount
                           << " on_time=" << i
                           << " deadline_ms="
-                          << static_cast<double>(*effectiveAcquireTimeout) /
+                          << static_cast<double>(*configuredAcquireTimeout) /
                                 1'000'000.0 << '\n';
             }
             this->fidx++;
@@ -2247,8 +2317,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         }
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(res, "vkAcquireNextImageKHR() failed");
-        this->generatedImageAcquireBackoff = false;
-        this->generatedImageAcquireLastBoundedProbe.reset();
 
         const auto& aquiredSwapchainImage = this->info.images.at(aqImageIdx);
 
@@ -2299,9 +2367,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         cmdbuf.submit(vk,
             waitSemaphores, this->syncSemaphore->handle(), this->idx,
             signalSemaphores, VK_NULL_HANDLE, 0,
-            i == generatedFrameCount - 1 ? this->renderFence->handle() : VK_NULL_HANDLE
+            i == scheduledGeneratedFrameCount - 1
+                ? this->renderFence->handle() : VK_NULL_HANDLE
         );
-        if (i == generatedFrameCount - 1)
+        if (i == scheduledGeneratedFrameCount - 1)
             this->renderFenceInFlight = true;
         logSlowPresentOperation(
             "submit-generated-copy", this->fidx, this->idx, generatedSubmitStarted,
@@ -2312,7 +2381,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         const VkPresentInfoKHR presentInfo{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext = !this->gamescopeManaged && i == 0
-                ? next_chain : nullptr,
+                ? lowerNextChain : nullptr,
             .waitSemaphoreCount = 1,
             .pWaitSemaphores = &pcs.first.handle(),
             .swapchainCount = 1,
@@ -2337,14 +2406,14 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // present original swapchain image
     auto& lastPCS = this->postCopySemaphores.at((this->idx - 1) % this->postCopySemaphores.size());
     auto res = presentOriginalImage(
-        lastPCS.second.handle(), this->gamescopeManaged ? next_chain : nullptr
+        lastPCS.second.handle(), this->gamescopeManaged ? lowerNextChain : nullptr
     );
     if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
         throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
     if (this->adaptiveScheduler) {
         this->adaptiveScheduler->reportGeneratedFrameDelivery(
-            generatedFrameCount, generatedFrameCount
+            generatedFrameCount, scheduledGeneratedFrameCount
         );
     }
     logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);

@@ -6,6 +6,7 @@
 #include "lsfg-vk-common/configuration/detection.hpp"
 #include "lsfg-vk-common/helpers/errors.hpp"
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
+#include "pnext_chain.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -69,6 +70,44 @@ namespace {
         return value && std::string(value) != "0";
     }
 
+    std::string hdrFeedbackDiagnosticKey(
+            const GamescopeHdrFeedbackSample& sample) {
+        return sample.status + '\n' + sample.display + '\n' +
+            sample.resolverStatus + '\n' + sample.resolverCandidates + '\n' +
+            (sample.active
+                ? (*sample.active ? "active" : "inactive") : "unknown") + '\n' +
+            std::to_string(sample.gamescopePid.value_or(UINT32_MAX)) + '\n' +
+            std::to_string(sample.xwaylandServerId.value_or(UINT32_MAX)) + '\n' +
+            std::to_string(sample.refreshHz.value_or(0));
+    }
+
+    void logHdrFeedbackDiagnostic(
+            const char* prefix,
+            const GamescopeHdrFeedbackSample& sample) {
+        std::cerr << prefix << sample.status
+                  << "; display="
+                  << (sample.display.empty() ? "(unset)" : sample.display)
+                  << "; resolver="
+                  << (sample.resolverStatus.empty()
+                        ? "(unset)" : sample.resolverStatus)
+                  << "; gamescope_pid="
+                  << sample.gamescopePid.value_or(UINT32_MAX)
+                  << "; server_id="
+                  << sample.xwaylandServerId.value_or(UINT32_MAX)
+                  << "; refresh_hz="
+                  << sample.refreshHz.value_or(0)
+                  << "; active=";
+        if (sample.active)
+            std::cerr << (*sample.active ? 1 : 0);
+        else
+            std::cerr << "unknown";
+        std::cerr
+                  << "; candidates="
+                  << (sample.resolverCandidates.empty()
+                        ? "(none)" : sample.resolverCandidates)
+                  << '\n';
+    }
+
     /// helper function to add required extensions
     std::vector<const char*> add_extensions(const char* const* existingExtensions, size_t count,
             const std::vector<const char*>& requiredExtensions) {
@@ -97,7 +136,9 @@ Root::Root() {
     this->gamescopeManaged = initialHdrFeedback.gamescopeDetected;
     this->lastGamescopeRefreshHz = initialHdrFeedback.refreshHz;
     this->gamescopeRefreshHz = initialHdrFeedback.refreshHz;
-    this->lastHdrFeedbackStatus = initialHdrFeedback.status;
+    this->lastHdrFeedbackDiagnosticKey = hdrFeedbackDiagnosticKey(
+        initialHdrFeedback
+    );
     // Gamescope's root property can still describe the previous held commit
     // while a new process is creating its first swapchain. Treat that startup
     // value as provisional. Normalized high-precision swapchains pass through
@@ -124,6 +165,14 @@ Root::Root() {
                   << " display="
                   << (initialHdrFeedback.display.empty()
                         ? "(unset)" : initialHdrFeedback.display)
+                  << "; resolver=" << initialHdrFeedback.resolverStatus
+                  << "; gamescope_pid="
+                  << initialHdrFeedback.gamescopePid.value_or(UINT32_MAX)
+                  << "; server_id="
+                  << initialHdrFeedback.xwaylandServerId.value_or(UINT32_MAX)
+                  << "; candidates="
+                  << (initialHdrFeedback.resolverCandidates.empty()
+                        ? "(none)" : initialHdrFeedback.resolverCandidates)
                   << '\n';
     }
 
@@ -170,20 +219,13 @@ ConfigurationUpdateResult Root::update() {
                 context.updateGamescopeRefreshRate(this->gamescopeRefreshHz);
             }
         }
-        if (hdrFeedbackSample.status != this->lastHdrFeedbackStatus) {
-            this->lastHdrFeedbackStatus = hdrFeedbackSample.status;
-            std::cerr << "lsfg-vk: Gamescope application HDR feedback status: "
-                      << hdrFeedbackSample.status
-                      << "; display="
-                      << (hdrFeedbackSample.display.empty()
-                            ? "(unset)" : hdrFeedbackSample.display)
-                      << "; gamescope_detected="
-                      << hdrFeedbackSample.gamescopeDetected
-                      << "; server_id="
-                      << hdrFeedbackSample.xwaylandServerId.value_or(UINT32_MAX)
-                      << "; refresh_hz="
-                      << hdrFeedbackSample.refreshHz.value_or(0)
-                      << '\n';
+        const auto diagnosticKey = hdrFeedbackDiagnosticKey(hdrFeedbackSample);
+        if (diagnosticKey != this->lastHdrFeedbackDiagnosticKey) {
+            this->lastHdrFeedbackDiagnosticKey = diagnosticKey;
+            logHdrFeedbackDiagnostic(
+                "lsfg-vk: Gamescope application HDR feedback status: ",
+                hdrFeedbackSample
+            );
         }
         this->lastHdrFeedbackPoll = now;
     }
@@ -316,10 +358,13 @@ void Root::modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
     finish();
 }
 
-void Root::modifySwapchainCreateInfo(const vk::Vulkan& vk, VkSwapchainCreateInfoKHR& createInfo,
+bool Root::modifySwapchainCreateInfo(const vk::Vulkan& vk,
+        VkSwapchainCreateInfoKHR& createInfo,
         const std::function<void(void)>& finish) const {
-    if (!this->active_profile.has_value())
-        return;
+    if (!this->active_profile.has_value()) {
+        finish();
+        return false;
+    }
 
     VkSurfaceCapabilitiesKHR caps{}; // NOLINT (enum value 0)
     auto res = vk.fi().GetPhysicalDeviceSurfaceCapabilitiesKHR(
@@ -327,7 +372,7 @@ void Root::modifySwapchainCreateInfo(const vk::Vulkan& vk, VkSwapchainCreateInfo
     if (res != VK_SUCCESS)
         throw ls::vulkan_error(res, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR() failed");
 
-    context_ModifySwapchainCreateInfo(
+    const bool privateOrderedTransport = context_ModifySwapchainCreateInfo(
         *this->active_profile,
         caps.maxImageCount,
         createInfo,
@@ -335,7 +380,22 @@ void Root::modifySwapchainCreateInfo(const vk::Vulkan& vk, VkSwapchainCreateInfo
         this->gamescopeManaged
     );
 
+    // Gamescope forwards both a MAILBOX base mode and a MAILBOX-only
+    // maintenance1 compatibility list. The private SDR transport changes the
+    // base mode to FIFO, so that list must not reach the lower driver: leaving
+    // it attached makes the create description inconsistent and has surfaced
+    // as a Wine vkCreateSwapchainKHR assertion. Remove only the outer node from
+    // our lower-facing chain; ScopedPNextRemoval never edits its immutable mode
+    // array and restores the caller's chain after finish(). The Gamescope HDR
+    // transport preserves the complete compositor contract.
+    ScopedPNextRemoval presentModes(
+        createInfo.pNext,
+        VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT,
+        privateOrderedTransport
+    );
+
     finish();
+    return privateOrderedTransport;
 }
 
 void Root::createSwapchainContext(const vk::Vulkan& vk,

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -41,6 +42,14 @@ namespace {
         "GAMESCOPE_COLOR_APP_WANTS_HDR_FEEDBACK";
     constexpr char gamescopeRefreshProperty[] =
         "GAMESCOPE_DISPLAY_REFRESH_RATE_FEEDBACK";
+
+    bool runningUnderGamescope() {
+        const char* gamescopeDisplay = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
+        if (gamescopeDisplay && *gamescopeDisplay)
+            return true;
+        return environmentFlagEnabled(std::getenv("ENABLE_GAMESCOPE_WSI")) ||
+            environmentFlagEnabled(std::getenv("STEAM_GAMESCOPE_HDR_SUPPORTED"));
+    }
 }
 
 struct GamescopeHdrFeedbackReader::Impl {
@@ -54,6 +63,12 @@ struct GamescopeHdrFeedbackReader::Impl {
     Atom feedbackAtom{None};
     Window root{None};
     std::string selectedDisplayName;
+    std::string resolverStatus{"not-attempted"};
+    std::string resolverCandidates;
+    std::optional<uint32_t> observedGamescopePid;
+    std::optional<uint32_t> observedServerId;
+    std::chrono::steady_clock::time_point nextDiscoveryAttempt{};
+    bool symbolsResolved{false};
     decltype(&XOpenDisplay) openDisplay{nullptr};
     decltype(&XCloseDisplay) closeDisplay{nullptr};
     decltype(&XInternAtom) internAtom{nullptr};
@@ -129,50 +144,140 @@ struct GamescopeHdrFeedbackReader::Impl {
         return candidates;
     }
 
+    std::vector<std::string> displayProbeCandidates(
+            const std::string& currentName) {
+        auto candidates = this->localDisplayCandidates();
+
+        // Pressure Vessel may expose an Xwayland socket through the abstract
+        // namespace without mirroring every sibling in /tmp/.X11-unix. Probe
+        // the small range Gamescope normally allocates as well as the sockets
+        // visible in the filesystem. XOpenDisplay still performs all normal
+        // Xauthority checks, so an unrelated display cannot be selected unless
+        // its Gamescope PID also matches the game's current display.
+        constexpr uint32_t maximumProbeDisplay = 15;
+        for (uint32_t index = 0; index <= maximumProbeDisplay; index++)
+            candidates.emplace_back(":" + std::to_string(index));
+        candidates.push_back(currentName);
+
+        std::ranges::sort(candidates);
+        candidates.erase(std::unique(candidates.begin(), candidates.end()),
+            candidates.end());
+        return candidates;
+    }
+
+    std::string describeCandidates(
+            const std::vector<GamescopeXwaylandDisplay>& candidates) {
+        std::ostringstream description;
+        bool first = true;
+        for (const auto& candidate : candidates) {
+            if (!first)
+                description << ',';
+            first = false;
+            description << candidate.display << "(pid=";
+            if (candidate.gamescopePid)
+                description << *candidate.gamescopePid;
+            else
+                description << "unset";
+            description << ",server=";
+            if (candidate.serverId)
+                description << *candidate.serverId;
+            else
+                description << "unset";
+            description << ')';
+        }
+        return first ? "none" : description.str();
+    }
+
+    void closeSelectedDisplay() {
+        if (this->display && this->closeDisplay)
+            this->closeDisplay(this->display);
+        this->display = nullptr;
+        this->root = None;
+        this->feedbackAtom = None;
+        this->selectedDisplayName.clear();
+    }
+
     bool initialize() {
         if (this->display)
             return this->root != None;
 
+        const auto now = std::chrono::steady_clock::now();
+        if (now < this->nextDiscoveryAttempt)
+            return false;
+        constexpr auto discoveryRetryInterval = std::chrono::seconds(1);
+        this->nextDiscoveryAttempt = now + discoveryRetryInterval;
+        this->observedGamescopePid.reset();
+        this->observedServerId.reset();
+        this->resolverCandidates.clear();
+
         if (!this->library)
             this->library = dlopen("libX11.so.6", RTLD_NOW | RTLD_LOCAL);
-        if (!this->library)
+        if (!this->library) {
+            this->resolverStatus = "x11-library-unavailable";
             return false;
+        }
 
-        if (!this->openDisplay &&
-                (!this->resolve(this->openDisplay, "XOpenDisplay") ||
-                    !this->resolve(this->closeDisplay, "XCloseDisplay") ||
-                    !this->resolve(this->internAtom, "XInternAtom") ||
-                    !this->resolve(this->defaultRootWindow, "XDefaultRootWindow") ||
-                    !this->resolve(this->getWindowProperty, "XGetWindowProperty") ||
-                    !this->resolve(this->freeData, "XFree")))
-            return false;
+        if (!this->symbolsResolved) {
+            const bool resolved =
+                this->resolve(this->openDisplay, "XOpenDisplay") &&
+                this->resolve(this->closeDisplay, "XCloseDisplay") &&
+                this->resolve(this->internAtom, "XInternAtom") &&
+                this->resolve(
+                    this->defaultRootWindow, "XDefaultRootWindow"
+                ) &&
+                this->resolve(
+                    this->getWindowProperty, "XGetWindowProperty"
+                ) &&
+                this->resolve(this->freeData, "XFree");
+            if (!resolved) {
+                this->resolverStatus = "x11-symbol-resolution-failed";
+                return false;
+            }
+            this->symbolsResolved = true;
+        }
 
         Display* currentDisplay = this->openDisplay(nullptr);
-        if (!currentDisplay)
+        if (!currentDisplay) {
+            this->resolverStatus = "current-display-open-failed";
             return false;
+        }
 
         const char* currentNameValue = std::getenv("DISPLAY");
         const std::string currentName = currentNameValue ? currentNameValue : "";
         const auto currentIdentity = this->identifyDisplay(
             currentName, currentDisplay
         );
+        this->observedGamescopePid = currentIdentity.gamescopePid;
+        this->observedServerId = currentIdentity.serverId;
+        const bool currentIsGamescope = currentIdentity.gamescopePid &&
+            currentIdentity.serverId;
+        const bool currentNeedsRoot = currentIsGamescope &&
+            *currentIdentity.serverId != 0;
+        const bool needsCandidateProbe = currentNeedsRoot ||
+            (!currentIsGamescope && runningUnderGamescope());
 
         std::vector<GamescopeXwaylandDisplay> candidateIdentities;
         std::vector<std::pair<std::string, Display*>> candidateConnections;
-        if (currentIdentity.gamescopePid && currentIdentity.serverId &&
-                *currentIdentity.serverId != 0) {
-            for (const auto& candidateName : this->localDisplayCandidates()) {
+        if (needsCandidateProbe) {
+            for (const auto& candidateName :
+                    this->displayProbeCandidates(currentName)) {
                 if (candidateName == currentName)
                     continue;
-                Display* candidateDisplay = this->openDisplay(candidateName.c_str());
+                Display* candidateDisplay =
+                    this->openDisplay(candidateName.c_str());
                 if (!candidateDisplay)
                     continue;
                 candidateIdentities.push_back(this->identifyDisplay(
                     candidateName, candidateDisplay
                 ));
-                candidateConnections.emplace_back(candidateName, candidateDisplay);
+                candidateConnections.emplace_back(
+                    candidateName, candidateDisplay
+                );
             }
         }
+        this->resolverCandidates = this->describeCandidates(
+            candidateIdentities
+        );
 
         const auto rootDisplayName = selectGamescopeRootDisplay(
             currentIdentity, candidateIdentities
@@ -186,10 +291,29 @@ struct GamescopeHdrFeedbackReader::Impl {
                 this->display = connection->second;
                 connection->second = nullptr;
                 this->closeDisplay(currentDisplay);
+                currentDisplay = nullptr;
             }
         }
-        if (!this->display)
+
+        if (!this->display && (currentNeedsRoot ||
+                (!currentIsGamescope && runningUnderGamescope()))) {
+            this->resolverStatus = currentNeedsRoot
+                ? "gamescope-root-display-unresolved"
+                : "gamescope-current-identity-unavailable";
+            if (currentDisplay)
+                this->closeDisplay(currentDisplay);
+            for (const auto& [name, connection] : candidateConnections) {
+                static_cast<void>(name);
+                if (connection)
+                    this->closeDisplay(connection);
+            }
+            return false;
+        }
+
+        if (!this->display) {
             this->display = currentDisplay;
+            currentDisplay = nullptr;
+        }
         for (const auto& [name, connection] : candidateConnections) {
             static_cast<void>(name);
             if (connection)
@@ -197,10 +321,25 @@ struct GamescopeHdrFeedbackReader::Impl {
         }
 
         this->root = this->defaultRootWindow(this->display);
+        if (this->root == None) {
+            this->resolverStatus = "x11-root-window-unavailable";
+            this->closeSelectedDisplay();
+            return false;
+        }
         const auto selectedIdentity = this->identifyDisplay(
             rootDisplayName.value_or(currentName), this->display
         );
         this->selectedDisplayName = selectedIdentity.display;
+        this->observedGamescopePid = selectedIdentity.gamescopePid;
+        this->observedServerId = selectedIdentity.serverId;
+        if (selectedIdentity.serverId && *selectedIdentity.serverId == 0) {
+            this->resolverStatus = rootDisplayName &&
+                    *rootDisplayName != currentName
+                ? "gamescope-root-display-resolved"
+                : "gamescope-root-display-current";
+        } else {
+            this->resolverStatus = "current-display-selected";
+        }
         this->feedbackAtom = this->internAtom(
             this->display, gamescopeHdrProperty, True
         );
@@ -224,13 +363,19 @@ struct GamescopeHdrFeedbackReader::Impl {
             dxvkHdr && !environmentFlagEnabled(dxvkHdr);
 
         if (!this->initialize()) {
-            sample.status = this->library
-                ? "x11-display-open-failed"
-                : "x11-library-unavailable";
+            sample.gamescopePid = this->observedGamescopePid;
+            sample.xwaylandServerId = this->observedServerId;
+            sample.gamescopeDetected = sample.gamescopePid.has_value() &&
+                sample.xwaylandServerId.has_value();
+            sample.status = this->resolverStatus;
+            sample.resolverStatus = this->resolverStatus;
+            sample.resolverCandidates = this->resolverCandidates;
             return sample;
         }
 
         sample.display = this->selectedDisplayName;
+        sample.resolverStatus = this->resolverStatus;
+        sample.resolverCandidates = this->resolverCandidates;
         sample.gamescopePid = this->readCardinal(
             this->display, this->root, gamescopePidProperty
         );
@@ -239,6 +384,18 @@ struct GamescopeHdrFeedbackReader::Impl {
         );
         sample.gamescopeDetected = sample.gamescopePid.has_value() &&
             sample.xwaylandServerId.has_value();
+
+        // Do not remain attached to a stale or non-root Gamescope server. The
+        // background monitor owns this X11 connection, so dropping it here is
+        // independent of Vulkan presentation and the next bounded discovery
+        // attempt is safe.
+        if (sample.gamescopeDetected && *sample.xwaylandServerId != 0) {
+            sample.status = "gamescope-selected-display-not-root";
+            sample.resolverStatus = sample.status;
+            this->resolverStatus = sample.status;
+            this->closeSelectedDisplay();
+            return sample;
+        }
         sample.refreshHz = this->readCardinal(
             this->display, this->root, gamescopeRefreshProperty
         );
@@ -335,8 +492,7 @@ struct GamescopeHdrFeedbackReader::Impl {
             this->monitor.join();
         }
 #if defined(__linux__)
-        if (this->display && this->closeDisplay)
-            this->closeDisplay(this->display);
+        this->closeSelectedDisplay();
         if (this->library)
             dlclose(this->library);
 #endif

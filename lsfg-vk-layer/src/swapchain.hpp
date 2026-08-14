@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -35,13 +36,18 @@ namespace lsfgvk::layer {
         VkColorSpaceKHR colorSpace;
         VkExtent2D extent;
         VkPresentModeKHR presentMode;
+        // Persist the exact create-time transport decision. HDR feedback can
+        // change later, but Vulkan present mode/pNext compatibility cannot be
+        // reinterpreted without replacing the game-owned swapchain.
+        bool privateOrderedTransport{false};
     };
 
     /// modify the swapchain create info based on the profile pre-swapchain creation
     /// @param profile active game profile
     /// @param maxImages maximum number of images supported by the surface
     /// @param createInfo swapchain create info to modify
-    void context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
+    [[nodiscard]] bool context_ModifySwapchainCreateInfo(
+        const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo, bool gamescopeHdrActive,
         bool gamescopeManaged);
 
@@ -114,9 +120,8 @@ namespace lsfgvk::layer {
         size_t fidx{0}; // real frame index
         size_t backendFrameIndex{0};
         bool renderFenceInFlight{false};
-        bool generatedImageAcquireBackoff{false};
-        size_t generatedImageAcquireBypassCount{0};
-        std::optional<std::chrono::steady_clock::time_point> generatedImageAcquireLastBoundedProbe;
+        GeneratedImageAdmission generatedImageAdmission;
+        PipelineBusyRecovery pipelineBusyRecovery;
         bool backendRecoveryPending{false};
         std::optional<AdaptiveScheduler> adaptiveScheduler;
         std::vector<float> fixedFrameTimestamps;
@@ -129,6 +134,9 @@ namespace lsfgvk::layer {
         uint64_t diagnosticsContextId{0};
 
         bool gamescopeManaged{false};
+        // Immutable for this context; copied from SwapchainInfo rather than
+        // inferred again from the current SDR/HDR colour pipeline.
+        bool privateOrderedTransport{false};
         std::optional<uint32_t> gamescopeRefreshHz;
         std::optional<bool> pendingGamescopeHdrActive;
         uint64_t pendingHdrStateRevision{0};
@@ -145,6 +153,12 @@ namespace lsfgvk::layer {
         [[nodiscard]] bool applyPendingColorPipeline(const vk::Vulkan& vk);
         void rebuildPrivateResources(const vk::Vulkan& vk,
             SwapchainColorPipeline pipeline);
+        VkResult retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
+            VkQueue queue, VkSwapchainKHR swapchain, const void* nextChain,
+            uint32_t originalImageIndex,
+            const std::vector<VkSemaphore>& applicationWaitSemaphores,
+            std::span<const uint32_t> acquiredImageIndices,
+            VkImage originalImage);
     };
 
 }

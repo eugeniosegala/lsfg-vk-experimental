@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "adaptive_scheduler.hpp"
+#include "presentation_policy.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,6 +11,7 @@ using namespace lsfgvk::layer;
 
 namespace {
     constexpr size_t adaptiveHistoryWarmupFrames = 3;
+    constexpr size_t adaptiveSdrCadenceRefreshFrames = 2;
     constexpr double adaptiveMinimumBaseFps = 10.0;
     constexpr double adaptiveIntervalSmoothing = 0.25;
     constexpr double adaptiveCadenceDropRatio = 2.0;
@@ -99,6 +101,13 @@ void AdaptiveScheduler::beginHistoryWarmup(const size_t frames,
     this->adaptiveHistoryWarmupIsRecovery = recovery && frames > 0;
 }
 
+void AdaptiveScheduler::ensureHistoryWarmup(const size_t frames,
+        const bool recovery) {
+    if (this->adaptiveHistoryWarmupRemaining > 0)
+        return;
+    this->beginHistoryWarmup(frames, recovery);
+}
+
 void AdaptiveScheduler::cancelHistoryWarmup() {
     this->adaptiveHistoryWarmupRemaining = 0;
     this->adaptiveHistoryWarmupIsRecovery = false;
@@ -182,6 +191,10 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
         // stable-cadence, or load-shed policy while the generated workload is
         // deliberately bypassed. Evaluating a multiplier during this phase
         // would measure only the real-frame path and could falsely accept it.
+        // Pressure belongs to the compositor admission path, not the game's
+        // cadence. Keep the real-frame clock current so clearing pressure does
+        // not manufacture a cadence stall from the bypass interval.
+        this->adaptiveLastRealFrame = now;
         AdaptiveFramePlan plan;
         plan.values.front() = 0.5F;
         plan.count = 1;
@@ -218,6 +231,10 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
     // for a bounded interval instead of immediately reapplying model load.
     if (rawIntervalSeconds <= 0.0) {
         finishFastCadenceBurst();
+        if (this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr) {
+            this->beginCadenceRefresh(now, "cadence-stall");
+            return {};
+        }
         this->beginStabilization(now, "cadence-stall");
         return {};
     }
@@ -279,6 +296,11 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
     finishFastCadenceBurst();
 
     if (rawIntervalSeconds > 1.0 / adaptiveMinimumBaseFps) {
+        if (this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr) {
+            this->beginCadenceRefresh(now, "cadence-stall");
+            return {};
+        }
+
         const size_t configuredGenerationLimit = std::min(
             this->config.generatedFrameCapacity,
             this->config.maximumMultiplier - 1
@@ -327,6 +349,10 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
         this->adaptiveCadenceDropFrames = 0;
     }
     if (this->adaptiveCadenceDropFrames >= adaptiveCadenceDropFrameCount) {
+        if (this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr) {
+            this->beginCadenceRefresh(now, "cadence-drop");
+            return {};
+        }
         this->beginStabilization(now, "cadence-drop");
         return {};
     }
@@ -693,10 +719,10 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
             const double evaluatedDemandRatio =
                 desiredOutputsPerRealFrame /
                 static_cast<double>(evaluatedGeneratedLimit + 1);
-            const bool deliveryHealthy =
-                this->adaptiveStableCadencePlannedGeneratedFrames == 0 ||
-                this->adaptiveStableCadenceOnTimeGeneratedFrames ==
-                    this->adaptiveStableCadencePlannedGeneratedFrames;
+            const bool deliveryHealthy = generatedDeliveryHealthy(
+                this->adaptiveStableCadencePlannedGeneratedFrames,
+                this->adaptiveStableCadenceOnTimeGeneratedFrames
+            );
             const bool accepted = deliveryHealthy &&
                 evaluatedDemandRatio >=
                     adaptiveStableCadenceMinimumDemandRatio &&
@@ -826,12 +852,11 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
         this->adaptiveOutputCredit = 0.0;
     }
 
-    // A ramp can pass its one-second evaluation and still settle into a
-    // slower compositor divisor afterwards. Monitor only when strict Adaptive
-    // is actually using the newly validated maximum load. If that load causes
-    // a sustained base-rate collapse without a meaningful estimated-output
-    // gain, briefly measure real-only cadence and return to the previous proven
-    // level instead of remaining trapped at the higher multiplier.
+    // A ramp can pass its one-second evaluation and still settle into a slower
+    // compositor divisor afterwards. Ordered SDR can immediately restore its
+    // previous proven generated level because FIFO delivery is deterministic.
+    // The Gamescope HDR bridge first measures real-only cadence because a
+    // collapse there may instead be colour-transition or admission pressure.
     const double strictBaselineOutputFps = std::min(
         static_cast<double>(this->config.targetFps),
         this->adaptiveStrictLoadBaselineBaseFps *
@@ -861,27 +886,63 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
         if (now - *this->adaptiveStrictLoadCollapseSince >=
                 adaptiveStrictLoadCollapseDuration) {
             const size_t collapsedLimit = this->adaptiveGenerationLimit;
-            this->adaptiveRescuePreviousLimit =
-                this->adaptiveStrictLoadBaselineLimit;
-            this->adaptiveRescueBaselineBaseFps =
-                this->adaptiveStrictLoadBaselineBaseFps;
-            this->adaptiveRescueFromStrictLoad = true;
-            this->adaptiveRescueStrictLoadLimit = collapsedLimit;
-            this->adaptiveRescueUntil = now + adaptiveRescueMeasurementDuration;
-            this->adaptiveRescueCooldownUntil = now + adaptiveRescueCooldown;
-            this->adaptiveTargetDeficitSince.reset();
-            this->adaptiveStrictLoadBaselineLimit = 0;
-            this->adaptiveStrictLoadBaselineBaseFps = 0.0;
-            this->adaptiveStrictLoadCollapseSince.reset();
-            this->adaptiveOutputCredit = 0.0;
-            this->diagnostics->rescueStart(
-                collapsedLimit,
-                this->adaptiveRescueBaselineBaseFps,
-                baseFps,
-                strictCurrentOutputFps,
-                "strict-load-collapse"
-            );
-            return {};
+            if (this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr) {
+                // The ordered SDR path does not need a disruptive one-second
+                // real-only measurement. A higher multiplier can immediately
+                // fall back to its cheaper proven level; 2x is retained because
+                // there is no cheaper generated policy to compare against.
+                const size_t fallbackLimit =
+                    this->adaptiveStrictLoadBaselineLimit;
+                const size_t resumedLimit = fallbackLimit > 0
+                    ? fallbackLimit : collapsedLimit;
+                const double baselineBaseFps =
+                    this->adaptiveStrictLoadBaselineBaseFps;
+                this->adaptiveGenerationLimit = resumedLimit;
+                this->adaptiveRampPreviousLimit = resumedLimit;
+                this->adaptiveNextRampAt = now + adaptiveRescueCooldown;
+                this->adaptiveRescueCooldownUntil =
+                    now + adaptiveRescueCooldown;
+                this->adaptiveTargetDeficitSince.reset();
+                this->adaptiveStrictLoadBaselineLimit = 0;
+                this->adaptiveStrictLoadBaselineBaseFps = 0.0;
+                this->adaptiveStrictLoadCollapseSince.reset();
+                this->adaptiveOutputCredit = 0.0;
+                generatedFrameCount = std::min(
+                    generatedFrameCount, resumedLimit
+                );
+                this->diagnostics->loadShed(
+                    collapsedLimit,
+                    resumedLimit,
+                    baselineBaseFps,
+                    baseFps,
+                    fallbackLimit > 0
+                        ? "sdr-direct-fallback"
+                        : "sdr-retain-2x"
+                );
+            } else {
+                this->adaptiveRescuePreviousLimit =
+                    this->adaptiveStrictLoadBaselineLimit;
+                this->adaptiveRescueBaselineBaseFps =
+                    this->adaptiveStrictLoadBaselineBaseFps;
+                this->adaptiveRescueFromStrictLoad = true;
+                this->adaptiveRescueStrictLoadLimit = collapsedLimit;
+                this->adaptiveRescueUntil =
+                    now + adaptiveRescueMeasurementDuration;
+                this->adaptiveRescueCooldownUntil = now + adaptiveRescueCooldown;
+                this->adaptiveTargetDeficitSince.reset();
+                this->adaptiveStrictLoadBaselineLimit = 0;
+                this->adaptiveStrictLoadBaselineBaseFps = 0.0;
+                this->adaptiveStrictLoadCollapseSince.reset();
+                this->adaptiveOutputCredit = 0.0;
+                this->diagnostics->rescueStart(
+                    collapsedLimit,
+                    this->adaptiveRescueBaselineBaseFps,
+                    baseFps,
+                    strictCurrentOutputFps,
+                    "strict-load-collapse"
+                );
+                return {};
+            }
         }
     } else {
         this->adaptiveStrictLoadCollapseSince.reset();
@@ -1024,6 +1085,47 @@ void AdaptiveScheduler::restoreGenerationLimit(
         : AdaptiveScheduler::Clock::duration::zero();
     this->adaptiveNextRampAt = stabilizationEnd + higherProbeDelay;
     this->diagnostics->recoveryResume(restoredLimit, higherProbeDelay, reason);
+}
+
+void AdaptiveScheduler::beginCadenceRefresh(
+        const std::chrono::steady_clock::time_point now,
+        const std::string_view reason) {
+    // Ordinary SDR menu/game cadence changes invalidate temporal history, but
+    // they do not prove that the already validated multiplier is unsafe. Drop
+    // only an unvalidated probe, refresh two real frames, and resume the proven
+    // level immediately instead of entering a 1-5 second real-only recovery.
+    const size_t retainedGenerationLimit = this->validatedGenerationLimit();
+    const AdaptiveGenerationLoadBaseline loadBaseline =
+        this->generationLoadBaseline();
+    if (this->adaptiveRampEvaluationAt) {
+        this->diagnostics->probeAborted(reason, this->adaptiveGenerationLimit);
+    }
+
+    this->adaptiveStabilizationUntil.reset();
+    this->adaptiveDiscontinuityRecoveryDeadline.reset();
+    this->adaptiveDiscontinuityStableSince.reset();
+    this->adaptiveDiscontinuityGenerationLimit = 0;
+    this->adaptiveDiscontinuityFallbackGenerationLimit = 0;
+    this->adaptiveDiscontinuityBaselineBaseFps = 0.0;
+    this->adaptiveDiscontinuitySoftRecoveryAttempted = false;
+    this->adaptiveRampPlannedGeneratedFrames = 0;
+    this->adaptiveRampOnTimeGeneratedFrames = 0;
+    this->adaptiveCadenceDropFrames = 0;
+
+    this->restoreGenerationLimit(
+        now,
+        retainedGenerationLimit,
+        "sdr-cadence-refresh",
+        loadBaseline.baseFps > 0.0
+            ? std::optional<size_t>{loadBaseline.fallbackGenerationLimit}
+            : std::nullopt,
+        loadBaseline.baseFps
+    );
+    this->beginHistoryWarmup(adaptiveSdrCadenceRefreshFrames, false);
+    this->resetTiming(now);
+    this->diagnostics->cadenceRefresh(
+        reason, retainedGenerationLimit, adaptiveSdrCadenceRefreshFrames
+    );
 }
 
 void AdaptiveScheduler::beginDiscontinuityRecovery(
@@ -1301,10 +1403,10 @@ void AdaptiveScheduler::updateGenerationLimit(
                 targetFps,
                 baseFps * static_cast<double>(testedLimit + 1)
             );
-            const bool deliveryHealthy =
-                this->adaptiveRampPlannedGeneratedFrames == 0 ||
-                this->adaptiveRampOnTimeGeneratedFrames ==
-                    this->adaptiveRampPlannedGeneratedFrames;
+            const bool deliveryHealthy = generatedDeliveryHealthy(
+                this->adaptiveRampPlannedGeneratedFrames,
+                this->adaptiveRampOnTimeGeneratedFrames
+            );
             const bool accepted = deliveryHealthy &&
                 baseFps >= adaptiveMinimumBaseFps &&
                 baseFps >= this->adaptiveBridgeBaselineBaseFps *
@@ -1367,10 +1469,10 @@ void AdaptiveScheduler::updateGenerationLimit(
         const bool baseCollapsedForMarginalGain =
             baseFps < this->adaptiveRampBaselineBaseFps * adaptiveRampBaseCollapseRatio &&
             currentOutputFps < previousOutputFps * adaptiveRampMarginalGain;
-        const bool deliveryHealthy =
-            this->adaptiveRampPlannedGeneratedFrames == 0 ||
-            this->adaptiveRampOnTimeGeneratedFrames ==
-                this->adaptiveRampPlannedGeneratedFrames;
+        const bool deliveryHealthy = generatedDeliveryHealthy(
+            this->adaptiveRampPlannedGeneratedFrames,
+            this->adaptiveRampOnTimeGeneratedFrames
+        );
         const bool accepted = deliveryHealthy && !throughputRegressed &&
             !baseCollapsedForMarginalGain;
         const size_t bridgeLimit = std::min(configuredLimit, testedLimit + 1);

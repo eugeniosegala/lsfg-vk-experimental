@@ -62,7 +62,8 @@ namespace lsfgvk::layer {
         /// @param vk vulkan instance
         /// @param createInfo original create info
         /// @param finish function to call after modification
-        void modifySwapchainCreateInfo(const vk::Vulkan& vk, VkSwapchainCreateInfoKHR& createInfo,
+        [[nodiscard]] bool modifySwapchainCreateInfo(
+            const vk::Vulkan& vk, VkSwapchainCreateInfoKHR& createInfo,
             const std::function<void(void)>& finish) const;
         /// create swapchain context
         /// @param vk vulkan instance
@@ -98,7 +99,7 @@ namespace lsfgvk::layer {
         std::optional<uint32_t> gamescopeRefreshHz;
         std::optional<bool> lastHdrFeedbackSample;
         std::optional<uint32_t> lastGamescopeRefreshHz;
-        std::string lastHdrFeedbackStatus;
+        std::string lastHdrFeedbackDiagnosticKey;
         std::optional<std::chrono::steady_clock::time_point> lastHdrFeedbackPoll;
         uint64_t runtimeStateRevision{1};
     };

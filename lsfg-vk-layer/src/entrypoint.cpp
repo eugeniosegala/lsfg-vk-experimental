@@ -299,7 +299,8 @@ namespace {
 
             // create swapchain
             VkSwapchainCreateInfoKHR newInfo = *info;
-            layer_info->root.modifySwapchainCreateInfo(it->second, newInfo,
+            const bool privateOrderedTransport =
+                layer_info->root.modifySwapchainCreateInfo(it->second, newInfo,
                 [=, newInfo = &newInfo]() {
                     auto res = it->second.df().CreateSwapchainKHR(
                         device, newInfo, alloc, swapchain);
@@ -326,7 +327,8 @@ namespace {
                 .format = newInfo.imageFormat,
                 .colorSpace = newInfo.imageColorSpace,
                 .extent = newInfo.imageExtent,
-                .presentMode = newInfo.presentMode
+                .presentMode = newInfo.presentMode,
+                .privateOrderedTransport = privateOrderedTransport,
             }).first->second;
 
             // create lsfg-vk swapchain

@@ -93,7 +93,9 @@ layer::SwapchainColorPipeline layer::classifySwapchainColor(
     // must remain below Gamescope so Wine's WSI bridge can translate its
     // dispatchable handles before they reach us. Recover the transfer
     // function only when Gamescope's application feedback confirms that the
-    // active game requested HDR and the format is one of its HDR formats.
+    // active game requested HDR and the format is one of its HDR formats. Bit
+    // depth alone is insufficient: without confirmed feedback the identical
+    // packed 10-bit/sRGB pair below remains high-precision SDR.
     if (gamescopeHdrActive &&
             colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
         if (isHdr10Format(format)) {

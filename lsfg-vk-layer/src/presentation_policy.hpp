@@ -7,40 +7,224 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 namespace lsfgvk::layer {
 
-    /// Bound a generated-image acquire to the time in which the synthetic
-    /// frame can still occupy its intended display slot.
-    [[nodiscard]] inline uint64_t generatedImageDeadlineNs(
-            const std::optional<uint32_t> refreshHz,
-            const std::optional<std::chrono::steady_clock::duration> realInterval,
-            const size_t outputFrames,
-            const std::optional<uint64_t> configuredMaximum) {
-        constexpr uint64_t minimumNs = 1'000'000;
-        constexpr uint64_t maximumNs = 12'000'000;
-        constexpr uint64_t nanosecondsPerSecond = 1'000'000'000;
+    /// SteamOS/Gamescope integration boundary.
+    ///
+    /// This is not a general Vulkan rule that Linux SDR requires FIFO and HDR
+    /// requires MAILBOX. Gamescope's WSI layer runs above LSFG, implements the
+    /// application's pacing there, then forwards a MAILBOX lower swapchain.
+    /// LSFG runs below that hook and expands one application present into
+    /// synthetic present(s) plus the original, so those injected presents do
+    /// not pass through Gamescope's upper QueuePresent policy individually.
+    ///
+    /// The fork's established SDR path therefore owns a private FIFO sequence:
+    /// it provides ordering and backpressure for every generated/original
+    /// image. HDR-capable Gamescope swapchains retain Gamescope's lower WSI
+    /// contract because its format/colour-space normalization and HDR feedback
+    /// are part of that bridge. The decision is made once from create-time
+    /// capability and must remain stable for the lifetime of the swapchain.
+    enum class PresentationTransport {
+        OrderedSdr,
+        GamescopeHdr,
+    };
 
-        uint64_t slotNs = maximumNs;
-        if (refreshHz && *refreshHz > 0) {
-            slotNs = nanosecondsPerSecond / *refreshHz;
-        } else if (realInterval && outputFrames > 0) {
-            const auto intervalNs = std::chrono::duration_cast<
-                std::chrono::nanoseconds>(*realInterval).count();
-            if (intervalNs > 0) {
-                slotNs = static_cast<uint64_t>(intervalNs) /
-                    static_cast<uint64_t>(outputFrames);
-            }
+    /// Gamescope can normalize the colour space before LSFG sees it, so the
+    /// HDR-capable create-time format is the stable discriminator while live
+    /// application-HDR feedback is still provisional. Live feedback may
+    /// rebuild colour resources; it must not change the transport underneath
+    /// an already-created VkSwapchainKHR.
+    [[nodiscard]] inline PresentationTransport selectPresentationTransport(
+            const bool gamescopeManaged,
+            const bool hdrCapableSwapchain) {
+        return gamescopeManaged && hdrCapableSwapchain
+            ? PresentationTransport::GamescopeHdr
+            : PresentationTransport::OrderedSdr;
+    }
+
+    /// Generated images on the Gamescope HDR bridge are opportunistic: waiting
+    /// for one blocks the application's real present and caused deterministic
+    /// 7-13 ms stalls at 120 Hz. A zero timeout means "native frame wins", not
+    /// a backend failure. Ordered/legacy paths retain their configured ceiling
+    /// because their synchronous FIFO contract is intentionally different.
+    [[nodiscard]] inline uint64_t generatedImageAcquireTimeout(
+            const bool gamescopeManaged,
+            const std::optional<uint64_t> configuredTimeout) {
+        if (gamescopeManaged)
+            return 0;
+        return configuredTimeout.value_or(std::numeric_limits<uint64_t>::max());
+    }
+
+    struct GeneratedImageAdmissionRecovery {
+        bool resumed{false};
+        size_t missedAttempts{0};
+        size_t bypassedFrames{0};
+    };
+
+    /// Tracks temporary generated-swapchain pressure without turning it into
+    /// an engine or temporal-history failure. Gamescope admission is always
+    /// non-blocking; this state exists only to aggregate diagnostics and report
+    /// the eventual recovery.
+    class GeneratedImageAdmission {
+    public:
+        [[nodiscard]] bool underPressure() const {
+            return this->pressure;
         }
 
-        // Leave a quarter of the display slot for the copy and present itself.
-        uint64_t deadlineNs = std::clamp(
-            slotNs * 3 / 4, minimumNs, maximumNs
-        );
-        if (configuredMaximum)
-            deadlineNs = std::min(deadlineNs, *configuredMaximum);
-        return std::max(deadlineNs, minimumNs);
+        /// Record an unavailable image. Returns true for the first miss and
+        /// then at power-of-two intervals, allowing diagnostics to remain
+        /// useful without synchronously logging every real frame.
+        [[nodiscard]] bool reportUnavailable() {
+            if (!this->pressure) {
+                this->pressure = true;
+                this->missedAttempts = 1;
+                this->bypassedFrames = 0;
+                return true;
+            }
+
+            this->missedAttempts++;
+            return (this->missedAttempts & (this->missedAttempts - 1)) == 0;
+        }
+
+        void reportBypassedFrame() {
+            if (this->pressure)
+                this->bypassedFrames++;
+        }
+
+        [[nodiscard]] GeneratedImageAdmissionRecovery reportAvailable() {
+            const GeneratedImageAdmissionRecovery recovery{
+                .resumed = this->pressure,
+                .missedAttempts = this->missedAttempts,
+                .bypassedFrames = this->bypassedFrames,
+            };
+            this->reset();
+            return recovery;
+        }
+
+        void reset() {
+            this->pressure = false;
+            this->missedAttempts = 0;
+            this->bypassedFrames = 0;
+        }
+
+    private:
+        bool pressure{false};
+        size_t missedAttempts{0};
+        size_t bypassedFrames{0};
+    };
+
+    struct PipelineBusyDecision {
+        bool diagnostic{false};
+        bool requestHistoryWarmup{false};
+        size_t consecutiveFrames{0};
+        size_t totalBypassedFrames{0};
+        std::chrono::steady_clock::duration duration{};
+    };
+
+    struct PipelineBusyRecoveryEvent {
+        bool resumed{false};
+        bool diagnostic{false};
+        bool historyWarmupRequested{false};
+        size_t bypassedFrames{0};
+        size_t totalRecoveries{0};
+        std::chrono::steady_clock::duration duration{};
+    };
+
+    /// Classifies overlap with previously submitted GPU work separately from
+    /// a genuine pipeline stall. A one-frame busy result is normal at high
+    /// real-frame rates and must not invalidate temporal history. Only one
+    /// uninterrupted busy interval that reaches the sustained threshold asks
+    /// the caller to warm history again.
+    class PipelineBusyRecovery {
+    public:
+        using TimePoint = std::chrono::steady_clock::time_point;
+
+        [[nodiscard]] static constexpr auto sustainedThreshold() {
+            return std::chrono::milliseconds{250};
+        }
+
+        [[nodiscard]] PipelineBusyDecision reportBusy(const TimePoint now) {
+            if (!this->startedAt) {
+                this->startedAt = now;
+                this->bypassedFrames = 0;
+                this->historyWarmupRequested = false;
+            }
+
+            this->bypassedFrames++;
+            this->totalBypassedFrames++;
+            const auto duration = now - *this->startedAt;
+            const bool requestHistoryWarmup =
+                !this->historyWarmupRequested &&
+                duration >= sustainedThreshold();
+            if (requestHistoryWarmup)
+                this->historyWarmupRequested = true;
+
+            const bool powerOfTwo =
+                (this->totalBypassedFrames &
+                    (this->totalBypassedFrames - 1)) == 0;
+            return {
+                .diagnostic = powerOfTwo || requestHistoryWarmup,
+                .requestHistoryWarmup = requestHistoryWarmup,
+                .consecutiveFrames = this->bypassedFrames,
+                .totalBypassedFrames = this->totalBypassedFrames,
+                .duration = duration,
+            };
+        }
+
+        [[nodiscard]] PipelineBusyRecoveryEvent reportReady(
+                const TimePoint now) {
+            if (this->startedAt)
+                this->totalRecoveries++;
+            const bool diagnostic = this->startedAt &&
+                (this->historyWarmupRequested ||
+                 (this->totalRecoveries & (this->totalRecoveries - 1)) == 0);
+            const PipelineBusyRecoveryEvent event{
+                .resumed = this->startedAt.has_value(),
+                .diagnostic = diagnostic,
+                .historyWarmupRequested = this->historyWarmupRequested,
+                .bypassedFrames = this->bypassedFrames,
+                .totalRecoveries = this->totalRecoveries,
+                .duration = this->startedAt
+                    ? now - *this->startedAt
+                    : std::chrono::steady_clock::duration{},
+            };
+            this->clearInterval();
+            return event;
+        }
+
+        void reset() {
+            this->clearInterval();
+            this->totalBypassedFrames = 0;
+            this->totalRecoveries = 0;
+        }
+
+    private:
+        void clearInterval() {
+            this->startedAt.reset();
+            this->bypassedFrames = 0;
+            this->historyWarmupRequested = false;
+        }
+
+        std::optional<TimePoint> startedAt;
+        size_t bypassedFrames{0};
+        bool historyWarmupRequested{false};
+        size_t totalBypassedFrames{0};
+        size_t totalRecoveries{0};
+    };
+
+    /// Delivery evaluations tolerate up to five percent pressure over a full
+    /// evaluation window. Short windows must still deliver every requested
+    /// frame, so a single total miss cannot validate a multiplier.
+    [[nodiscard]] inline bool generatedDeliveryHealthy(
+            const size_t planned, const size_t delivered) {
+        if (planned == 0)
+            return true;
+        const size_t clampedDelivered = std::min(planned, delivered);
+        const size_t toleratedMisses = planned / 20;
+        return planned - clampedDelivered <= toleratedMisses;
     }
 
     /// Deterministically suppress synthetic frames which cannot be scanned out
