@@ -49,7 +49,7 @@ namespace lsfgvk::layer {
     [[nodiscard]] bool context_ModifySwapchainCreateInfo(
         const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo, bool gamescopeHdrActive,
-        bool gamescopeManaged);
+        bool gamescopeManaged, bool hdrExposureDisabled);
 
     /// swapchain context for a layer instance
     class Swapchain {
@@ -62,7 +62,7 @@ namespace lsfgvk::layer {
         Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
             std::optional<bool> gamescopeHdrActive,
-            bool gamescopeManaged,
+            bool gamescopeManaged, bool hdrExposureDisabled,
             std::optional<uint32_t> gamescopeRefreshHz,
             uint64_t runtimeStateRevision);
 

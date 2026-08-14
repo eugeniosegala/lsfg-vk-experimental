@@ -89,10 +89,18 @@ namespace {
     SwapchainColorPipeline initialColorPipeline(
             const VkFormat format, const VkColorSpaceKHR colorSpace,
             const std::optional<bool> gamescopeHdrActive,
-            const bool gamescopeManaged) {
+            const bool gamescopeManaged,
+            const bool hdrExposureDisabled) {
         auto pipeline = classifySwapchainColor(
             format, colorSpace, gamescopeHdrActive.value_or(false)
         );
+        if (hdrExposureDisabled && pipeline.hdr) {
+            pipeline.generationSupported = false;
+            pipeline.name = "hdr-exposure-disabled";
+            pipeline.reason =
+                "experimental HDR frame generation is disabled for this process";
+            return pipeline;
+        }
         if (gamescopeManaged && !gamescopeHdrActive &&
                 pipeline.encoding == backend::FrameEncoding::SdrHighPrecision) {
             pipeline.generationSupported = false;
@@ -869,12 +877,13 @@ namespace {
 bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo, const bool gamescopeHdrActive,
-        const bool gamescopeManaged) {
+        const bool gamescopeManaged, const bool hdrExposureDisabled) {
     const auto colorPipeline = classifySwapchainColor(
         createInfo.imageFormat, createInfo.imageColorSpace,
         gamescopeHdrActive
     );
-    if (!colorPipeline.generationSupported)
+    if (!colorPipeline.generationSupported ||
+            (hdrExposureDisabled && colorPipeline.hdr))
         return false;
 
     createInfo.imageUsage |=
@@ -890,8 +899,9 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
             if (maxImages && createInfo.minImageCount > maxImages)
                 createInfo.minImageCount = maxImages;
 
-            const bool hdrCapableSwapchain = colorPipeline.hdr ||
-                colorPipeline.encoding == backend::FrameEncoding::SdrHighPrecision;
+            const bool hdrCapableSwapchain = !hdrExposureDisabled &&
+                (colorPipeline.hdr ||
+                    colorPipeline.encoding == backend::FrameEncoding::SdrHighPrecision);
             const auto transport = selectPresentationTransport(
                 gamescopeManaged, hdrCapableSwapchain
             );
@@ -917,6 +927,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
             const std::optional<bool> gamescopeHdrActive,
             const bool gamescopeManaged,
+            const bool hdrExposureDisabled,
             const std::optional<uint32_t> gamescopeRefreshHz,
             const uint64_t runtimeStateRevision) :
         instance(backend),
@@ -924,7 +935,8 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
         privateOrderedTransport(info.privateOrderedTransport),
         gamescopeRefreshHz(gamescopeRefreshHz),
         colorPipeline(initialColorPipeline(
-            info.format, info.colorSpace, gamescopeHdrActive, gamescopeManaged
+            info.format, info.colorSpace, gamescopeHdrActive, gamescopeManaged,
+            hdrExposureDisabled
         )),
         profile(std::move(profile)), info(std::move(info)) {
     this->diagnosticsContextId = allocateDiagnosticsContextId();

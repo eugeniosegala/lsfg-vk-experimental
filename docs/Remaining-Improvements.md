@@ -1,9 +1,9 @@
 # LSFG-VK improvement roadmap
 
 This is a new, ordered backlog for the experimental branch. It starts from the
-known-good `experimental.22` recovery checkpoint; it is not a record of prior
-experiments. Every performance candidate must be measured against that
-checkpoint, tested in isolation, and rejected for any reproducible quality,
+known-good `experimental.22` recovery checkpoint and the SDR path revalidated
+for `experimental.25`; it is not a record of prior experiments. Every
+performance candidate must be measured against that path, tested in isolation, and rejected for any reproducible quality,
 stability, or recovery regression.
 
 ## Withdrawn experiment: submission bookkeeping
@@ -58,6 +58,9 @@ stability, or recovery regression.
 
 ## HDR validation
 
+- Treat the `.25` HDR implementation as disabled-by-default foundation, not a
+  completed compatibility claim. The companion Decky wrapper retains its
+  isolated SDR boundary until a user deliberately opts into HDR testing.
 - Treat linear scRGB as the model's canonical HDR working space. Keep HDR10
   BT.2020/PQ decoding before the model and encoding after it explicit; never
   infer HDR from a numeric `VkFormat` range.

@@ -95,6 +95,7 @@ namespace lsfgvk::layer {
         GamescopeHdrFeedbackReader hdrFeedbackReader;
         StableBooleanFeedback hdrFeedback;
         std::optional<bool> gamescopeHdrActive;
+        bool hdrExposureDisabled{false};
         bool gamescopeManaged{false};
         std::optional<uint32_t> gamescopeRefreshHz;
         std::optional<bool> lastHdrFeedbackSample;

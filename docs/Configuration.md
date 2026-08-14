@@ -90,8 +90,9 @@ The following environment variables affect lsfg-vk:
   sets both so only its private engine is active for the wrapped game.
 - `LSFGVK_CONFIG`: Path to the configuration file.
 - `LSFGVK_PROFILE`: Name of the profile to use. If set, this will override automatic profile detection.
-- `LSFGVK_DISABLE_HDR_EXPOSURE`: Set to `1` by a restart-time SDR compatibility launch. It prevents Gamescope HDR
-  exposure from being used and keeps every HDR evidence path disabled for that process. HDR-capable launches do not
+- `LSFGVK_DISABLE_HDR_EXPOSURE`: Set to `1` by the companion Decky plugin's default restart-time SDR launch, or by a
+  direct launcher that wants the same hard boundary. It overrides Gamescope/DXVK HDR capability and keeps every HDR
+  evidence path disabled for that process. HDR-capable launches do not
   force the engine into HDR: application colour-space feedback or HDR metadata must still confirm application intent.
 - `LSFGVK_PRESENT_ACQUIRE_TIMEOUT_MS`: Optional timeout for generated-image acquisition. A timeout enters the
   Gamescope presentation fallback; unset or `0` keeps the normal unbounded acquisition path.

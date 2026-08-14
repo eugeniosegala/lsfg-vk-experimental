@@ -24,13 +24,6 @@
 using namespace lsfgvk::layer;
 
 namespace {
-    bool environmentFlagEnabled(const char* value) {
-        if (!value)
-            return false;
-        const std::string_view flag(value);
-        return flag == "1" || flag == "true" || flag == "yes" || flag == "on";
-    }
-
     bool gamescopeHdrFeedbackMayChange() {
         const char* display = std::getenv("DISPLAY");
         return display && *display;
@@ -389,7 +382,9 @@ struct GamescopeHdrFeedbackReader::Impl {
         // WSI ownership remain relevant to SDR presentation.
         const char* dxvkHdr = std::getenv("DXVK_HDR");
         const bool hdrExposureDisabled =
-            dxvkHdr && !environmentFlagEnabled(dxvkHdr);
+            hdrExposureDisabledFromEnvironment(
+                std::getenv("LSFGVK_DISABLE_HDR_EXPOSURE"), dxvkHdr
+            );
 
         if (!this->initialize()) {
             sample.gamescopePid = this->observedGamescopePid;

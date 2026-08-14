@@ -114,31 +114,42 @@ This is an experimental build of the lsfg-vk 2.x development line. Test it game 
 
 ## What's new since \`$notes_previous_version\`
 
-This \`.25\` candidate adds explicit swapchain format/colour-space classification and supports the standard Gamescope HDR10/PQ and linear-scRGB paths without a user-facing HDR switch.
-
-HDR10 input is converted from BT.2020/PQ into linear scRGB before the model and converted back after generation. Linear scRGB is passed directly to the model with its HDR constants enabled. Unvalidated HDR encodings stay on automatic real-frame passthrough instead of generating washed-out output.
+This \`.25\` release consolidates the tested SDR runtime, safer live configuration and recovery, and complete dual-architecture packaging. It also carries an HDR pipeline foundation for future testing; HDR frame generation is not presented as release-ready.
 
 ### Changes introduced in this release
 
-- Classifies the complete Vulkan format/colour-space pair instead of inferring HDR from a numeric format range.
-- Supports both Gamescope packed HDR10 swapchain channel orders and FP16 linear scRGB.
-- Decodes ST 2084 and converts BT.2020 to linear BT.709/scRGB before inference, then performs the inverse conversion for presentation.
-- Keeps 8-bit and high-precision SDR model semantics distinct from HDR while selecting the correct storage-image format.
-- Makes configuration reloads resilient to transient partial TOML writes instead of losing the update.
-- Applies Frame Generation and Adaptive target, maximum multiplier, and Smooth Cadence changes safely in place. Changes that alter GPU resources or presentation shape are deferred; restart the game to guarantee those settings are rebuilt.
-- Replaces indefinite device-wide waits during context replacement with bounded per-context retirement. A transient backend scheduling stall keeps native presentation active, then warms temporal history before frame generation resumes.
-- Ships architecture-matched ELF64 and ELF32 Vulkan layers and manifests in the host archive and every supported Flatpak extension. The Vulkan loader selects the matching layer for each process; no launcher-side WoW64 workaround is required.
-- Adds deterministic watched-configuration, profile-update, format-matrix, and HDR colour-math coverage. Adaptive scheduling, interpolation timestamps, generated-frame count, and Fixed 2x/3x/4x policy are unchanged.
+#### SDR stability and live configuration
+
+- Restores the established ordered SDR presentation path after introducing Gamescope-aware HDR transport. SDR and HDR now select separate colour, presentation, transition, and recovery policies so HDR experiments do not silently change ordinary SDR pacing.
+- Keeps real game frames native-first when generated-output resources or private GPU work are unavailable. Expected Gamescope image pressure does not schedule inference first, hold the present thread behind a refresh-length wait, or repeatedly reset Adaptive stabilization.
+- Preserves temporal-history liveness through startup, menu/focus transitions, generated-image pressure, and backend-busy frames. Recovery remains in-place and never invalidates a game-owned swapchain merely to apply a policy decision.
+- Makes configuration reloads resilient to transient partial TOML writes. Frame Generation, Fixed/Adaptive mode, Fixed multiplier within reserved capacity, Adaptive target and ceiling, and Smooth Cadence can update without rebuilding the game swapchain.
+- Keeps the load-aware Adaptive state machine, Smooth Cadence, menu/fast-cadence filtering, delayed-load rollback, and Fixed 2x/3x/4x paths covered by deterministic timing tests and the compatibility matrix.
+
+#### Host and Flatpak packaging
+
+- Ships architecture-matched ELF64 and ELF32 Vulkan layers and manifests in the host archive. The CLI and Qt UI remain 64-bit.
+- Ships both layer architectures in each Freedesktop 23.08, 24.08, and 25.08 Flatpak extension and verifies the deployed bundle paths before publishing.
+- Uses a uniquely named, environment-gated experimental layer so the fork can coexist with the public lsfg-vk installation without overwriting or accidentally enabling it.
+
+#### HDR foundation for future releases
+
+- Classifies the complete Vulkan format/colour-space pair, with separate SDR 8-bit, SDR high-precision, HDR10/PQ, and linear-scRGB pipelines.
+- Includes explicit BT.2020/PQ to linear scRGB conversion around the model, plus a capability-validated packed HDR10 boundary transport that leaves model and temporal images at 16-bit float.
+- Resolves Gamescope application feedback away from the presentation hot path and requires application colour-space feedback or HDR metadata. Display HDR capability alone never promotes an SDR swapchain.
+- Keeps unsupported or unconfirmed encodings on real-frame passthrough. The companion Decky plugin leaves \`LSFGVK_DISABLE_HDR_EXPOSURE=1\` and \`DXVK_HDR=0\` enabled by default; direct launchers can set \`LSFGVK_DISABLE_HDR_EXPOSURE=1\` for the same hard SDR boundary.
+- Treats this code as architecture and diagnostic groundwork. Cross-game HDR activation, colour validation, presentation and performance still require future hardware testing.
 
 ### Important limitations
 
 - Adaptive Frame Generation is experimental and opt-in. This independent Vulkan-layer scheduler varies between zero and three generated frames per real frame toward the configured average target. It cannot reduce a native framerate already above the target, exceed the selected 4x maximum, guarantee an unreachable target, or provide the Windows Queue Target modes.
 - The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. This fork provides a separate live synthesis switch that preserves the selected Fixed or Adaptive mode. Use \`DISABLE_LSFGVK_EXPERIMENTAL=1\` or remove the launch wrapper and restart the game when the experimental layer itself must be disabled.
 - Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so test it per game.
-- HDR10 conversion adds one full-resolution decode dispatch per real frame and one encode dispatch per generated frame. It is correctness work, not a universal performance claim; measure the overhead on target hardware.
+- HDR frame generation is not release-ready in \`.25\`. The code is retained as disabled-by-default foundation and may fail to expose HDR, attach, generate, present, or perform acceptably in a particular game.
+- HDR10 conversion adds full-resolution GPU work. Packed boundary images reduce only the private exchange-image footprint; neither change is a universal performance claim.
 - HLG, Dolby Vision, and unvalidated wide-colour combinations intentionally use real-frame passthrough. A game still needs its own HDR renderer and an HDR-capable SteamOS/Gamescope session.
 - Lossless Scaling and \`Lossless.dll\` must already be installed through Steam; neither release archive includes or modifies it.
-- Generated-image timeout recovery remains inside the existing context. The layer does not force a game-owned swapchain recreation for a setting change or recovery decision.
+- Gamescope generated-image admission is nonblocking and native-first. Recovery remains inside the existing context; the layer does not force game-owned swapchain recreation for a setting change or recovery decision.
 - Flatpak extensions for 23.08, 24.08, and 25.08 are packaged separately in \`$(basename "$flatpak_archive")\` under a dedicated experimental ID that can coexist with the public Flathub layer.
 
 ### Included files
@@ -160,7 +171,7 @@ adaptive_stable_cadence = false
 frame_generation_enabled = true
 \`\`\`
 
-Frame Generation and the Adaptive target, maximum multiplier, and Smooth Cadence can update live when the current swapchain already has sufficient resources. Restart after switching between Fixed and Adaptive modes, changing the Fixed multiplier, GPU, Flow Scale, Performance Mode, pacing, DLL, or FP16 policy, or when increasing a setting beyond the resources created at startup.
+Frame Generation, Fixed/Adaptive mode, Fixed multiplier, Adaptive target, maximum multiplier, and Smooth Cadence can update live when the current context already reserved sufficient capacity. Restart after changing GPU, Flow Scale, Performance Mode, pacing, DLL, FP16 policy, or when increasing beyond the resources created at startup. HDR remains a separate experimental restart-time boundary.
 
 ### Optional diagnostics
 

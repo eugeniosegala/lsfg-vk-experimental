@@ -8,20 +8,20 @@ baseline so a future update can distinguish upstream work from experimental-fork
 
 | Item                       | Value                                                                                  |
 |----------------------------|----------------------------------------------------------------------------------------|
-| Release version            | `2.0.0-dev28-experimental.25` local candidate                                          |
-| Release basis              | Published `.24` rollback plus local HDR, live-recovery, and dual-architecture work     |
+| Release version            | `2.0.0-dev28-experimental.25` release candidate                                        |
+| Release basis              | Published `.24` rollback plus SDR stability, live recovery, dual architecture, and HDR groundwork |
 | Pre-publication validation | Deterministic suites, 120-case matrix, and native/Flatpak dual-architecture packaging  |
-| Included change range      | `.25`: HDR colour pipeline, safe live rebuilds, and ELF64/ELF32 Vulkan layers          |
+| Included change range      | `.25`: restored SDR presentation, safe live updates, ELF64/ELF32 layers, and disabled-by-default HDR foundation |
 | Retired local experiment   | `ab4f790` hot-path changes removed after intermittent generation flinches              |
 | Fixed-mode impact          | Fixed 2x, 3x, and 4x scheduling remains on its existing path                          |
-| Ledger reconciled          | 2026-08-13                                                                             |
+| Ledger reconciled          | 2026-08-14                                                                             |
 
 The sections below are chronological. Versions through `.9` document the original published prereleases; `.10` through
 `.17` record the successive local test builds consolidated into the `.18` release; `.19` records the follow-up 2x
 gameplay-hitch refinement; `.20` adds the live frame-generation switch; `.21` extracts and validates the Adaptive
 policy state machine; `.22` corrects two pre-existing recovery edge cases; `.23`/`.24` record a withdrawn submission
-experiment and corrective rollback; and the local `.25` candidate adds automatic HDR, safer live configuration recovery,
-and architecture-matched Vulkan layers. The detailed history is intentionally retained here so the public README and
+experiment and corrective rollback; and `.25` adds revalidated SDR presentation, safer live configuration recovery,
+architecture-matched Vulkan layers, and disabled-by-default HDR groundwork. The detailed history is intentionally retained here so the public README and
 release notes can remain concise.
 
 ## Reviewed baseline

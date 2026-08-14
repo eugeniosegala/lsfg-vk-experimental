@@ -146,6 +146,11 @@ namespace {
 Root::Root() {
     std::cerr << experimentalBuildIdentity << '\n';
 
+    this->hdrExposureDisabled = hdrExposureDisabledFromEnvironment(
+        std::getenv("LSFGVK_DISABLE_HDR_EXPOSURE"),
+        std::getenv("DXVK_HDR")
+    );
+
     const auto initialHdrFeedback =
         this->hdrFeedbackReader.diagnosticSample();
     this->lastHdrFeedbackSample = initialHdrFeedback.active;
@@ -408,7 +413,8 @@ bool Root::modifySwapchainCreateInfo(const vk::Vulkan& vk,
         caps.maxImageCount,
         createInfo,
         this->gamescopeHdrActive.value_or(false),
-        this->gamescopeManaged
+        this->gamescopeManaged,
+        this->hdrExposureDisabled
     );
 
     // Gamescope forwards both a MAILBOX base mode and a MAILBOX-only
@@ -482,6 +488,7 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         Swapchain(vk, this->backend.mut(), profile, info,
             this->gamescopeHdrActive,
             this->gamescopeManaged,
+            this->hdrExposureDisabled,
             this->gamescopeRefreshHz,
             this->runtimeStateRevision)).second;
     const auto insertedContext = this->swapchains.find(swapchain);

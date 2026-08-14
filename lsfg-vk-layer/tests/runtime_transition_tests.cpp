@@ -24,6 +24,15 @@ namespace {
 int main() {
     const auto start = StableBooleanFeedback::TimePoint{};
 
+    expect(hdrExposureDisabledFromEnvironment("1", "1"),
+        "the explicit SDR boundary must override DXVK HDR exposure");
+    expect(hdrExposureDisabledFromEnvironment(nullptr, "0"),
+        "DXVK_HDR=0 must select the SDR boundary");
+    expect(!hdrExposureDisabledFromEnvironment("0", "1"),
+        "an explicit HDR test must remain possible");
+    expect(!hdrExposureDisabledFromEnvironment(nullptr, nullptr),
+        "an absent DXVK capability signal must not invent an HDR decision");
+
     // A live SDR<->HDR resource transition requires 750 ms of continuous
     // feedback. Flapping or resolver outages must not rebuild the pipeline or
     // inherit time accumulated by an earlier candidate.
