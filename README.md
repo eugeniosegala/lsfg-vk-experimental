@@ -88,9 +88,6 @@ The target is an objective, not a guaranteed lock:
 - Higher ratios and wider gaps between real frames can increase ghosting and input latency.
 - Smooth Cadence may improve motion consistency on constrained hardware, but strict scheduling is usually more
   responsive. Leave it disabled unless a game benefits from the trade-off.
-- lsfg-vk v2 has no 0x multiplier. Set `frame_generation_enabled = false` for live real-frame passthrough. This stops
-  synthesis but keeps the Vulkan layer and shared backend loaded. Set `DISABLE_LSFGVK_EXPERIMENTAL=1`, or remove the
-  launch wrapper and restart the game, when the experimental layer itself must be disabled completely.
 
 This scheduler is an independent Vulkan-layer implementation inspired by Lossless Scaling's
 [Adaptive Frame Generation](https://store.steampowered.com/news/app/993090/view/518581441632666732). It is not a port of

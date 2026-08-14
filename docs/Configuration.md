@@ -19,8 +19,8 @@ Next is a list of all available **profile** configuration options:
 - **Multiplier / `multiplier`**: The frame generation multiplier. A value of 3 means that for every frame rendered by the application, lsfg-vk will generate 2 additional frames. (Default: `2`)
 - **Frame Generation / `frame_generation_enabled`**: Live synthesis switch. Set this to `false` to present the game's
   real frames directly without model scheduling or per-swapchain interpolation resources. The Vulkan layer and shared
-  backend remain loaded so the selected Fixed or Adaptive mode can resume when this returns to `true`. This is not a
-  0x multiplier and does not fully unload lsfg-vk. (Default: `true`)
+  backend remain loaded so the selected Fixed or Adaptive mode can resume when this returns to `true`. (Default:
+  `true`)
 - **Adaptive Frame Generation / `adaptive`**: Experimental opt-in mode that varies between zero and three generated
   frames per real frame to approach `target_fps` as an average. Fixed `multiplier` is ignored while this is enabled.
   This independent Vulkan-layer scheduler does not include Lossless Scaling's Windows Queue Target modes. It cannot

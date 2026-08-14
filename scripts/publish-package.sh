@@ -143,7 +143,6 @@ This \`.25\` release consolidates the tested SDR runtime, safer live configurati
 ### Important limitations
 
 - Adaptive Frame Generation is experimental and opt-in. This independent Vulkan-layer scheduler varies between zero and three generated frames per real frame toward the configured average target. It cannot reduce a native framerate already above the target, exceed the selected 4x maximum, guarantee an unreachable target, or provide the Windows Queue Target modes.
-- The 0x multiplier from lsfg-vk 1.x is not present in upstream v2. This fork provides a separate live synthesis switch that preserves the selected Fixed or Adaptive mode. Use \`DISABLE_LSFGVK_EXPERIMENTAL=1\` or remove the launch wrapper and restart the game when the experimental layer itself must be disabled.
 - Higher interpolation ratios and lower real-frame rates can increase ghosting and input latency. Smooth Cadence can improve motion consistency but may lower real-frame cadence and responsiveness, so test it per game.
 - HDR frame generation is not release-ready in \`.25\`. The code is retained as disabled-by-default foundation and may fail to expose HDR, attach, generate, present, or perform acceptably in a particular game.
 - HDR10 conversion adds full-resolution GPU work. Packed boundary images reduce only the private exchange-image footprint; neither change is a universal performance claim.
