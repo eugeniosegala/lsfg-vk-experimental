@@ -12,6 +12,7 @@
 #include "lsfg-vk-common/vulkan/vulkan.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -24,6 +25,7 @@
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -83,6 +85,54 @@ namespace {
         return timestamps;
     }
 
+    SwapchainColorPipeline initialColorPipeline(
+            const VkFormat format, const VkColorSpaceKHR colorSpace,
+            const std::optional<bool> gamescopeHdrActive,
+            const bool gamescopeManaged) {
+        auto pipeline = classifySwapchainColor(
+            format, colorSpace, gamescopeHdrActive.value_or(false)
+        );
+        if (gamescopeManaged && !gamescopeHdrActive &&
+                pipeline.encoding == backend::FrameEncoding::SdrHighPrecision) {
+            pipeline.generationSupported = false;
+            pipeline.name = "gamescope-hdr-pending";
+            pipeline.reason =
+                "Gamescope HDR state is not confirmed; real-frame passthrough retained";
+        }
+        return pipeline;
+    }
+
+    void selectPackedHdr10Transport(const vk::Vulkan& vk,
+            backend::Instance& backendInstance, SwapchainColorPipeline& pipeline,
+            bool& applicationSupported, bool& backendSupported) {
+        if (pipeline.encoding != backend::FrameEncoding::Hdr10Pq)
+            return;
+
+        applicationSupported =
+            vk.supportsExternalImageFormat(
+                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
+            ) &&
+            vk.supportsOptimalTilingFormatFeatures(
+                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                VK_FORMAT_FEATURE_BLIT_DST_BIT
+            ) &&
+            vk.supportsExternalImageFormat(
+                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
+            ) &&
+            vk.supportsOptimalTilingFormatFeatures(
+                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                VK_FORMAT_FEATURE_BLIT_SRC_BIT
+            );
+        backendSupported = backendInstance.supportsPackedHdr10Transport();
+        static_cast<void>(enablePackedHdr10Transport(
+            pipeline, applicationSupported, backendSupported
+        ));
+    }
+
     bool presentDiagnosticsEnabled() {
         static const bool enabled = [] {
             const char* value = std::getenv("LSFGVK_PRESENT_DIAGNOSTICS");
@@ -130,7 +180,8 @@ namespace {
         return timeout;
     }
 
-    constexpr auto generatedImageAcquireBoundedProbeInterval = std::chrono::seconds(1);
+    constexpr auto generatedImageAcquireBoundedProbeInterval =
+        std::chrono::milliseconds(250);
 
     double elapsedMilliseconds(const DiagnosticsClock::time_point start) {
         return std::chrono::duration<double, std::milli>(
@@ -799,7 +850,8 @@ namespace {
 }
 
 void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
-        VkSwapchainCreateInfoKHR& createInfo, const bool gamescopeHdrActive) {
+        VkSwapchainCreateInfoKHR& createInfo, const bool gamescopeHdrActive,
+        const bool gamescopeManaged) {
     const auto colorPipeline = classifySwapchainColor(
         createInfo.imageFormat, createInfo.imageColorSpace,
         gamescopeHdrActive
@@ -820,18 +872,26 @@ void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint3
             if (maxImages && createInfo.minImageCount > maxImages)
                 createInfo.minImageCount = maxImages;
 
-            createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+            // Gamescope WSI deliberately uses a MAILBOX driver swapchain and
+            // implements the application's FIFO contract in the compositor.
+            // Running below it means LSFG must preserve that downstream mode.
+            if (!gamescopeManaged)
+                createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
             break;
     }
 }
 
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
-            const bool gamescopeHdrActive,
+            const std::optional<bool> gamescopeHdrActive,
+            const bool gamescopeManaged,
+            const std::optional<uint32_t> gamescopeRefreshHz,
             const uint64_t runtimeStateRevision) :
         instance(backend),
-        colorPipeline(classifySwapchainColor(
-            info.format, info.colorSpace, gamescopeHdrActive
+        gamescopeManaged(gamescopeManaged),
+        gamescopeRefreshHz(gamescopeRefreshHz),
+        colorPipeline(initialColorPipeline(
+            info.format, info.colorSpace, gamescopeHdrActive, gamescopeManaged
         )),
         profile(std::move(profile)), info(std::move(info)) {
     this->diagnosticsContextId = allocateDiagnosticsContextId();
@@ -843,34 +903,10 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
 
     bool applicationPackedHdr10Supported = false;
     bool backendPackedHdr10Supported = false;
-    if (this->colorPipeline.encoding == backend::FrameEncoding::Hdr10Pq) {
-        applicationPackedHdr10Supported =
-            vk.supportsExternalImageFormat(
-                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
-            ) &&
-            vk.supportsOptimalTilingFormatFeatures(
-                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-                VK_FORMAT_FEATURE_BLIT_DST_BIT
-            ) &&
-            vk.supportsExternalImageFormat(
-                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
-            ) &&
-            vk.supportsOptimalTilingFormatFeatures(
-                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-                VK_FORMAT_FEATURE_BLIT_SRC_BIT
-            );
-        backendPackedHdr10Supported =
-            backend.supportsPackedHdr10Transport();
-        static_cast<void>(enablePackedHdr10Transport(
-            this->colorPipeline,
-            applicationPackedHdr10Supported,
-            backendPackedHdr10Supported
-        ));
-    }
+    selectPackedHdr10Transport(
+        vk, backend, this->colorPipeline,
+        applicationPackedHdr10Supported, backendPackedHdr10Supported
+    );
 
     if (presentDiagnosticsEnabled()) {
         std::cerr << "lsfg-vk: present diagnostics: operation=runtime-state-applied"
@@ -1056,6 +1092,232 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     }
 }
 
+void Swapchain::rebuildPrivateResources(const vk::Vulkan& vk,
+        SwapchainColorPipeline pipeline) {
+    auto& backendInstance = this->instance.get();
+    bool applicationPackedHdr10Supported = false;
+    bool backendPackedHdr10Supported = false;
+    selectPackedHdr10Transport(
+        vk, backendInstance, pipeline,
+        applicationPackedHdr10Supported, backendPackedHdr10Supported
+    );
+
+    if (!pipeline.generationSupported) {
+        this->ctx = {};
+        this->sourceImages.clear();
+        this->destinationImages.clear();
+        this->syncSemaphore = {};
+        this->renderCommandBuffer = {};
+        this->renderFence = {};
+        this->passes.clear();
+        this->postCopySemaphores.clear();
+        this->adaptiveScheduler.reset();
+        this->colorPipeline = std::move(pipeline);
+        this->configurationHistoryWarmupRemaining = 0;
+        return;
+    }
+
+    const VkExtent2D extent = this->info.extent;
+    std::vector<int> sourceFds(2);
+    std::vector<int> destinationFds(generatedFrameCapacity(this->profile));
+    std::vector<vk::Image> newSourceImages;
+    std::vector<vk::Image> newDestinationImages;
+    newSourceImages.reserve(sourceFds.size());
+    newDestinationImages.reserve(destinationFds.size());
+    for (int& fd : sourceFds) {
+        newSourceImages.emplace_back(vk,
+            extent, pipeline.exchangeFormat,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            std::nullopt, &fd);
+    }
+    for (int& fd : destinationFds) {
+        newDestinationImages.emplace_back(vk,
+            extent, pipeline.exchangeFormat,
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            std::nullopt, &fd);
+    }
+
+    ls::lazy<vk::TimelineSemaphore> newSyncSemaphore;
+    int syncFd{};
+    newSyncSemaphore.emplace(vk, 0, std::nullopt, &syncFd);
+
+    ls::lazy<vk::CommandBuffer> newRenderCommandBuffer;
+    ls::lazy<vk::Fence> newRenderFence;
+    newRenderCommandBuffer.emplace(vk);
+    newRenderFence.emplace(vk);
+    std::vector<RenderPass> newPasses;
+    newPasses.reserve(newDestinationImages.size());
+    for (size_t i = 0; i < newDestinationImages.size(); ++i) {
+        static_cast<void>(i);
+        newPasses.emplace_back(RenderPass{
+            .commandBuffer = vk::CommandBuffer(vk),
+            .acquireSemaphore = vk::Semaphore(vk),
+        });
+    }
+    std::vector<std::pair<vk::Semaphore, vk::Semaphore>> newPostCopySemaphores;
+    const size_t semaphoreFrames = std::max(
+        this->info.images.size(), newDestinationImages.size() + 2
+    );
+    newPostCopySemaphores.reserve(semaphoreFrames);
+    for (size_t i = 0; i < semaphoreFrames; ++i) {
+        static_cast<void>(i);
+        newPostCopySemaphores.emplace_back(
+            vk::Semaphore(vk), vk::Semaphore(vk)
+        );
+    }
+
+    ls::owned_ptr<ls::R<backend::Context>> newContext(
+        new ls::R<backend::Context>(backendInstance.openContext(
+            {sourceFds.at(0), sourceFds.at(1)}, destinationFds, syncFd,
+            extent.width, extent.height, pipeline.encoding,
+            1.0F / this->profile.flow_scale, this->profile.performance_mode
+        )),
+        [backend = &backendInstance](ls::R<backend::Context>& context) {
+            backend->closeContext(context);
+        }
+    );
+    backend::makeLeaking();
+
+    // Everything above is constructed before the active resources are
+    // touched. Moving the context first retires the old backend imports while
+    // their Vulkan images are still alive.
+    this->ctx = std::move(newContext);
+    this->sourceImages = std::move(newSourceImages);
+    this->destinationImages = std::move(newDestinationImages);
+    this->syncSemaphore = std::move(newSyncSemaphore);
+    this->renderCommandBuffer = std::move(newRenderCommandBuffer);
+    this->renderFence = std::move(newRenderFence);
+    this->passes = std::move(newPasses);
+    this->postCopySemaphores = std::move(newPostCopySemaphores);
+    this->colorPipeline = std::move(pipeline);
+
+    this->idx = 1;
+    this->backendFrameIndex = 0;
+    this->renderFenceInFlight = false;
+    this->backendRecoveryPending = false;
+    this->generatedImageAcquireBackoff = false;
+    this->generatedImageAcquireBypassCount = 0;
+    this->generatedImageAcquireLastBoundedProbe.reset();
+    this->fixedRefreshBudget.reset();
+    this->fixedFrameTimestamps = buildFixedFrameTimestamps(
+        this->profile.multiplier, this->destinationImages.size()
+    );
+    this->fixedDiagnosticWindowStarted.reset();
+    this->fixedDiagnosticRealFrames = 0;
+    this->fixedDiagnosticGeneratedFrames = 0;
+    this->fixedDiagnosticSkippedFrames = 0;
+
+    if (this->profile.adaptive) {
+        this->adaptiveScheduler.emplace(
+            AdaptiveSchedulerConfig{
+                .targetFps = this->profile.target_fps,
+                .maximumMultiplier = this->profile.adaptive_max_multiplier,
+                .generatedFrameCapacity = this->destinationImages.size(),
+                .stableCadence = this->profile.adaptive_stable_cadence,
+            },
+            &adaptiveSchedulerDiagnostics
+        );
+        this->adaptiveScheduler->beginStabilization(
+            DiagnosticsClock::now(), "hdr-private-transition"
+        );
+        this->configurationHistoryWarmupRemaining = 0;
+    } else {
+        this->adaptiveScheduler.reset();
+        this->configurationHistoryWarmupRemaining =
+            AdaptiveScheduler::historyWarmupFrameCount();
+    }
+
+    std::cerr << "lsfg-vk: swapchain colour pipeline transitioned in place: mode="
+              << this->colorPipeline.name
+              << "; transport="
+              << (this->colorPipeline.packedHdr10Transport
+                    ? "packed-hdr10-32-bit"
+                    : (transportBytesPerPixel(this->colorPipeline.encoding) == 8
+                        ? "rgba16f-64-bit" : "rgba8-32-bit"))
+              << "; application_device_supported="
+              << applicationPackedHdr10Supported
+              << "; backend_device_supported="
+              << backendPackedHdr10Supported << '\n';
+    if (this->colorPipeline.encoding == backend::FrameEncoding::Hdr10Pq ||
+            this->colorPipeline.encoding ==
+                backend::FrameEncoding::Hdr10PqPacked) {
+        const uint64_t transportImageCount = 2 +
+            generatedFrameCapacity(this->profile);
+        const uint64_t floatTransportBytes =
+            static_cast<uint64_t>(extent.width) * extent.height *
+            transportImageCount * 8;
+        const uint64_t selectedTransportBytes =
+            static_cast<uint64_t>(extent.width) * extent.height *
+            transportImageCount *
+            transportBytesPerPixel(this->colorPipeline.encoding);
+        std::cerr << "lsfg-vk: HDR10 transport: mode="
+                  << (this->colorPipeline.packedHdr10Transport
+                        ? "packed-10-bit" : "rgba16f")
+                  << "; nominal_bytes=" << selectedTransportBytes
+                  << "; nominal_bytes_saved="
+                  << (floatTransportBytes - selectedTransportBytes)
+                  << "; application_device_supported="
+                  << applicationPackedHdr10Supported
+                  << "; backend_device_supported="
+                  << backendPackedHdr10Supported << '\n';
+    }
+}
+
+bool Swapchain::applyPendingColorPipeline(const vk::Vulkan& vk) {
+    if (!this->pendingGamescopeHdrActive)
+        return true;
+
+    const auto now = DiagnosticsClock::now();
+    if (this->colorTransitionRetryAt && now < *this->colorTransitionRetryAt)
+        return false;
+
+    const bool resourcesAvailable = this->sourceImages.size() == 2 &&
+        !this->destinationImages.empty() && this->syncSemaphore.has_value();
+    if (resourcesAvailable) {
+        try {
+            if (!this->instance.get().contextReady(this->ctx.get()))
+                return false;
+            if (this->renderFenceInFlight &&
+                    !this->renderFence->wait(vk, 0))
+                return false;
+        } catch (const std::exception& error) {
+            std::cerr << "lsfg-vk: private colour transition readiness poll "
+                         "failed; real-frame passthrough retained: "
+                      << error.what() << '\n';
+            this->colorTransitionRetryAt = now + std::chrono::seconds(1);
+            return false;
+        }
+    }
+
+    auto desiredPipeline = classifySwapchainColor(
+        this->info.format, this->info.colorSpace,
+        *this->pendingGamescopeHdrActive
+    );
+    try {
+        this->rebuildPrivateResources(vk, std::move(desiredPipeline));
+    } catch (const std::exception& error) {
+        std::cerr << "lsfg-vk: private colour transition failed; real-frame "
+                     "passthrough retained and retry scheduled: "
+                  << error.what() << '\n';
+        this->colorTransitionRetryAt = now + std::chrono::seconds(5);
+        return false;
+    }
+
+    if (presentDiagnosticsEnabled()) {
+        std::cerr << "lsfg-vk: present diagnostics: "
+                     "operation=runtime-transition-applied"
+                  << " context=" << this->diagnosticsContextId
+                  << " state_revision=" << this->pendingHdrStateRevision
+                  << " reason=hdr-mode"
+                  << " transition=private-context"
+                  << " hdr=" << this->colorPipeline.hdr << '\n';
+    }
+    this->pendingGamescopeHdrActive.reset();
+    this->pendingHdrStateRevision = 0;
+    this->colorTransitionRetryAt.reset();
+    return true;
+}
+
 ProfileUpdateAction Swapchain::updateProfile(
         const ls::GameConf& nextProfile,
         const uint64_t runtimeStateRevision) {
@@ -1103,6 +1365,7 @@ ProfileUpdateAction Swapchain::updateProfile(
     );
     if (decision.generationModeChanged || decision.fixedMultiplierChanged ||
             enabling || disabling) {
+        this->fixedRefreshBudget.reset();
         this->fixedDiagnosticWindowStarted.reset();
         this->fixedDiagnosticRealFrames = 0;
         this->fixedDiagnosticGeneratedFrames = 0;
@@ -1169,11 +1432,16 @@ bool Swapchain::updateGamescopeHdrState(
     const auto desiredPipeline = classifySwapchainColor(
         this->info.format, this->info.colorSpace, active
     );
-    if (desiredPipeline.name == this->colorPipeline.name &&
+    if (!this->pendingGamescopeHdrActive &&
+            desiredPipeline.name == this->colorPipeline.name &&
             desiredPipeline.generationSupported ==
                 this->colorPipeline.generationSupported) {
         return false;
     }
+
+    this->pendingGamescopeHdrActive = active;
+    this->pendingHdrStateRevision = runtimeStateRevision;
+    this->colorTransitionRetryAt.reset();
 
     if (presentDiagnosticsEnabled()) {
         std::cerr << "lsfg-vk: present diagnostics: "
@@ -1183,9 +1451,23 @@ bool Swapchain::updateGamescopeHdrState(
                   << " reason=hdr-mode"
                   << " current=" << this->colorPipeline.name
                   << " requested=" << desiredPipeline.name
-                  << " action=wait-for-natural-swapchain-recreation\n";
+                  << " action=rebuild-private-context\n";
     }
     return true;
+}
+
+void Swapchain::updateGamescopeRefreshRate(
+        const std::optional<uint32_t> refreshHz) {
+    if (refreshHz == this->gamescopeRefreshHz)
+        return;
+    this->gamescopeRefreshHz = refreshHz;
+    this->fixedRefreshBudget.reset();
+    if (presentDiagnosticsEnabled()) {
+        std::cerr << "lsfg-vk: present diagnostics: "
+                     "operation=gamescope-refresh-rate-applied"
+                  << " context=" << this->diagnosticsContextId
+                  << " refresh_hz=" << refreshHz.value_or(0) << '\n';
+    }
 }
 
 void Swapchain::disableFrameGeneration() {
@@ -1206,9 +1488,17 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->diagnosticsContextId
     );
 
+    const auto presentNow = DiagnosticsClock::now();
     const auto presentStarted = startPresentDiagnostic();
+    if (this->lastPresentStarted) {
+        const auto interval = presentNow - *this->lastPresentStarted;
+        if (interval > DiagnosticsClock::duration::zero() &&
+                interval < std::chrono::seconds(1))
+            this->recentRealInterval = interval;
+    }
+    this->lastPresentStarted = presentNow;
     if (presentDiagnosticsEnabled() && !this->profile.adaptive) {
-        const auto now = presentStarted;
+        const auto now = presentNow;
         if (!this->fixedDiagnosticWindowStarted)
             this->fixedDiagnosticWindowStarted = now;
         const double windowSeconds = std::chrono::duration<double>(
@@ -1236,6 +1526,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                       << " configured_adaptive_target_fps="
                       << this->profile.target_fps
                       << " target_applies=0"
+                      << " display_budget_hz="
+                      << this->gamescopeRefreshHz.value_or(0)
                       << '\n';
             this->fixedDiagnosticWindowStarted = now;
             this->fixedDiagnosticRealFrames = 0;
@@ -1251,7 +1543,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
 
     const auto presentNativeFrame = [&]() {
-        if (this->colorPipeline.generationSupported &&
+        if (!this->gamescopeManaged &&
+                this->colorPipeline.generationSupported &&
                 this->profile.pacing == ls::Pacing::None)
             forceFifoPresentModes(next_chain);
 
@@ -1274,6 +1567,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->fidx++;
         return result;
     };
+
+    if (!this->applyPendingColorPipeline(vk))
+        return presentNativeFrame();
 
     // Frame generation is live-disabled; hand the game's own image directly to
     // the driver without copies, model scheduling, fences or generated images.
@@ -1329,17 +1625,50 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         (this->adaptiveScheduler && this->adaptiveScheduler->historyWarmupActive());
     const auto generatedFramePlan = this->profile.adaptive && !historyWarmupActive
         ? this->adaptiveScheduler->planFrame(
-            DiagnosticsClock::now(), this->generatedImageAcquireBackoff
+            presentNow, this->generatedImageAcquireBackoff
         )
         : AdaptiveFramePlan{};
+    const size_t fixedGeneratedFrameCount = this->profile.adaptive
+        ? 0
+        : (this->gamescopeManaged
+            ? this->fixedRefreshBudget.plan(
+                presentNow, this->gamescopeRefreshHz,
+                this->fixedFrameTimestamps.size()
+            )
+            : this->fixedFrameTimestamps.size());
+    if (!this->profile.adaptive &&
+            fixedGeneratedFrameCount < this->fixedFrameTimestamps.size()) {
+        this->fixedDiagnosticSkippedFrames +=
+            this->fixedFrameTimestamps.size() - fixedGeneratedFrameCount;
+    }
     const size_t generatedFrameCount = this->profile.adaptive
-        ? generatedFramePlan.size()
-        : this->fixedFrameTimestamps.size();
+        ? generatedFramePlan.size() : fixedGeneratedFrameCount;
+    std::array<float, 3> budgetedFixedTimestamps{};
+    std::span<const float> fixedTimestamps = this->fixedFrameTimestamps;
+    if (!this->profile.adaptive &&
+            fixedGeneratedFrameCount != this->fixedFrameTimestamps.size()) {
+        for (size_t i = 0; i < fixedGeneratedFrameCount; ++i) {
+            budgetedFixedTimestamps.at(i) =
+                static_cast<float>(i + 1) /
+                static_cast<float>(fixedGeneratedFrameCount + 1);
+        }
+        fixedTimestamps = {
+            budgetedFixedTimestamps.data(), fixedGeneratedFrameCount
+        };
+    }
 
     const auto configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
+    const std::optional<uint64_t> effectiveAcquireTimeout =
+        this->gamescopeManaged
+        ? std::optional<uint64_t>(generatedImageDeadlineNs(
+            this->gamescopeRefreshHz,
+            this->recentRealInterval,
+            generatedFrameCount + 1,
+            configuredAcquireTimeout
+        ))
+        : configuredAcquireTimeout;
     bool renderFencePrepared = false;
-    bool bypassGeneratedFrames = historyWarmupActive ||
-        (this->profile.adaptive && generatedFramePlan.empty());
+    bool bypassGeneratedFrames = historyWarmupActive || generatedFrameCount == 0;
     bool generatedImageUnavailable = false;
     bool boundedRecoveryProbe = false;
     std::optional<uint32_t> preacquiredGeneratedImage;
@@ -1349,7 +1678,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         if (renderFencePrepared)
             return;
 
-        if (this->fidx) {
+        if (this->renderFenceInFlight) {
             const auto fenceWaitStarted = startPresentDiagnostic();
             const bool fenceSignaled = this->renderFence->wait(vk, 150ULL * 1000 * 1000);
             logSlowPresentOperation(
@@ -1358,17 +1687,76 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
             if (!fenceSignaled)
                 throw ls::vulkan_error(VK_TIMEOUT, "vkWaitForFences() failed");
+            this->renderFenceInFlight = false;
         }
         this->renderFence->reset(vk);
         renderFencePrepared = true;
     };
 
+    // Reserve the first generated-image slot before submitting model work. A
+    // frame which cannot obtain a slot before its display deadline is already
+    // too late to improve motion, even when Vulkan would eventually return
+    // VK_SUCCESS. Preserve the real frame and advance history instead.
+    if (effectiveAcquireTimeout && !this->generatedImageAcquireBackoff &&
+            generatedFrameCount > 0 && !bypassGeneratedFrames) {
+        prepareRenderFence();
+        auto& preflightPass = this->passes.front();
+        uint32_t preflightImageIndex{};
+        const auto acquireStarted = startPresentDiagnostic();
+        const auto acquireResult = vk.df().AcquireNextImageKHR(
+            vk.dev(), swapchain, *effectiveAcquireTimeout,
+            preflightPass.acquireSemaphore.handle(), VK_NULL_HANDLE,
+            &preflightImageIndex
+        );
+        logSlowPresentOperation(
+            "acquire-generated-image", this->fidx, this->idx,
+            acquireStarted, acquireResult, 0, preflightImageIndex
+        );
+        if (acquireResult == VK_TIMEOUT || acquireResult == VK_NOT_READY) {
+            this->generatedImageAcquireBackoff = true;
+            this->generatedImageAcquireBypassCount = 0;
+            this->generatedImageAcquireLastBoundedProbe = presentNow;
+            generatedImageUnavailable = true;
+            bypassGeneratedFrames = true;
+            if (!this->profile.adaptive)
+                this->fixedDiagnosticSkippedFrames += generatedFrameCount;
+            if (this->adaptiveScheduler) {
+                this->adaptiveScheduler->reportGeneratedFrameDelivery(
+                    generatedFrameCount, 0
+                );
+                this->adaptiveScheduler->cancelHistoryWarmup();
+                this->adaptiveScheduler->resetTiming(presentNow);
+            }
+            if (presentDiagnosticsEnabled()) {
+                std::cerr << "lsfg-vk: present diagnostics: "
+                             "operation=generated-delivery-miss"
+                          << " context=" << this->diagnosticsContextId
+                          << " planned=" << generatedFrameCount
+                          << " on_time=0"
+                          << " deadline_ms="
+                          << static_cast<double>(*effectiveAcquireTimeout) /
+                                1'000'000.0 << '\n';
+            }
+            logPresentFallback(
+                this->fidx, this->idx, 0, generatedFrameCount,
+                this->idx, "preflight-deadline", "not-scheduled"
+            );
+        } else if (acquireResult == VK_SUCCESS ||
+                acquireResult == VK_SUBOPTIMAL_KHR) {
+            preacquiredGeneratedImage = preflightImageIndex;
+        } else {
+            throw ls::vulkan_error(
+                acquireResult, "vkAcquireNextImageKHR() failed"
+            );
+        }
+    }
+
     // Once generated-image acquisition has timed out, probe availability
     // before scheduling more output work. If Gamescope still has no image, the
     // real frame is copied and presented below while a shared history pre-pass
     // keeps temporal features and timeline indices current.
-    if (configuredAcquireTimeout && this->generatedImageAcquireBackoff &&
-            generatedFrameCount > 0) {
+    if (effectiveAcquireTimeout && this->generatedImageAcquireBackoff &&
+            generatedFrameCount > 0 && !generatedImageUnavailable) {
         prepareRenderFence();
 
         auto& recoveryPass = this->passes.front();
@@ -1377,7 +1765,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         boundedRecoveryProbe = !this->generatedImageAcquireLastBoundedProbe ||
             now - *this->generatedImageAcquireLastBoundedProbe >=
                 generatedImageAcquireBoundedProbeInterval;
-        const uint64_t recoveryTimeout = boundedRecoveryProbe ? *configuredAcquireTimeout : 0;
+        const uint64_t recoveryTimeout = boundedRecoveryProbe
+            ? *effectiveAcquireTimeout : 0;
         if (boundedRecoveryProbe)
             this->generatedImageAcquireLastBoundedProbe = now;
         const auto acquireStarted = startPresentDiagnostic();
@@ -1478,6 +1867,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
 
     // schedule frame generation
+    bool backendScheduleFailedWithAcquiredImage = false;
     if (!bypassGeneratedFrames) {
         const auto scheduleStarted = startPresentDiagnostic();
         try {
@@ -1487,7 +1877,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 );
             else
                 this->instance.get().scheduleFrames(
-                    this->ctx.get(), this->fixedFrameTimestamps
+                    this->ctx.get(), fixedTimestamps
                 );
         } catch (const std::exception& e) {
             // Do not turn a bounded backend stall into a game-visible present
@@ -1500,14 +1890,25 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->configurationHistoryWarmupRemaining = 0;
             if (this->adaptiveScheduler)
                 this->adaptiveScheduler->cancelHistoryWarmup();
-            return presentNativeFrame();
+            if (!preacquiredGeneratedImage)
+                return presentNativeFrame();
+
+            // The deadline preflight already owns a game swapchain image and
+            // its acquire semaphore. Retire that image through the normal
+            // real-frame fallback before returning; otherwise the image is
+            // permanently detached from the swapchain and the fence reset by
+            // the preflight is never signaled.
+            recoveryWarmupImage = preacquiredGeneratedImage;
+            bypassGeneratedFrames = true;
+            backendScheduleFailedWithAcquiredImage = true;
         }
-        this->backendFrameIndex++;
+        if (!backendScheduleFailedWithAcquiredImage)
+            this->backendFrameIndex++;
         logSlowPresentOperation("schedule-frames", this->fidx, this->idx, scheduleStarted);
     }
 
     // update present mode when not using pacing
-    if (this->profile.pacing == ls::Pacing::None)
+    if (!this->gamescopeManaged && this->profile.pacing == ls::Pacing::None)
         forceFifoPresentModes(next_chain);
 
     // wait for completion of previous frame
@@ -1630,9 +2031,11 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             fallbackSignalSemaphores, VK_NULL_HANDLE, 0,
             this->renderFence->handle()
         );
+        this->renderFenceInFlight = true;
 
         try {
-            this->instance.get().scheduleFrameHistory(this->ctx.get());
+            if (!backendScheduleFailedWithAcquiredImage)
+                this->instance.get().scheduleFrameHistory(this->ctx.get());
         } catch (const std::exception& e) {
             // The fallback copy is already queued and signals
             // fallbackSemaphore. Present the real image through that semaphore
@@ -1654,7 +2057,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                     fallbackSemaphores.first.handle();
                 const VkPresentInfoKHR recoveryPresentInfo{
                     .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                    .pNext = next_chain,
+                    .pNext = this->gamescopeManaged ? nullptr : next_chain,
                     .waitSemaphoreCount = 1,
                     .pWaitSemaphores = &recoveryWaitSemaphore,
                     .swapchainCount = 1,
@@ -1670,7 +2073,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                         recoveryResult, "vkQueuePresentKHR() failed"
                     );
                 }
-                fallbackNextChain = nullptr;
+                fallbackNextChain = this->gamescopeManaged
+                    ? next_chain : nullptr;
             }
 
             const auto fallbackResult = presentOriginalImage(
@@ -1689,7 +2093,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->fidx++;
             return fallbackResult;
         }
-        this->backendFrameIndex++;
+        if (!backendScheduleFailedWithAcquiredImage)
+            this->backendFrameIndex++;
         if (generatedImageUnavailable &&
                 (!this->generatedImageAcquireBypassCount || boundedRecoveryProbe)) {
             logPresentFallback(
@@ -1725,7 +2130,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             const VkSemaphore recoveryWaitSemaphore = fallbackSemaphores.first.handle();
             const VkPresentInfoKHR recoveryPresentInfo{
                 .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                .pNext = next_chain,
+                .pNext = this->gamescopeManaged ? nullptr : next_chain,
                 .waitSemaphoreCount = 1,
                 .pWaitSemaphores = &recoveryWaitSemaphore,
                 .swapchainCount = 1,
@@ -1740,7 +2145,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
             if (recoveryResult != VK_SUCCESS && recoveryResult != VK_SUBOPTIMAL_KHR)
                 throw ls::vulkan_error(recoveryResult, "vkQueuePresentKHR() failed");
-            originalNextChain = nullptr;
+            originalNextChain = this->gamescopeManaged
+                ? next_chain : nullptr;
         }
 
         const auto res = presentOriginalImage(fallbackSemaphore.handle(), originalNextChain);
@@ -1766,8 +2172,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             res = VK_SUCCESS;
         } else {
             const auto acquireStarted = startPresentDiagnostic();
-            const uint64_t acquireTimeout = configuredAcquireTimeout
-                ? *configuredAcquireTimeout
+            const uint64_t acquireTimeout = effectiveAcquireTimeout
+                ? *effectiveAcquireTimeout
                 : UINT64_MAX;
             res = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
                 acquireTimeout, pass.acquireSemaphore.handle(),
@@ -1779,7 +2185,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 i, aqImageIdx
             );
         }
-        if (configuredAcquireTimeout && (res == VK_TIMEOUT || res == VK_NOT_READY)) {
+        if (effectiveAcquireTimeout &&
+                (res == VK_TIMEOUT || res == VK_NOT_READY)) {
             // Gamescope can temporarily stop releasing the extra swapchain images used for generated frames while
             // an overlay is visible. Do not block the game indefinitely. The backend has already scheduled every
             // generated frame for this sequence, so wait for its final timeline value before presenting the original
@@ -1793,6 +2200,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->generatedImageAcquireBypassCount = 0;
             this->generatedImageAcquireLastBoundedProbe = DiagnosticsClock::now();
             if (this->adaptiveScheduler) {
+                this->adaptiveScheduler->reportGeneratedFrameDelivery(
+                    generatedFrameCount, i
+                );
                 this->adaptiveScheduler->cancelHistoryWarmup();
                 this->adaptiveScheduler->resetTiming(
                     this->generatedImageAcquireLastBoundedProbe.value()
@@ -1815,12 +2225,23 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->idx += skippedFrames;
 
             res = presentOriginalImage(
-                fallbackSemaphore.handle(), i == 0 ? next_chain : nullptr
+                fallbackSemaphore.handle(),
+                this->gamescopeManaged || i == 0 ? next_chain : nullptr
             );
             if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
                 throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
             logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);
+            if (presentDiagnosticsEnabled()) {
+                std::cerr << "lsfg-vk: present diagnostics: "
+                             "operation=generated-delivery-miss"
+                          << " context=" << this->diagnosticsContextId
+                          << " planned=" << generatedFrameCount
+                          << " on_time=" << i
+                          << " deadline_ms="
+                          << static_cast<double>(*effectiveAcquireTimeout) /
+                                1'000'000.0 << '\n';
+            }
             this->fidx++;
             return res;
         }
@@ -1880,6 +2301,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             signalSemaphores, VK_NULL_HANDLE, 0,
             i == generatedFrameCount - 1 ? this->renderFence->handle() : VK_NULL_HANDLE
         );
+        if (i == generatedFrameCount - 1)
+            this->renderFenceInFlight = true;
         logSlowPresentOperation(
             "submit-generated-copy", this->fidx, this->idx, generatedSubmitStarted,
             std::nullopt, i
@@ -1888,7 +2311,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // present swapchain image
         const VkPresentInfoKHR presentInfo{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .pNext = i ? nullptr : next_chain,
+            .pNext = !this->gamescopeManaged && i == 0
+                ? next_chain : nullptr,
             .waitSemaphoreCount = 1,
             .pWaitSemaphores = &pcs.first.handle(),
             .swapchainCount = 1,
@@ -1912,10 +2336,17 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 
     // present original swapchain image
     auto& lastPCS = this->postCopySemaphores.at((this->idx - 1) % this->postCopySemaphores.size());
-    auto res = presentOriginalImage(lastPCS.second.handle(), nullptr);
+    auto res = presentOriginalImage(
+        lastPCS.second.handle(), this->gamescopeManaged ? next_chain : nullptr
+    );
     if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
         throw ls::vulkan_error(res, "vkQueuePresentKHR() failed");
 
+    if (this->adaptiveScheduler) {
+        this->adaptiveScheduler->reportGeneratedFrameDelivery(
+            generatedFrameCount, generatedFrameCount
+        );
+    }
     logSlowPresentOperation("present-total", this->fidx, this->idx, presentStarted, res);
     this->fidx++;
     return res;

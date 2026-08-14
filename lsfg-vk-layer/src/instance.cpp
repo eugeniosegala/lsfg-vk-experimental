@@ -94,16 +94,32 @@ Root::Root() {
     const auto initialHdrFeedback =
         this->hdrFeedbackReader.diagnosticSample();
     this->lastHdrFeedbackSample = initialHdrFeedback.active;
+    this->gamescopeManaged = initialHdrFeedback.gamescopeDetected;
+    this->lastGamescopeRefreshHz = initialHdrFeedback.refreshHz;
+    this->gamescopeRefreshHz = initialHdrFeedback.refreshHz;
     this->lastHdrFeedbackStatus = initialHdrFeedback.status;
-    this->gamescopeHdrActive = this->lastHdrFeedbackSample;
-    this->hdrFeedback.seed(this->lastHdrFeedbackSample);
+    // Gamescope's root property can still describe the previous held commit
+    // while a new process is creating its first swapchain. Treat that startup
+    // value as provisional. Normalized high-precision swapchains pass through
+    // real frames until the same value remains stable for the normal feedback
+    // settling window. An explicitly hidden HDR capability is conclusively SDR.
+    const bool hdrExposureDisabled =
+        initialHdrFeedback.status == "hdr-exposure-disabled";
+    this->gamescopeHdrActive = hdrExposureDisabled
+        ? initialHdrFeedback.active
+        : (initialHdrFeedback.gamescopeDetected
+            ? std::nullopt : initialHdrFeedback.active);
+    this->hdrFeedback.seed(this->gamescopeHdrActive);
     this->lastHdrFeedbackPoll = std::chrono::steady_clock::now();
-    if (this->lastHdrFeedbackSample) {
+    if (this->gamescopeHdrActive) {
         std::cerr << "lsfg-vk: Gamescope application HDR feedback initialized: active="
-                  << *this->lastHdrFeedbackSample << '\n';
+                  << *this->gamescopeHdrActive
+                  << "; display=" << initialHdrFeedback.display
+                  << "; refresh_hz="
+                  << initialHdrFeedback.refreshHz.value_or(0) << '\n';
     } else {
-        std::cerr << "lsfg-vk: Gamescope application HDR feedback unavailable; "
-                     "normalized 10-bit swapchains remain SDR until confirmed; "
+        std::cerr << "lsfg-vk: Gamescope application HDR feedback provisional; "
+                     "normalized 10-bit swapchains use real-frame passthrough until confirmed; "
                   << "reason=" << initialHdrFeedback.status
                   << " display="
                   << (initialHdrFeedback.display.empty()
@@ -144,6 +160,16 @@ ConfigurationUpdateResult Root::update() {
         const auto hdrFeedbackSample =
             this->hdrFeedbackReader.diagnosticSample();
         this->lastHdrFeedbackSample = hdrFeedbackSample.active;
+        this->gamescopeManaged = hdrFeedbackSample.gamescopeDetected;
+        if (hdrFeedbackSample.refreshHz != this->lastGamescopeRefreshHz) {
+            this->lastGamescopeRefreshHz = hdrFeedbackSample.refreshHz;
+            this->gamescopeRefreshHz = hdrFeedbackSample.refreshHz;
+            result.refreshRateChanged = true;
+            for (auto& [swapchain, context] : this->swapchains) {
+                static_cast<void>(swapchain);
+                context.updateGamescopeRefreshRate(this->gamescopeRefreshHz);
+            }
+        }
         if (hdrFeedbackSample.status != this->lastHdrFeedbackStatus) {
             this->lastHdrFeedbackStatus = hdrFeedbackSample.status;
             std::cerr << "lsfg-vk: Gamescope application HDR feedback status: "
@@ -151,6 +177,12 @@ ConfigurationUpdateResult Root::update() {
                       << "; display="
                       << (hdrFeedbackSample.display.empty()
                             ? "(unset)" : hdrFeedbackSample.display)
+                      << "; gamescope_detected="
+                      << hdrFeedbackSample.gamescopeDetected
+                      << "; server_id="
+                      << hdrFeedbackSample.xwaylandServerId.value_or(UINT32_MAX)
+                      << "; refresh_hz="
+                      << hdrFeedbackSample.refreshHz.value_or(0)
                       << '\n';
         }
         this->lastHdrFeedbackPoll = now;
@@ -169,7 +201,7 @@ ConfigurationUpdateResult Root::update() {
         }
         std::cerr << "lsfg-vk: Gamescope application HDR feedback stabilized: active="
                   << *changed
-                  << "; contexts_pending_recreation="
+                  << "; contexts_pending_private_transition="
                   << result.hdrContextsDeferred << '\n';
     }
 
@@ -299,7 +331,8 @@ void Root::modifySwapchainCreateInfo(const vk::Vulkan& vk, VkSwapchainCreateInfo
         *this->active_profile,
         caps.maxImageCount,
         createInfo,
-        this->gamescopeHdrActive.value_or(false)
+        this->gamescopeHdrActive.value_or(false),
+        this->gamescopeManaged
     );
 
     finish();
@@ -357,7 +390,9 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
 
     const bool inserted = this->swapchains.emplace(swapchain,
         Swapchain(vk, this->backend.mut(), profile, info,
-            this->gamescopeHdrActive.value_or(false),
+            this->gamescopeHdrActive,
+            this->gamescopeManaged,
+            this->gamescopeRefreshHz,
             this->runtimeStateRevision)).second;
     const auto insertedContext = this->swapchains.find(swapchain);
     const uint64_t diagnosticsContextId =

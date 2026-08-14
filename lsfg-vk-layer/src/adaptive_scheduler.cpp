@@ -114,6 +114,21 @@ void AdaptiveScheduler::consumeHistoryWarmupFrame(const TimePoint now) {
     this->resetTiming(now);
 }
 
+void AdaptiveScheduler::reportGeneratedFrameDelivery(
+        const size_t planned, const size_t onTime) {
+    if (planned == 0)
+        return;
+    const size_t delivered = std::min(planned, onTime);
+    if (this->adaptiveRampEvaluationAt) {
+        this->adaptiveRampPlannedGeneratedFrames += planned;
+        this->adaptiveRampOnTimeGeneratedFrames += delivered;
+    }
+    if (this->adaptiveStableCadenceEvaluationAt) {
+        this->adaptiveStableCadencePlannedGeneratedFrames += planned;
+        this->adaptiveStableCadenceOnTimeGeneratedFrames += delivered;
+    }
+}
+
 AdaptiveSchedulerSnapshot AdaptiveScheduler::snapshot() const {
     AdaptiveSchedulerPhase phase = AdaptiveSchedulerPhase::Active;
     if (this->adaptiveHistoryWarmupRemaining > 0) {
@@ -610,6 +625,8 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
             );
             this->adaptiveStableCadenceLimit.reset();
             this->adaptiveStableCadenceEvaluationAt.reset();
+            this->adaptiveStableCadencePlannedGeneratedFrames = 0;
+            this->adaptiveStableCadenceOnTimeGeneratedFrames = 0;
             this->adaptiveStableCadenceOutsideRangeSince.reset();
             this->adaptiveStableCadenceRetryAt =
                 now + adaptiveStableCadenceRetryDelay;
@@ -639,6 +656,8 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
                     this->adaptiveStableCadenceBaselineBaseFps;
                 this->adaptiveStableCadenceLimit.reset();
                 this->adaptiveStableCadenceEvaluationAt.reset();
+                this->adaptiveStableCadencePlannedGeneratedFrames = 0;
+                this->adaptiveStableCadenceOnTimeGeneratedFrames = 0;
                 this->adaptiveStableCadenceOutsideRangeSince.reset();
                 this->adaptiveStableCadenceRetryAt =
                     now + adaptiveStableCadenceRetryDelay;
@@ -674,7 +693,11 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
             const double evaluatedDemandRatio =
                 desiredOutputsPerRealFrame /
                 static_cast<double>(evaluatedGeneratedLimit + 1);
-            const bool accepted =
+            const bool deliveryHealthy =
+                this->adaptiveStableCadencePlannedGeneratedFrames == 0 ||
+                this->adaptiveStableCadenceOnTimeGeneratedFrames ==
+                    this->adaptiveStableCadencePlannedGeneratedFrames;
+            const bool accepted = deliveryHealthy &&
                 evaluatedDemandRatio >=
                     adaptiveStableCadenceMinimumDemandRatio &&
                 evaluatedProjectedOutputFps >=
@@ -692,6 +715,8 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
                 baseFps
             );
             this->adaptiveStableCadenceEvaluationAt.reset();
+            this->adaptiveStableCadencePlannedGeneratedFrames = 0;
+            this->adaptiveStableCadenceOnTimeGeneratedFrames = 0;
             if (!accepted) {
                 this->adaptiveStableCadenceLimit.reset();
                 this->adaptiveStableCadenceOutsideRangeSince.reset();
@@ -753,6 +778,8 @@ AdaptiveFramePlan AdaptiveScheduler::planFrame(
         this->adaptiveStableCadenceBaselineBaseFps = baseFps;
         this->adaptiveStableCadenceEvaluationAt =
             now + adaptiveStableCadenceEvaluationDuration;
+        this->adaptiveStableCadencePlannedGeneratedFrames = 0;
+        this->adaptiveStableCadenceOnTimeGeneratedFrames = 0;
         this->adaptiveStableCadenceOutsideRangeSince.reset();
         this->adaptiveStableCadenceRetryAt.reset();
         this->adaptiveStableCadenceCandidateLimit.reset();
@@ -1148,6 +1175,8 @@ void AdaptiveScheduler::beginStabilization(
         this->adaptiveNextRampAt = this->adaptiveRearmNotBefore;
     }
     this->adaptiveRampEvaluationAt.reset();
+    this->adaptiveRampPlannedGeneratedFrames = 0;
+    this->adaptiveRampOnTimeGeneratedFrames = 0;
     this->adaptiveGenerationLimit = 0;
     this->adaptiveRampPreviousLimit = 0;
     this->adaptiveRampBaselineBaseFps = 0.0;
@@ -1156,6 +1185,8 @@ void AdaptiveScheduler::beginStabilization(
     this->adaptiveBridgeBaselineBaseFps = 0.0;
     this->adaptiveStableCadenceLimit.reset();
     this->adaptiveStableCadenceEvaluationAt.reset();
+    this->adaptiveStableCadencePlannedGeneratedFrames = 0;
+    this->adaptiveStableCadenceOnTimeGeneratedFrames = 0;
     this->adaptiveStableCadenceOutsideRangeSince.reset();
     this->adaptiveStableCadenceRetryAt.reset();
     this->adaptiveStableCadenceBaselineBaseFps = 0.0;
@@ -1270,7 +1301,11 @@ void AdaptiveScheduler::updateGenerationLimit(
                 targetFps,
                 baseFps * static_cast<double>(testedLimit + 1)
             );
-            const bool accepted =
+            const bool deliveryHealthy =
+                this->adaptiveRampPlannedGeneratedFrames == 0 ||
+                this->adaptiveRampOnTimeGeneratedFrames ==
+                    this->adaptiveRampPlannedGeneratedFrames;
+            const bool accepted = deliveryHealthy &&
                 baseFps >= adaptiveMinimumBaseFps &&
                 baseFps >= this->adaptiveBridgeBaselineBaseFps *
                     adaptiveBridgeMinimumBaseRetention &&
@@ -1286,6 +1321,8 @@ void AdaptiveScheduler::updateGenerationLimit(
             );
 
             this->adaptiveRampEvaluationAt.reset();
+            this->adaptiveRampPlannedGeneratedFrames = 0;
+            this->adaptiveRampOnTimeGeneratedFrames = 0;
             this->adaptiveBridgeActive = false;
             this->adaptiveOutputCredit = 0.0;
             if (!accepted) {
@@ -1330,7 +1367,12 @@ void AdaptiveScheduler::updateGenerationLimit(
         const bool baseCollapsedForMarginalGain =
             baseFps < this->adaptiveRampBaselineBaseFps * adaptiveRampBaseCollapseRatio &&
             currentOutputFps < previousOutputFps * adaptiveRampMarginalGain;
-        const bool accepted = !throughputRegressed && !baseCollapsedForMarginalGain;
+        const bool deliveryHealthy =
+            this->adaptiveRampPlannedGeneratedFrames == 0 ||
+            this->adaptiveRampOnTimeGeneratedFrames ==
+                this->adaptiveRampPlannedGeneratedFrames;
+        const bool accepted = deliveryHealthy && !throughputRegressed &&
+            !baseCollapsedForMarginalGain;
         const size_t bridgeLimit = std::min(configuredLimit, testedLimit + 1);
         const bool canBridge =
             !accepted &&
@@ -1359,6 +1401,8 @@ void AdaptiveScheduler::updateGenerationLimit(
                 this->adaptiveRampBaselineBaseFps;
             this->adaptiveGenerationLimit = bridgeLimit;
             this->adaptiveRampEvaluationAt = now + adaptiveRampEvaluationDuration;
+            this->adaptiveRampPlannedGeneratedFrames = 0;
+            this->adaptiveRampOnTimeGeneratedFrames = 0;
             this->adaptiveOutputCredit = 0.0;
             return;
         }
@@ -1374,6 +1418,8 @@ void AdaptiveScheduler::updateGenerationLimit(
         );
 
         this->adaptiveRampEvaluationAt.reset();
+        this->adaptiveRampPlannedGeneratedFrames = 0;
+        this->adaptiveRampOnTimeGeneratedFrames = 0;
         this->adaptiveOutputCredit = 0.0;
         if (!accepted) {
             this->adaptiveGenerationLimit = this->adaptiveRampPreviousLimit;
@@ -1470,6 +1516,8 @@ void AdaptiveScheduler::updateGenerationLimit(
     this->adaptiveRampBaselineBaseFps = baseFps;
     this->adaptiveGenerationLimit++;
     this->adaptiveRampEvaluationAt = now + adaptiveRampEvaluationDuration;
+    this->adaptiveRampPlannedGeneratedFrames = 0;
+    this->adaptiveRampOnTimeGeneratedFrames = 0;
     this->adaptiveTargetDeficitSince.reset();
     this->adaptiveOutputCredit = 0.0;
     this->diagnostics->ramp(

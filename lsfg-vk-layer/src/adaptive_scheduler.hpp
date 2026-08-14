@@ -183,6 +183,7 @@ namespace lsfgvk::layer {
         void beginHistoryWarmup(size_t frames, bool recovery);
         void cancelHistoryWarmup();
         void consumeHistoryWarmupFrame(TimePoint now);
+        void reportGeneratedFrameDelivery(size_t planned, size_t onTime);
 
         [[nodiscard]] bool discontinuityRecoveryActive() const {
             return this->adaptiveDiscontinuityRecoveryDeadline.has_value();
@@ -249,6 +250,10 @@ namespace lsfgvk::layer {
         std::optional<TimePoint> adaptiveRampEvaluationAt;
         std::optional<TimePoint> adaptiveTargetDeficitSince;
         size_t adaptiveGenerationLimit{0};
+        size_t adaptiveRampPlannedGeneratedFrames{0};
+        size_t adaptiveRampOnTimeGeneratedFrames{0};
+        size_t adaptiveStableCadencePlannedGeneratedFrames{0};
+        size_t adaptiveStableCadenceOnTimeGeneratedFrames{0};
         size_t adaptiveRampPreviousLimit{0};
         size_t adaptiveCadenceDropFrames{0};
         double adaptiveRampBaselineBaseFps{0.0};

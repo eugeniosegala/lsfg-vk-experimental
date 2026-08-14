@@ -14,6 +14,7 @@
 #include "adaptive_scheduler.hpp"
 #include "color_pipeline.hpp"
 #include "profile_update.hpp"
+#include "presentation_policy.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -41,7 +42,8 @@ namespace lsfgvk::layer {
     /// @param maxImages maximum number of images supported by the surface
     /// @param createInfo swapchain create info to modify
     void context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint32_t maxImages,
-        VkSwapchainCreateInfoKHR& createInfo, bool gamescopeHdrActive);
+        VkSwapchainCreateInfoKHR& createInfo, bool gamescopeHdrActive,
+        bool gamescopeManaged);
 
     /// swapchain context for a layer instance
     class Swapchain {
@@ -53,7 +55,9 @@ namespace lsfgvk::layer {
         /// @param info swapchain info
         Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
             ls::GameConf profile, SwapchainInfo info,
-            bool gamescopeHdrActive,
+            std::optional<bool> gamescopeHdrActive,
+            bool gamescopeManaged,
+            std::optional<uint32_t> gamescopeRefreshHz,
             uint64_t runtimeStateRevision);
 
         /// present a frame
@@ -85,6 +89,9 @@ namespace lsfgvk::layer {
         [[nodiscard]] bool updateGamescopeHdrState(
             bool active, uint64_t runtimeStateRevision);
 
+        /// Update the compositor scanout budget without rebuilding resources.
+        void updateGamescopeRefreshRate(std::optional<uint32_t> refreshHz);
+
         /// Stop generation in place when the active profile disappears.
         void disableFrameGeneration();
     private:
@@ -106,6 +113,7 @@ namespace lsfgvk::layer {
         size_t idx{1};
         size_t fidx{0}; // real frame index
         size_t backendFrameIndex{0};
+        bool renderFenceInFlight{false};
         bool generatedImageAcquireBackoff{false};
         size_t generatedImageAcquireBypassCount{0};
         std::optional<std::chrono::steady_clock::time_point> generatedImageAcquireLastBoundedProbe;
@@ -120,9 +128,23 @@ namespace lsfgvk::layer {
         size_t configurationHistoryWarmupRemaining{0};
         uint64_t diagnosticsContextId{0};
 
+        bool gamescopeManaged{false};
+        std::optional<uint32_t> gamescopeRefreshHz;
+        std::optional<bool> pendingGamescopeHdrActive;
+        uint64_t pendingHdrStateRevision{0};
+        std::optional<std::chrono::steady_clock::time_point>
+            colorTransitionRetryAt;
+        FixedRefreshBudget fixedRefreshBudget;
+        std::optional<std::chrono::steady_clock::time_point> lastPresentStarted;
+        std::optional<std::chrono::steady_clock::duration> recentRealInterval;
+
         SwapchainColorPipeline colorPipeline;
         ls::GameConf profile;
         SwapchainInfo info;
+
+        [[nodiscard]] bool applyPendingColorPipeline(const vk::Vulkan& vk);
+        void rebuildPrivateResources(const vk::Vulkan& vk,
+            SwapchainColorPipeline pipeline);
     };
 
 }

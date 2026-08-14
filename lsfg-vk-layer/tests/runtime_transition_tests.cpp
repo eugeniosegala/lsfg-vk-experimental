@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "runtime_transition.hpp"
+#include "gamescope_hdr_feedback.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -39,6 +40,19 @@ int main() {
         "Stable Gamescope feedback should confirm active HDR");
     expect(!feedback.observe(true, start + 2s),
         "Repeated confirmed feedback must not produce another transition");
+
+    const GamescopeXwaylandDisplay gameDisplay{
+        .display = ":1", .gamescopePid = 42, .serverId = 1,
+    };
+    const std::vector<GamescopeXwaylandDisplay> displays{
+        {.display = ":2", .gamescopePid = 99, .serverId = 0},
+        {.display = ":0", .gamescopePid = 42, .serverId = 0},
+    };
+    expect(selectGamescopeRootDisplay(gameDisplay, displays) == ":0",
+        "HDR feedback must resolve Gamescope server zero for the same process");
+    expect(!selectGamescopeRootDisplay(
+            {.display = ":8"}, displays),
+        "an unrelated X11 display must not be guessed as Gamescope root");
 
     std::cout << "runtime transition tests passed\n";
     return 0;

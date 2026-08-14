@@ -29,6 +29,7 @@ namespace lsfgvk::layer {
         bool globalChangeDeferred{false};
         bool hdrFeedbackChanged{false};
         size_t hdrContextsDeferred{0};
+        bool refreshRateChanged{false};
     };
 
     /// root context of the lsfg-vk layer
@@ -93,7 +94,10 @@ namespace lsfgvk::layer {
         GamescopeHdrFeedbackReader hdrFeedbackReader;
         StableBooleanFeedback hdrFeedback;
         std::optional<bool> gamescopeHdrActive;
+        bool gamescopeManaged{false};
+        std::optional<uint32_t> gamescopeRefreshHz;
         std::optional<bool> lastHdrFeedbackSample;
+        std::optional<uint32_t> lastGamescopeRefreshHz;
         std::string lastHdrFeedbackStatus;
         std::optional<std::chrono::steady_clock::time_point> lastHdrFeedbackPoll;
         uint64_t runtimeStateRevision{1};

@@ -94,6 +94,7 @@ cmake -S "$repo_root" -B "$build64_dir" -G Ninja \
 cmake --build "$build64_dir" --target \
     lsfg-vk-config-tests lsfg-vk-profile-update-tests \
     lsfg-vk-runtime-transition-tests \
+    lsfg-vk-presentation-policy-tests \
     lsfg-vk-adaptive-tests lsfg-vk-adaptive-matrix lsfg-vk-color-tests \
     lsfg-vk-hdr-color-math-tests
 ctest --test-dir "$build64_dir" --output-on-failure

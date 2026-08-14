@@ -363,6 +363,33 @@ namespace {
             "steady 2x policy remained in a transient probe");
     }
 
+    void testLateGeneratedFrameRejectsRamp() {
+        Harness harness(120, 2);
+        harness.start();
+        bool reportedMiss = false;
+        for (size_t frame = 0; frame < 600; ++frame) {
+            const auto plan = harness.frameAtFps(60.0);
+            if (harness.scheduler.snapshot().rampEvaluationActive &&
+                    !reportedMiss && !plan.empty()) {
+                harness.scheduler.reportGeneratedFrameDelivery(
+                    plan.size(), plan.size() - 1
+                );
+                reportedMiss = true;
+            } else {
+                harness.scheduler.reportGeneratedFrameDelivery(
+                    plan.size(), plan.size()
+                );
+            }
+            if (reportedMiss && harness.diagnostics.contains("ramp-result"))
+                break;
+        }
+        const auto* result = harness.diagnostics.last("ramp-result");
+        require(reportedMiss && result && !result->accepted,
+            "a missed generated-frame deadline did not reject the ramp");
+        require(harness.scheduler.snapshot().validatedGenerationLimit == 0,
+            "late delivery was retained as a validated multiplier");
+    }
+
     void testFourXPlanUsesEvenInterpolationTimestamps() {
         Harness harness(120, 4);
         harness.start();
@@ -648,6 +675,37 @@ namespace {
             "Smooth Cadence acceptance was not observable");
     }
 
+    void testLateDeliveryRejectsSmoothCadenceProbe() {
+        Harness harness(90, 2, true);
+        harness.start();
+        bool reportedMiss = false;
+        for (size_t frame = 0; frame < 1000; ++frame) {
+            const auto plan = harness.frameAtFps(47.0);
+            const bool probeStarted = harness.diagnostics.contains(
+                "adaptive-stable-cadence-probe"
+            );
+            if (probeStarted && !reportedMiss && !plan.empty()) {
+                harness.scheduler.reportGeneratedFrameDelivery(
+                    plan.size(), 0
+                );
+                reportedMiss = true;
+            } else {
+                harness.scheduler.reportGeneratedFrameDelivery(
+                    plan.size(), plan.size()
+                );
+            }
+            if (reportedMiss && harness.diagnostics.contains(
+                    "adaptive-stable-cadence-rejected"))
+                break;
+        }
+        require(reportedMiss && harness.diagnostics.contains(
+                "adaptive-stable-cadence-rejected"),
+            "a missed display deadline did not reject Smooth Cadence");
+        require(harness.scheduler.snapshot().phase !=
+                AdaptiveSchedulerPhase::StableCadence,
+            "Smooth Cadence retained a delivery-late multiplier");
+    }
+
     void testSmoothCadenceReturnsToTargetAfterBaseRecovery() {
         Harness harness(100, 2, true);
         harness.start();
@@ -869,6 +927,7 @@ int main() {
         {"startup warm-up is explicit", testStartupWarmupIsExplicit},
         {"invalid configuration is rejected", testInvalidConfigurationIsRejectedAtBoundary},
         {"60 to 120 settles at 2x", testSteadySixtyRampsToTwoXFor120Target},
+        {"late delivery rejects ramp", testLateGeneratedFrameRejectsRamp},
         {"4x timestamps remain evenly spaced", testFourXPlanUsesEvenInterpolationTimestamps},
         {"above-target cadence remains real-only", testSchedulerCannotReduceAboveTargetCadence},
         {"acquire backoff freezes policy", testAcquireBackoffDoesNotAdvancePolicy},
@@ -883,6 +942,7 @@ int main() {
         {"bridge probe handles misleading first step", testBridgeProbeCanRecoverMisleadingFirstStep},
         {"rejected higher level backs off", testRejectedHigherLevelRetainsProvenLoadAndBacksOff},
         {"Smooth Cadence settles near integer demand", testSmoothCadenceSettlesNearIntegerDemand},
+        {"late delivery rejects Smooth Cadence", testLateDeliveryRejectsSmoothCadenceProbe},
         {"Smooth Cadence exits after native recovery", testSmoothCadenceReturnsToTargetAfterBaseRecovery},
         {"Smooth Cadence resists oscillating-load chatter", testSmoothCadenceDoesNotChatterOnOscillatingLoad},
         {"strict load collapse restores lower level", testStrictLoadCollapseRestoresCheaperProvenLevel},

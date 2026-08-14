@@ -61,6 +61,13 @@ if(BUILD_TESTING)
     add_test(NAME runtime-transition
         COMMAND lsfg-vk-runtime-transition-tests)
 
+    add_executable(lsfg-vk-presentation-policy-tests
+        "tests/presentation_policy_tests.cpp")
+    target_include_directories(lsfg-vk-presentation-policy-tests
+        PRIVATE "src")
+    add_test(NAME presentation-policy
+        COMMAND lsfg-vk-presentation-policy-tests)
+
     add_executable(lsfg-vk-adaptive-tests
         "tests/adaptive_scheduler_tests.cpp")
     target_link_libraries(lsfg-vk-adaptive-tests
