@@ -72,15 +72,13 @@ remain linear 16-bit float. If either capability check fails, the validated floa
 
 **Pacing modes** determine how lsfg-vk synchronizes frame generation with the application's frame rate.
 
-On the normal SDR path, `none` uses lsfg-vk's private FIFO output transport. The layer reserves swapchain capacity for
-the generated images, then presents each generated/real sequence in order; FIFO supplies display-rate backpressure so
-the sequence is not immediately coalesced or skipped. This is distinct from the game's V-Sync setting: game V-Sync
-stabilizes the incoming real-frame cadence, while lsfg-vk's FIFO transport orders the output it inserts. Together they
-can improve frame pacing and perceived smoothness, especially when an uncapped game otherwise submits irregular bursts.
+V-Sync can help when it gives lsfg-vk more evenly spaced real frames to work with, which can make generated output feel
+smoother. It can also add input lag or work poorly with a game's FPS cap, VRR, or compositor, so test it enabled and
+disabled for each game and keep the setting that feels best.
 
-V-Sync is not a performance multiplier: it cannot create GPU headroom and may add latency, interact with VRR or a
-game's limiter, or fall to a lower refresh divisor when the game misses its interval. Test it enabled and disabled per
-game. HDR-capable Gamescope swapchains preserve their separate WSI presentation contract, so this SDR FIFO guarantee
+For the normal SDR path, `none` uses lsfg-vk's private FIFO output transport. The layer reserves swapchain capacity for
+generated images and presents the generated/real sequence in order. That output ordering is separate from the game's
+V-Sync setting. HDR-capable Gamescope swapchains preserve their separate WSI presentation contract, so this SDR detail
 does not describe the experimental HDR path.
 
 Here are all available pacing modes:
