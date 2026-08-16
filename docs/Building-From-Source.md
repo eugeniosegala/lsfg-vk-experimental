@@ -2,13 +2,19 @@
 This guide provides step-by-step instructions on how to build the lsfg-vk project from source code.
 
 >[!IMPORTANT]
->If you are planning on compiling lsfg-vk on a Steam Deck, you need to disable the read-only protection and reinstall certain system packages first:
+>If you are planning on compiling lsfg-vk on SteamOS, you need to temporarily
+>disable read-only protection and restore the base C/C++ headers first:
 > ```bash
 > sudo steamos-readonly disable
-> sudo pacman-key --init
-> sudo pacman-key --populate
-> sudo pacman -Syy
-> sudo pacman -S linux-headers linux-api-headers glibc
+> sudo pacman -S glibc linux-api-headers lib32-glibc
+> sudo steamos-readonly enable
+> ```
+>
+>The command intentionally does not use `--needed`: some SteamOS images report
+>`glibc`, `linux-api-headers`, or `lib32-glibc` as installed while a required
+>header is absent. Reinstalling those packages restores the headers. Only run
+>`pacman-key --init` and `pacman-key --populate` if Pacman specifically reports
+>a keyring or signature error.
 
 ### Prerequisites
 Before you begin, ensure you have the required packages installed on your system.
@@ -19,6 +25,7 @@ You will need the following dependencies:
 - CMake (version 3.10 or higher)
 - Ninja build system (other build systems may work, but Ninja is recommended)
 - Vulkan SDK
+- X11 headers (`libx11` and `xorgproto` on Arch/SteamOS)
 - A multilib C++ toolchain when building the 32-bit Vulkan layer
 - Qt6 and Qt6Quick (only needed when building lsfg-vk-ui)
 
@@ -38,9 +45,9 @@ sudo apt-get install -y \
 # On Arch Linux, use:
 sudo pacman -S --needed \
     git curl \
-    llvm clang gcc-multilib \
+    llvm clang ccache lib32-glibc \
     cmake ninja \
-    vulkan-headers vulkan-icd-loader \
+    vulkan-headers vulkan-icd-loader libx11 xorgproto \
     qt6-base qt6-declarative
 ```
 
@@ -48,6 +55,58 @@ The release packager builds the normal 64-bit application, CLI, UI, and layer,
 then builds a second layer with `-m32`. It installs the two layer libraries in
 `lib` and `lib32` with architecture-tagged Vulkan manifests. Direct CMake builds
 produce one layer for the compiler architecture selected for that build.
+
+### Fast SteamOS development build
+
+For native Steam-game iteration, use the persistent incremental build instead
+of the release packager:
+
+```bash
+./scripts/build-steamos-dev.sh
+```
+
+It builds only the 64-bit Vulkan layer and keeps `build/steamos-dev` between
+runs. To retain a second incremental tree for genuine 32-bit games, run:
+
+```bash
+./scripts/build-steamos-dev.sh --with-32-bit
+```
+
+The 32-bit tree defaults to `build/steamos-dev-32`. Both commands intentionally
+skip the CLI, Qt UI, Flatpak extensions, tests, archives, and Decky ZIP.
+Subsequent builds compile only changed source and its dependants. When
+available, `ccache` is enabled automatically; install it with the rest of the
+Arch build prerequisites to retain compiler results across larger rebuilds.
+
+### SteamOS Flatpak development cache
+
+Decky's `dev:flatpaks` and `dev:e2e` commands retain their isolated Flatpak
+SDK/runtime downloads under `build/steamos-flatpak-cache` in this checkout and
+use `build/steamos-flatpak-tmp` for temporary staging. The cache persists until
+you remove it, so later Flatpak development builds avoid downloading the same
+runtime dependencies. To inspect it safely, run:
+
+```bash
+./scripts/prune-steamos-flatpak-cache.sh
+```
+
+That command is a dry run. To delete only those two development-cache
+directories, with native builds and installed plugin artifacts preserved, add
+the explicit confirmation flag:
+
+```bash
+./scripts/prune-steamos-flatpak-cache.sh --confirm
+```
+
+For safety, this pruner targets only the default repo-local locations. If you
+set a custom Flatpak cache or temporary-directory environment variable, manage
+that custom location yourself.
+
+Use `LSFGVK_BUILD_JOBS=4` to cap parallelism on a memory-constrained Deck, or
+`LSFGVK_BUILD_DIR=/path/to/build` to keep the build tree elsewhere. This is a
+native host-test workflow only; use `scripts/package-local.sh` for a
+distributable archive and `scripts/package-flatpaks.sh` for Flatpak runtime
+bundles.
 
 ### Building & Installing lsfg-vk
 
