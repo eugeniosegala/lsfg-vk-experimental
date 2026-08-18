@@ -1,5 +1,20 @@
 # lsfg-vk Experimental
 
+> [!IMPORTANT]
+> ## This project has moved to [MAKO](https://github.com/eugeniosegala/MAKO)
+>
+> **Decky LSFG-VK Experimental and LSFG-VK Experimental are now continued and developed as [MAKO](https://github.com/eugeniosegala/MAKO).**
+>
+> This repository is archived and will no longer receive releases, support, documentation, or issue tracking.
+>
+> For the full announcement and background on the move, read:
+>
+> [MAKO: Frame Generation and more on SteamOS](https://www.reddit.com/r/SteamDeck/comments/1vrox2x/mako_frame_generation_and_more_on_steam_os/)
+>
+> ⭐ If you want to support the project and help me keep adding features, please [star MAKO](https://github.com/eugeniosegala/MAKO) and follow me on [GitHub](https://github.com/eugeniosegala).
+
+---
+
 <p align="center">
   <img src="assets/lsfg-vk-experimental-logo.png" alt="Experimental frame-generation mark for SteamOS and Linux" width="256" />
 </p>
