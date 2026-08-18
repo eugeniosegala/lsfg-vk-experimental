@@ -238,3 +238,10 @@ release.
 - **[PancakeTAS](https://github.com/PancakeTAS/lsfg-vk)** for creating the lsfg-vk Vulkan compatibility layer
 - **[Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/)** developers for the original
   frame-generation technology
+
+## AI-assisted development
+
+This project uses coding agents as part of an evidence-driven engineering
+workflow while keeping architecture, review, validation, and release decisions
+under human ownership. See [AI use in lsfg-vk Experimental](AI_USE.md) for the
+full approach.
